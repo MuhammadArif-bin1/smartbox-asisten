@@ -1,0 +1,95 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Device {
+  id          String       @id @default(cuid())
+  name        String
+  mqttBase    String       @default("smartbox/device-01")
+  location    String?
+  online      Boolean      @default(false)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  alarms      Alarm[]
+  audioTracks AudioTrack[]
+  events      DeviceEvent[]
+  snapshots   SensorSnapshot[]
+}
+
+model Alarm {
+  id          String   @id @default(cuid())
+  deviceId    String
+  label       String
+  time        String
+  timezone    String   @default("Asia/Bangkok")
+  greeting    String
+  dfTrack     Int
+  enabled     Boolean  @default(true)
+  repeatDays  String[] @default(["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  device      Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+}
+
+model AudioTrack {
+  id          String   @id @default(cuid())
+  deviceId    String
+  trackNumber Int
+  fileName    String
+  label       String
+  purpose     String
+  volume      Int      @default(22)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  device      Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@unique([deviceId, trackNumber])
+}
+
+model SensorSnapshot {
+  id            String   @id @default(cuid())
+  deviceId      String
+  gasEnabled    Boolean  @default(true)
+  gasRaw        Int?
+  gasDetected   Boolean  @default(false)
+  tempEnabled   Boolean  @default(true)
+  temperatureC  Float?
+  flameDetected Boolean  @default(false)
+  pirDetected   Boolean  @default(false)
+  obstacleNear  Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  device        Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+}
+
+model DeviceEvent {
+  id        String   @id @default(cuid())
+  deviceId  String
+  type      String
+  severity  String   @default("info")
+  message   String
+  topic     String?
+  payload   Json?
+  createdAt DateTime @default(now())
+  device    Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+}
+
+model PinAssignment {
+  id        String   @id @default(cuid())
+  module    String
+  signal    String
+  gpio      String
+  notes     String?
+  reserved  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
