@@ -189,6 +189,8 @@ export default function Home() {
           clean: true,
           connectTimeout: 4000,
           reconnectPeriod: 3000,
+          username: process.env.NEXT_PUBLIC_MQTT_USERNAME || "",
+          password: process.env.NEXT_PUBLIC_MQTT_PASSWORD || "",
         });
 
         client.on("connect", () => {

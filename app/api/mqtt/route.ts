@@ -12,11 +12,11 @@ export const runtime = "nodejs";
 const defaultBrokerUrl = "mqtt://192.168.1.12:1883";
 
 export async function GET() {
-  const brokerUrl = process.env.MQTT_BROKER_URL || defaultBrokerUrl;
+  const brokerUrl = process.env.MQTT_URL || process.env.MQTT_BROKER_URL || defaultBrokerUrl;
   const clientIdPrefix = process.env.MQTT_CLIENT_ID || "smartbox-web";
   const clientId = `${clientIdPrefix}-status-${Date.now()}-${Math.round(Math.random() * 1000)}`;
-  const username = process.env.MQTT_USERNAME;
-  const password = process.env.MQTT_PASSWORD;
+  const username = process.env.MQTT_USERNAME || process.env.NEXT_PUBLIC_MQTT_USERNAME;
+  const password = process.env.MQTT_PASSWORD || process.env.NEXT_PUBLIC_MQTT_PASSWORD;
 
   try {
     await connectMqtt({ brokerUrl, clientId, username, password });
@@ -46,11 +46,11 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Field topic wajib diisi" }, { status: 400 });
   }
 
-  const brokerUrl = process.env.MQTT_BROKER_URL || defaultBrokerUrl;
+  const brokerUrl = process.env.MQTT_URL || process.env.MQTT_BROKER_URL || defaultBrokerUrl;
   const clientIdPrefix = process.env.MQTT_CLIENT_ID || "smartbox-web";
   const clientId = `${clientIdPrefix}-${Date.now()}-${Math.round(Math.random() * 1000)}`;
-  const username = process.env.MQTT_USERNAME;
-  const password = process.env.MQTT_PASSWORD;
+  const username = process.env.MQTT_USERNAME || process.env.NEXT_PUBLIC_MQTT_USERNAME;
+  const password = process.env.MQTT_PASSWORD || process.env.NEXT_PUBLIC_MQTT_PASSWORD;
   const payloadData = body.payload ?? {};
   const payload = JSON.stringify({
     source: "smartbox-web",

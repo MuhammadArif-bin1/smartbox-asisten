@@ -21,18 +21,23 @@
 #include <DFRobotDFPlayerMini.h>
 #include <HTTPClient.h>
 #include <LiquidCrystal_I2C.h>
+#define MQTT_MAX_PACKET_SIZE 1024
 #include <PubSubClient.h>
 #include <RTClib.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <Wire.h>
 #include <driver/i2s.h>
 
 // ==================== CONFIGURATIONS ====================
-const char *ssid = "BAGUS";              // Ganti dengan SSID Wi-Fi Anda
-const char *password = "s4nsan15675";    // Ganti dengan Password Wi-Fi Anda
-const char *mqtt_server = "192.168.1.7"; // IP Broker Mosquitto dari .env
-const int mqtt_port = 1883;
-const char *device_id = "smartbox-001"; // ID Perangkat dari .env
+const char *ssid = "BAGUS";           // Ganti dengan SSID Wi-Fi Anda
+const char *password = "s4sans15675"; // Ganti dengan Password Wi-Fi Anda
+const char *mqtt_server =
+    "smartbox-asisten.vercel.app.hivemq.cloud"; // Broker HiveMQ Cloud
+const int mqtt_port = 8883;                     // Port TLS MQTT
+const char *mqtt_user = "smartbox001";          // Username MQTT Cloud
+const char *mqtt_password = "smartbox";         // Password MQTT Cloud
+const char *device_id = "smartbox-001";         // ID Perangkat dari .env
 
 // URL Endpoint Server Next.js untuk logging Neon DB via Prisma
 const char *telemetry_api_url = "http://192.168.1.7:3000/api/telemetry";
@@ -60,7 +65,7 @@ const int GAS_THRESHOLD = 1800; // Sesuai GAS_WARNING_RAW di Next.js
 #define I2S_PORT I2S_NUM_0
 
 // ==================== OBJECTS & STATE ====================
-WiFiClient espClient;
+WiFiClientSecure espClient;
 PubSubClient mqttClient(espClient);
 RTC_DS3231 rtc;
 LiquidCrystal_I2C lcd(0x27, 16, 2); // Alamat I2C umum LCD 16x2
@@ -267,7 +272,14 @@ void reconnectMqtt() {
     String clientId = "SmartBoxDevice-";
     clientId += String(random(0xffff), HEX);
 
-    if (mqttClient.connect(clientId.c_str())) {
+    // Set Last Will and Testament (LWT) for offline notifications
+    String willMessage =
+        "{\"online\":false,\"deviceId\":\"" + String(device_id) + "\"}";
+
+    // Connect with username, password, Will topic, Will QoS, Will Retain, Will
+    // Message
+    if (mqttClient.connect(clientId.c_str(), mqtt_user, mqtt_password,
+                           "smartbox/status", 1, true, willMessage.c_str())) {
       Serial.println("connected");
       // Subscribe to topics
       mqttClient.subscribe("smartbox/relay/set");
@@ -330,20 +342,26 @@ void sendHttpTelemetry(int gasRaw, float tempC, bool gasDetected,
   http.end();
 }
 
-void publishMqttTelemetry(int gasRaw, float tempC) {
+void publishMqttTelemetry(int gasRaw, float tempC, bool gasDetected,
+                          bool pirDetected, bool obstacleNear) {
   if (!mqttClient.connected())
     return;
 
-  StaticJsonDocument<256> doc;
+  StaticJsonDocument<512> doc;
+  doc["deviceId"] = device_id;
   doc["gasEnabled"] = gasEnabled;
   doc["gasRaw"] = gasRaw;
+  doc["gasDetected"] = gasDetected;
   doc["tempEnabled"] = tempEnabled;
   doc["temperatureC"] = tempC;
+  doc["flameDetected"] = false;
+  doc["pirDetected"] = pirDetected;
+  doc["obstacleNear"] = obstacleNear;
   doc["rtcReady"] = rtcReady;
   doc["lcdReady"] = lcdReady;
   doc["dfPlayerReady"] = dfPlayerReady;
 
-  char buffer[256];
+  char buffer[512];
   serializeJson(doc, buffer);
   mqttClient.publish("smartbox/telemetry", buffer);
 }
@@ -484,6 +502,10 @@ void setup() {
   // Connect Wi-Fi
   setupWifi();
 
+  // Configure TLS connection to HiveMQ Cloud without verifying certificate
+  // chains (insecure mode)
+  espClient.setInsecure();
+
   // Initialize MQTT
   mqttClient.setServer(mqtt_server, mqtt_port);
   mqttClient.setCallback(mqttCallback);
@@ -590,16 +612,19 @@ void loop() {
 
   // 5. Publish real-time data to MQTT
   if (currentMillis - lastTelemetryPublish > publishInterval) {
-    publishMqttTelemetry(gasRaw, tempC);
+    publishMqttTelemetry(gasRaw, tempC, gasWarning, pirDetected, obstacleNear);
     lastTelemetryPublish = currentMillis;
   }
 
-  // 6. Post historical logs to Next.js API (Neon DB)
+  // 6. Post historical logs to Next.js API (Neon DB) - Disabled since MQTT
+  // Worker handles DB writes
+  /*
   if (currentMillis - lastTelemetryPost > postInterval) {
     sendHttpTelemetry(gasRaw, tempC, gasWarning, tempWarning, pirDetected,
                       obstacleNear);
     lastTelemetryPost = currentMillis;
   }
+  */
 
   // 7. Push button controls (manual overrides)
   if (digitalRead(PIN_BUTTON_1) == LOW) {
