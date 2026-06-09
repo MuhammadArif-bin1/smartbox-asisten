@@ -1487,6 +1487,7 @@ void sendTelemetryHttp(int gasRaw, float tempC, bool gasWarning,
   doc["gasDetected"] = gasWarning;
   doc["tempEnabled"] = tempEnabled;
   doc["temperatureC"] = tempC;
+  doc["flameDetected"] = false;
   doc["pirDetected"] = pirDetected;
   doc["obstacleNear"] = obstacleNear;
 
@@ -1530,9 +1531,9 @@ void checkWarnings(int gasRaw, float tempC, bool gasWarning, bool tempWarning) {
 
     if (millis() - lastWarningAudioAt > WARNING_AUDIO_GAP_MS) {
       if (gasWarning) {
-        playDfTrack(5); // 0005.mp3 = peringatan gas.
+        playDfTrack(4); // 0004_asap_terdeteksi.mp3 = peringatan gas/asap.
       } else if (tempWarning) {
-        playDfTrack(6); // 0006.mp3 = peringatan suhu tinggi.
+        playDfTrack(5); // 0005_suhu_panas.mp3 = peringatan suhu tinggi.
       }
       lastWarningAudioAt = millis();
     }
@@ -1588,7 +1589,7 @@ void updateLcd(int gasRaw, float tempC, bool gasWarning, bool tempWarning,
     return;
   }
 
-  // Handle temporary overrides (like status messages)
+  // Handle temporary overrides (like status messages from button press or BLE connect)
   if (millis() < lcdOverrideUntil) {
     lcd.clear();
     lcd.setCursor(0, 0);
@@ -1604,32 +1605,62 @@ void updateLcd(int gasRaw, float tempC, bool gasWarning, bool tempWarning,
 
   lcd.clear();
 
-  if (rtcReady) {
-    DateTime now = rtc.now();
-    char line1[17];
-    char btIndicator = deviceConnected ? '*' : (bluetoothAktif ? '+' : ' ');
-    snprintf(line1, sizeof(line1), "%02d:%02d:%02d %c T:%4.1f", now.hour(),
-             now.minute(), now.second(), btIndicator, tempC);
-    lcd.setCursor(0, 0);
-    lcd.print(line1);
-  } else {
-    lcd.setCursor(0, 0);
-    lcd.print("RTC Error");
-  }
-
-  char line2[17];
+  // Notification Hierarchy (If warnings or modes are active, we display them)
   if (gasWarning) {
-    snprintf(line2, sizeof(line2), "GAS:%d BAHAYA", gasRaw);
-  } else if (tempWarning) {
-    snprintf(line2, sizeof(line2), "SUHU PANAS");
-  } else if (pirDetected) {
-    snprintf(line2, sizeof(line2), "PIR: GERAK");
-  } else {
-    snprintf(line2, sizeof(line2), "Gas:%d Normal", gasRaw);
+    lcd.setCursor(0, 0);
+    lcd.print("AWAS ADA ASAP/GAS");
+    lcd.setCursor(0, 1);
+    lcd.print("SEGERA PERIKSA!");
   }
+  else if (tempWarning) {
+    lcd.setCursor(0, 0);
+    lcd.print("SUHU PANAS!");
+    char tempStr[16];
+    snprintf(tempStr, sizeof(tempStr), "SUHU: %0.1f C", tempC);
+    lcd.setCursor(0, 1);
+    lcd.print(tempStr);
+  }
+  else if (bluetoothAktif) {
+    lcd.setCursor(0, 0);
+    lcd.print("BLUETOOTH ACTIVE");
+    lcd.setCursor(0, 1);
+    lcd.print(deviceConnected ? "CONNECTED" : "WAITING FOR HP");
+  }
+  else if (relay1State || relay2State) {
+    lcd.setCursor(0, 0);
+    if (relay1State && relay2State) {
+      lcd.print("SK 1 & SK 2 ON");
+    } else if (relay1State) {
+      lcd.print("STOP KONTAK 1 ON");
+    } else {
+      lcd.print("STOP KONTAK 2 ON");
+    }
+    lcd.setCursor(0, 1);
+    lcd.print("TIMER ACTIVE");
+  }
+  else {
+    // Base State: Show Time and Temperature
+    if (rtcReady) {
+      DateTime now = rtc.now();
+      char line1[17];
+      snprintf(line1, sizeof(line1), "Jam:  %02d:%02d:%02d", now.hour(),
+               now.minute(), now.second());
+      lcd.setCursor(0, 0);
+      lcd.print(line1);
 
-  lcd.setCursor(0, 1);
-  lcd.print(line2);
+      char line2[17];
+      snprintf(line2, sizeof(line2), "Suhu: %4.1f C", tempC);
+      lcd.setCursor(0, 1);
+      lcd.print(line2);
+    } else {
+      lcd.setCursor(0, 0);
+      lcd.print("RTC ERROR");
+      char line2[17];
+      snprintf(line2, sizeof(line2), "Suhu: %4.1f C", tempC);
+      lcd.setCursor(0, 1);
+      lcd.print(line2);
+    }
+  }
 }
 
 // ==========================================================
@@ -1982,6 +2013,13 @@ void loop() {
   // Handle PIR movement events
   if (pirDetected) {
     wakeUpFromSleep();
+
+    // Otomatis nyalakan lampu (Relay 1)
+    if (!relay1State) {
+      setRelay(1, true, false); // Turn on Relay 1 (Light) without playing relay audio track to avoid overlapping with greeting
+      Serial.println("[PIR] Motion detected, automatically turned ON Relay 1 (Light)");
+      publishEvent("INFO", "pir.light.on", "Gerakan terdeteksi: Lampu (Relay 1) dinyalakan.");
+    }
 
     if (pirGreetingEnabled && isPirGreetingScheduled()) {
       if (millis() - lastPirGreetingTime >= PIR_GREETING_COOLDOWN) {

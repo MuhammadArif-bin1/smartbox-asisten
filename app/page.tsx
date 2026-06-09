@@ -25,6 +25,9 @@ type TelemetryPayload = {
   gasRaw?: number;
   tempEnabled?: boolean;
   temperatureC?: number;
+  flameDetected?: boolean;
+  pirDetected?: boolean;
+  obstacleNear?: boolean;
   rtcReady?: boolean;
   lcdReady?: boolean;
   dfPlayerReady?: boolean;
@@ -176,6 +179,9 @@ export default function Home() {
   });
   const [lastTelemetryTime, setLastTelemetryTime] = useState<number>(0);
   const [tempHistory, setTempHistory] = useState(temperatureSeries);
+  const [flameDetected, setFlameDetected] = useState(false);
+  const [pirDetected, setPirDetected] = useState(false);
+  const [obstacleNear, setObstacleNear] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [passwordInput, setPasswordInput] = useState("");
@@ -184,8 +190,7 @@ export default function Home() {
   const activeAlarms = useMemo(() => alarms.filter((alarm) => alarm.enabled).length, [alarms]);
 
   useEffect(() => {
-    const savedAuth = window.localStorage.getItem("smartbox-authenticated");
-    setIsAuthenticated(savedAuth === "true");
+    setIsAuthenticated(false);
     setAuthChecked(true);
   }, []);
 
@@ -250,6 +255,9 @@ export default function Home() {
             if (typeof telemetry.tempEnabled === "boolean") setTemperatureEnabled(telemetry.tempEnabled);
             if (typeof telemetry.gasRaw === "number") setGasEstimate(Math.max(0, Math.min(4095, Math.round(telemetry.gasRaw))));
             if (typeof telemetry.temperatureC === "number") setTempEstimate(roundTemperature(telemetry.temperatureC));
+            if (typeof telemetry.flameDetected === "boolean") setFlameDetected(telemetry.flameDetected);
+            if (typeof telemetry.pirDetected === "boolean") setPirDetected(telemetry.pirDetected);
+            if (typeof telemetry.obstacleNear === "boolean") setObstacleNear(telemetry.obstacleNear);
             if (typeof telemetry.pirEnabled === "boolean") setPirEnabled(telemetry.pirEnabled);
             if (typeof telemetry.sleepModeEnabled === "boolean") setSleepModeEnabled(telemetry.sleepModeEnabled);
             if (typeof telemetry.pirGreetingEnabled === "boolean") setPirGreetingEnabled(telemetry.pirGreetingEnabled);
@@ -378,6 +386,11 @@ export default function Home() {
             if (latest) {
               if (typeof latest.temperatureC === "number") setTempEstimate(latest.temperatureC);
               if (typeof latest.gasRaw === "number") setGasEstimate(latest.gasRaw);
+              if (typeof latest.gasEnabled === "boolean") setGasEnabled(latest.gasEnabled);
+              if (typeof latest.tempEnabled === "boolean") setTemperatureEnabled(latest.tempEnabled);
+              if (typeof latest.flameDetected === "boolean") setFlameDetected(latest.flameDetected);
+              if (typeof latest.pirDetected === "boolean") setPirDetected(latest.pirDetected);
+              if (typeof latest.obstacleNear === "boolean") setObstacleNear(latest.obstacleNear);
               
               const lastTime = new Date(latest.createdAt).getTime();
               const now = Date.now();
@@ -636,6 +649,9 @@ export default function Home() {
     updatePirGreetingConfig,
     saveRelaySchedule,
     deleteRelaySchedule,
+    flameDetected,
+    pirDetected,
+    obstacleNear,
   };
 
   if (!authChecked) {
@@ -715,6 +731,9 @@ type PageProps = {
   updatePirGreetingConfig: (enabled: boolean, track: number, start: string, end: string) => void;
   saveRelaySchedule: (sch: { id: string; relay: number; start: string; end: string; enabled: boolean }) => void;
   deleteRelaySchedule: (id: string) => void;
+  flameDetected: boolean;
+  pirDetected: boolean;
+  obstacleNear: boolean;
 };
 
 function Sidebar({ activeView, onChange }: { activeView: ViewId; onChange: (view: ViewId) => void }) {
@@ -901,7 +920,7 @@ function MonitoringPage(props: PageProps) {
           <div className="grid gap-4 md:grid-cols-3">
             <ReadingRow label="Suhu Ruangan" value={props.tempState === "Tidak Terhubung" || props.tempState === "Offline" ? "-" : `${props.visibleTempEstimate.toFixed(1)} C`} status={props.tempState} percent={props.tempState === "Tidak Terhubung" || props.tempState === "Offline" ? 0 : props.tempPercent} tone="blue" />
             <ReadingRow label="Gas / Asap" value={props.gasState === "Tidak Terhubung" || props.gasState === "Offline" ? "-" : `${props.gasPpm} PPM`} status={props.gasState} percent={props.gasState === "Tidak Terhubung" || props.gasState === "Offline" ? 0 : props.gasPercent} tone="emerald" />
-            <ReadingRow label="Api" value={props.gasState === "Tidak Terhubung" || props.gasState === "Offline" ? "-" : "Tidak Ada"} status={props.gasState === "Tidak Terhubung" ? "Tidak Terhubung" : (props.gasState === "Offline" ? "Offline" : "Normal")} percent={props.gasState === "Tidak Terhubung" || props.gasState === "Offline" ? 0 : 12} tone="orange" />
+            <ReadingRow label="Api" value={props.gasState === "Tidak Terhubung" || props.gasState === "Offline" ? "-" : (props.flameDetected ? "Terdeteksi" : "Tidak Ada")} status={props.gasState === "Tidak Terhubung" ? "Tidak Terhubung" : (props.gasState === "Offline" ? "Offline" : (props.flameDetected ? "Bahaya" : "Normal"))} percent={props.gasState === "Tidak Terhubung" || props.gasState === "Offline" ? 0 : (props.flameDetected ? 100 : 0)} tone="orange" />
           </div>
           <div className="mt-4 grid gap-4 md:grid-cols-2">
             <WarningCard
@@ -1166,23 +1185,26 @@ function AlarmsPage(props: PageProps) {
       <Panel title="Alarm Jadwal" subtitle="Semua pengaturan alarm dipusatkan di halaman ini.">
         <div className="grid gap-3">
           {props.alarms.map((alarm) => (
-            <div key={alarm.id} className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 xl:grid-cols-[120px_130px_minmax(220px,1fr)_260px_90px_90px] xl:items-center">
-              <div>
-                <p className="text-sm font-black text-slate-950">{alarm.label}</p>
-                <p className="text-xs text-slate-500">Asia/Indonesia</p>
+            <div key={alarm.id} className="grid gap-4 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm shadow-slate-100 xl:grid-cols-[auto_110px_minmax(180px,1fr)_260px_auto_auto] xl:items-center">
+              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-blue-50 text-blue-600">
+                <svg className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
               </div>
-              <input className="h-11 rounded-xl border border-slate-200 px-3 text-sm outline-none focus:border-blue-400" type="time" value={alarm.time} onChange={(event) => props.updateAlarm(alarm.id, "time", event.target.value)} />
-              <input className="h-11 min-w-0 rounded-xl border border-slate-200 px-3 text-sm outline-none focus:border-blue-400" value={alarm.greeting} onChange={(event) => props.updateAlarm(alarm.id, "greeting", event.target.value)} />
-              <select className="h-11 rounded-xl border border-slate-200 px-3 text-sm font-semibold outline-none focus:border-blue-400" value={alarm.track} onChange={(event) => props.updateAlarm(alarm.id, "track", Number(event.target.value))}>
+              <input className="h-12 rounded-2xl border border-slate-200 px-4 text-sm font-bold outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50" type="time" value={alarm.time} onChange={(event) => props.updateAlarm(alarm.id, "time", event.target.value)} />
+              <input className="h-12 min-w-0 rounded-2xl border border-slate-200 px-4 text-sm font-medium outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50" placeholder="Pesan pengingat..." value={alarm.greeting} onChange={(event) => props.updateAlarm(alarm.id, "greeting", event.target.value)} />
+              <select className="h-12 rounded-2xl border border-slate-200 bg-white px-4 text-sm font-semibold outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50" value={alarm.track} onChange={(event) => props.updateAlarm(alarm.id, "track", Number(event.target.value))}>
                 {audioTracks.map((track) => (
                   <option key={track.id} value={track.id}>
-                    {track.id.toString().padStart(3, "0")} - {track.name} ({track.use})
+                    {track.id.toString().padStart(3, "0")} - {track.name.replace(/_/g, " ").replace(".mp3", "")}
                   </option>
                 ))}
               </select>
-              <Switch checked={alarm.enabled} onChange={() => toggleAlarmEnabled(alarm)} />
+              <div className="flex justify-end xl:justify-center">
+                <Switch checked={alarm.enabled} onChange={() => toggleAlarmEnabled(alarm)} />
+              </div>
               <button
-                className="h-11 rounded-xl bg-blue-600 px-4 text-sm font-black text-white transition hover:bg-blue-700 disabled:bg-slate-400"
+                className="h-12 rounded-2xl bg-blue-600 px-6 text-sm font-black text-white transition hover:bg-blue-700 shadow-md shadow-blue-100 disabled:bg-slate-400"
                 disabled={sendingAlarmId === alarm.id}
                 onClick={() => sendAlarm(alarm)}
                 type="button"
@@ -1396,7 +1418,12 @@ function StatsGrid(props: PageProps) {
         detail={hasGas ? `PPM: ${props.gasPpm}` : "ESP32 Offline"} 
         accent="cyan" 
       />
-      <StatCard label="Status Api" value={hasGas ? "Tidak Ada" : "Tidak Terhubung"} detail={hasGas ? "Sensor normal" : "ESP32 Offline"} accent="orange" />
+      <StatCard 
+        label="Status Api" 
+        value={hasGas ? (props.flameDetected ? "Terdeteksi" : "Tidak Ada") : "Tidak Terhubung"} 
+        detail={hasGas ? (props.flameDetected ? "Bahaya Kebakaran!" : "Sensor normal") : "ESP32 Offline"} 
+        accent="orange" 
+      />
       <StatCard label="Koneksi Perangkat" value={props.deviceStatuses.esp32 ? `${props.relayActiveCount} / 3` : "- / -"} detail={`Alarm aktif: ${props.activeAlarms}`} accent="indigo" />
     </section>
   );
@@ -1433,6 +1460,9 @@ function parseTelemetry(message: string): TelemetryPayload {
       gasRaw: readNumber(payload.gasRaw),
       tempEnabled: readBoolean(payload.tempEnabled),
       temperatureC: readFirstNumber(payload, ["temperatureC", "temperature", "tempC", "temp", "suhuC", "suhu"]),
+      flameDetected: readBoolean(payload.flameDetected),
+      pirDetected: readBoolean(payload.pirDetected),
+      obstacleNear: readBoolean(payload.obstacleNear),
       rtcReady: readBoolean(payload.rtcReady),
       lcdReady: readBoolean(payload.lcdReady),
       dfPlayerReady: readBoolean(payload.dfPlayerReady),
