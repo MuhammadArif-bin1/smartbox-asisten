@@ -946,10 +946,12 @@ function MonitoringPage(props: PageProps) {
     <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_420px]">
       <div className="grid gap-5">
         <Panel title="Monitoring Sensor Real-time" subtitle={`Sumber data: ${props.telemetrySource}`}>
-          <div className="grid gap-4 md:grid-cols-3">
+          <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-5">
             <ReadingRow label="Suhu Ruangan" value={props.tempState === "Tidak Terhubung" || props.tempState === "Offline" ? "-" : `${props.visibleTempEstimate.toFixed(1)} C`} status={props.tempState} percent={props.tempState === "Tidak Terhubung" || props.tempState === "Offline" ? 0 : props.tempPercent} tone="blue" />
             <ReadingRow label="Gas / Asap" value={props.gasState === "Tidak Terhubung" || props.gasState === "Offline" ? "-" : `${props.gasPpm} PPM`} status={props.gasState} percent={props.gasState === "Tidak Terhubung" || props.gasState === "Offline" ? 0 : props.gasPercent} tone="emerald" />
             <ReadingRow label="Api" value={props.gasState === "Tidak Terhubung" || props.gasState === "Offline" ? "-" : (props.flameDetected ? "Terdeteksi" : "Tidak Ada")} status={props.gasState === "Tidak Terhubung" ? "Tidak Terhubung" : (props.gasState === "Offline" ? "Offline" : (props.flameDetected ? "Bahaya" : "Normal"))} percent={props.gasState === "Tidak Terhubung" || props.gasState === "Offline" ? 0 : (props.flameDetected ? 100 : 0)} tone="orange" />
+            <ReadingRow label="Gerakan (PIR)" value={props.gasState === "Tidak Terhubung" || props.gasState === "Offline" ? "-" : (props.pirDetected ? "Terdeteksi" : "Tidak Ada")} status={props.gasState === "Tidak Terhubung" ? "Tidak Terhubung" : (props.gasState === "Offline" ? "Offline" : (props.pirDetected ? "Ada Gerakan" : "Aman"))} percent={props.gasState === "Tidak Terhubung" || props.gasState === "Offline" ? 0 : (props.pirDetected ? 100 : 0)} tone="orange" />
+            <ReadingRow label="Halangan (IR)" value={props.gasState === "Tidak Terhubung" || props.gasState === "Offline" ? "-" : (props.obstacleNear ? "Terdeteksi" : "Tidak Ada")} status={props.gasState === "Tidak Terhubung" ? "Tidak Terhubung" : (props.gasState === "Offline" ? "Offline" : (props.obstacleNear ? "Dekat" : "Jauh"))} percent={props.gasState === "Tidak Terhubung" || props.gasState === "Offline" ? 0 : (props.obstacleNear ? 100 : 0)} tone="blue" />
           </div>
           <div className="mt-4 grid gap-4 md:grid-cols-2">
             <WarningCard
@@ -1434,7 +1436,7 @@ function StatsGrid(props: PageProps) {
   const hasTemp = props.deviceStatuses.esp32 && props.deviceStatuses.rtc;
   const hasGas = props.deviceStatuses.esp32;
   return (
-    <section className="grid gap-4 md:grid-cols-2 2xl:grid-cols-4">
+    <section className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
       <StatCard 
         label="Suhu Ruangan" 
         value={hasTemp ? `${props.visibleTempEstimate.toFixed(1)} C` : "-"} 
@@ -1452,6 +1454,18 @@ function StatsGrid(props: PageProps) {
         value={hasGas ? (props.flameDetected ? "Terdeteksi" : "Tidak Ada") : "Tidak Terhubung"} 
         detail={hasGas ? (props.flameDetected ? "Bahaya Kebakaran!" : "Sensor normal") : "ESP32 Offline"} 
         accent="orange" 
+      />
+      <StatCard 
+        label="Gerakan (PIR)" 
+        value={hasGas ? (props.pirDetected ? "Terdeteksi" : "Aman") : "Tidak Terhubung"} 
+        detail={hasGas ? (props.pirDetected ? "Terdeteksi gerakan" : "Kondisi aman") : "ESP32 Offline"} 
+        accent="orange" 
+      />
+      <StatCard 
+        label="Halangan (IR)" 
+        value={hasGas ? (props.obstacleNear ? "Terdeteksi" : "Tidak Ada") : "Tidak Terhubung"} 
+        detail={hasGas ? (props.obstacleNear ? "Objek mendekat" : "Jalur bersih") : "ESP32 Offline"} 
+        accent="violet" 
       />
       <StatCard label="Koneksi Perangkat" value={props.deviceStatuses.esp32 ? `${props.relayActiveCount} / 3` : "- / -"} detail={`Alarm aktif: ${props.activeAlarms}`} accent="indigo" />
     </section>

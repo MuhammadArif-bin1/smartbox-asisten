@@ -216,6 +216,7 @@ bool lcdBacklightOn = true;
 unsigned long lcdOverrideUntil = 0;
 char lcdOverrideLine1[17] = "";
 char lcdOverrideLine2[17] = "";
+bool systemBooting = true;
 
 // Relay Schedules
 #define MAX_RELAY_SCHEDULES 5
@@ -963,7 +964,7 @@ void connectWiFi() {
   Serial.print("SSID: ");
   Serial.println(WIFI_SSID);
 
-  if (lcdReady) {
+  if (lcdReady && !systemBooting) {
     lcd.clear();
     lcd.setCursor(0, 0);
     lcd.print("WiFi Connect...");
@@ -993,21 +994,15 @@ void connectWiFi() {
     Serial.print("[WIFI] RSSI: ");
     Serial.println(WiFi.RSSI());
 
-    if (lcdReady) {
-      lcd.clear();
-      lcd.setCursor(0, 0);
-      lcd.print("WiFi OK");
-      lcd.setCursor(0, 1);
-      lcd.print(WiFi.localIP());
+    if (lcdReady && !systemBooting) {
+      setLcdOverride("WiFi OK", WiFi.localIP().toString().c_str(), 2000);
     }
 
     setRgb(0, 40, 0);
   } else {
     Serial.println("[WIFI] Gagal connect, akan retry di loop.");
-    if (lcdReady) {
-      lcd.clear();
-      lcd.setCursor(0, 0);
-      lcd.print("WiFi Failed");
+    if (lcdReady && !systemBooting) {
+      setLcdOverride("WiFi Failed", "", 2000);
     }
     setRgb(80, 0, 0);
   }
@@ -1063,10 +1058,8 @@ void connectMqtt() {
     publishOnlineStatus(true);
     publishEvent("INFO", "mqtt.connected", "ESP32 tersambung ke MQTT Cloud.");
 
-    if (lcdReady) {
-      lcd.clear();
-      lcd.setCursor(0, 0);
-      lcd.print("MQTT Connected");
+    if (lcdReady && !systemBooting) {
+      setLcdOverride("MQTT Connected", "", 2000);
     }
 
     setRgb(0, 0, 80);
@@ -1074,12 +1067,10 @@ void connectMqtt() {
     Serial.print("[MQTT] Gagal, state=");
     Serial.println(mqttClient.state());
 
-    if (lcdReady) {
-      lcd.clear();
-      lcd.setCursor(0, 0);
-      lcd.print("MQTT Failed");
-      lcd.setCursor(0, 1);
-      lcd.print(mqttClient.state());
+    if (lcdReady && !systemBooting) {
+      char stateStr[16];
+      snprintf(stateStr, sizeof(stateStr), "State: %d", mqttClient.state());
+      setLcdOverride("MQTT Failed", stateStr, 2000);
     }
 
     setRgb(80, 0, 0);
@@ -1603,6 +1594,10 @@ void updateLcd(int gasRaw, float tempC, bool gasWarning, bool tempWarning,
     return;
   }
 
+  if (millis() - lastLcdAt < LCD_INTERVAL_MS)
+    return;
+  lastLcdAt = millis();
+
   // Handle temporary overrides (like status messages from button press or BLE connect)
   if (millis() < lcdOverrideUntil) {
     lcd.clear();
@@ -1612,10 +1607,6 @@ void updateLcd(int gasRaw, float tempC, bool gasWarning, bool tempWarning,
     lcd.print(lcdOverrideLine2);
     return;
   }
-
-  if (millis() - lastLcdAt < LCD_INTERVAL_MS)
-    return;
-  lastLcdAt = millis();
 
   lcd.clear();
 
@@ -1653,27 +1644,11 @@ void updateLcd(int gasRaw, float tempC, bool gasWarning, bool tempWarning,
     lcd.print("TIMER ACTIVE");
   }
   else {
-    // Base State: Show Time and Temperature
-    if (rtcReady) {
-      DateTime now = rtc.now();
-      char line1[17];
-      snprintf(line1, sizeof(line1), "Jam:  %02d:%02d:%02d", now.hour(),
-               now.minute(), now.second());
-      lcd.setCursor(0, 0);
-      lcd.print(line1);
-
-      char line2[17];
-      snprintf(line2, sizeof(line2), "Suhu: %4.1f C", tempC);
-      lcd.setCursor(0, 1);
-      lcd.print(line2);
-    } else {
-      lcd.setCursor(0, 0);
-      lcd.print("RTC ERROR");
-      char line2[17];
-      snprintf(line2, sizeof(line2), "Suhu: %4.1f C", tempC);
-      lcd.setCursor(0, 1);
-      lcd.print(line2);
-    }
+    // Base State: Show initial ready message
+    lcd.setCursor(0, 0);
+    lcd.print("SMARTBOX ASISTEN");
+    lcd.setCursor(0, 1);
+    lcd.print("SIAP DIAKTIFKAN");
   }
 }
 
@@ -1932,9 +1907,9 @@ void setup() {
   lcdReady = true;
   lcd.clear();
   lcd.setCursor(0, 0);
-  lcd.print("SmartBox Boot");
+  lcd.print("SMARTBOX ASISTEN");
   lcd.setCursor(0, 1);
-  lcd.print("Init hardware");
+  lcd.print("SIAP DIAKTIFKAN");
 
   // RTC DS3231
   if (!rtc.begin()) {
@@ -1987,9 +1962,12 @@ void setup() {
   if (lcdReady) {
     lcd.clear();
     lcd.setCursor(0, 0);
-    lcd.print("SmartBox Ready");
+    lcd.print("SMARTBOX ASISTEN");
+    lcd.setCursor(0, 1);
+    lcd.print("SIAP DIAKTIFKAN");
   }
 
+  systemBooting = false;
   publishEvent("INFO", "device.boot", "SmartBox boot selesai.");
   nyalakanBluetooth();
 }
