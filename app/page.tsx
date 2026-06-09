@@ -340,6 +340,24 @@ export default function Home() {
   const mqttOnline = mqttRealtime === "online" || mqttApiOnline;
   const relayActiveCount = relayControls.filter((relay) => relayState[relay.id]).length;
 
+  // Load and save relay schedules to localStorage when offline
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const savedSchedules = window.localStorage.getItem("smartbox-relay-schedules");
+    if (savedSchedules) {
+      try {
+        setRelaySchedules(JSON.parse(savedSchedules));
+      } catch (e) {
+        console.error(e);
+      }
+    }
+  }, [isAuthenticated]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    window.localStorage.setItem("smartbox-relay-schedules", JSON.stringify(relaySchedules));
+  }, [isAuthenticated, relaySchedules]);
+
   // Fetch alarms from Neon DB via Prisma on mount
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -572,6 +590,17 @@ export default function Home() {
   }
 
   function saveRelaySchedule(sch: { id: string; relay: number; start: string; end: string; enabled: boolean }) {
+    setRelaySchedules((current) => {
+      const timeRange = `${sch.start}-${sch.end}`;
+      const existing = current.find((item) => item.id === sch.id);
+      if (existing) {
+        return current.map((item) =>
+          item.id === sch.id ? { ...item, relay: sch.relay, enabled: sch.enabled, timeRange } : item
+        );
+      }
+      return [...current, { id: sch.id, relay: sch.relay, enabled: sch.enabled, timeRange }];
+    });
+
     const cmdTopic = `smartbox/${process.env.NEXT_PUBLIC_DEVICE_ID || 'smartbox-001'}/cmd`;
     publish(cmdTopic, {
       type: "relaySchedule.set",

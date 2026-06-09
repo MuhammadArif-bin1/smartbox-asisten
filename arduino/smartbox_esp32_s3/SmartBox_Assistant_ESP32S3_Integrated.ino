@@ -87,7 +87,7 @@ const char *DEVICE_ID = "smartbox-001";
 // Input user
 #define BLACK_BTN_PIN 7
 #define WHITE_BTN_PIN 19 // Jika USB bermasalah, pindah ke GPIO39.
-#define RED_BTN_PIN 20   // Jika USB bermasalah, pindah ke GPIO40.
+#define RED_BTN_PIN    20  // Tombol Merah (Tekan Cepat = Nyala/Mati Bluetooth)
 
 // Output aktuator
 #define RELAY_1_PIN 21 // Stop kontak 1, LOW level trigger.
@@ -190,7 +190,9 @@ bool bluetoothAktif = false;
 bool bleSudahDibuat = false;
 String dataBluetooth = "";
 unsigned long waktuBluetoothMulai = 0;
-const unsigned long durasiBluetooth = 120000; // 2 minutes
+const unsigned long durasiBluetooth = 60000; // 1 minute
+bool pendingBluetoothSongPlay = false;
+unsigned long bluetoothSongPlayTime = 0;
 
 // NVS Preferences
 Preferences preferences;
@@ -402,11 +404,23 @@ class MyServerCallbacks : public BLEServerCallbacks {
     deviceConnected = true;
     Serial.println("BLE tersambung");
     setRgb(0, 0, 255); // Blue LED
-    setLcdOverride("BT CONNECTED", "TIMER 2 MENIT", 3000);
+    setLcdOverride("BT CONNECTED", "CONNECTED", 3000);
+
+    // Prevent greeting from repeating due to rapid BLE reconnection handshakes
+    static unsigned long lastBleGreetingTime = 0;
+    if (millis() - lastBleGreetingTime >= 15000) {
+      lastBleGreetingTime = millis();
+      
+      // Play Bluetooth Connected voice notification (Track 6), then play a song (Track 1)
+      playDfTrack(6); // Sistem hidup / Welcome
+      pendingBluetoothSongPlay = true;
+      bluetoothSongPlayTime = millis() + 4000;
+    }
   }
 
   void onDisconnect(BLEServer *pServer) {
     deviceConnected = false;
+    pendingBluetoothSongPlay = false; // Reset song play if disconnected before track starts
     Serial.println("BLE terputus");
 
     if (bluetoothAktif) {
@@ -483,8 +497,8 @@ void nyalakanBluetooth() {
 
   setRgb(0, 255, 0); // Green LED
 
-  Serial.println("BLE aktif selama 2 menit");
-  setLcdOverride("BT AKTIF", "DURASI 2 MENIT", 3000);
+  Serial.println("BLE aktif selama 1 menit");
+  setLcdOverride("BT AKTIF", "DURASI 1 MENIT", 3000);
 }
 
 void matikanBluetooth() {
@@ -517,7 +531,7 @@ void cekTimerBluetooth() {
   }
 
   if (millis() - waktuBluetoothMulai >= durasiBluetooth) {
-    Serial.println("Timer 2 menit selesai");
+    Serial.println("Timer 1 menit selesai");
     matikanBluetooth();
   }
 }
@@ -2054,6 +2068,28 @@ void loop() {
                       obstacleNear);
   }
   lastHttpWarningState = currentHttpWarningState;
+
+  // Handle delayed Bluetooth connection song play
+  if (pendingBluetoothSongPlay && millis() >= bluetoothSongPlayTime) {
+    pendingBluetoothSongPlay = false;
+    playDfTrack(1); // Play song (Track 1)
+    Serial.println("[BLE] Playing song (Track 1) after connection announcement");
+  }
+
+  // Blink LED green if Bluetooth is active but not connected (and no warning is active)
+  if (bluetoothAktif && !deviceConnected && !gasWarning && !tempWarning) {
+    static unsigned long lastBlink = 0;
+    static bool blinkState = false;
+    if (millis() - lastBlink >= 500) {
+      lastBlink = millis();
+      blinkState = !blinkState;
+      if (blinkState) {
+        setRgb(0, 120, 0); // Blink Green
+      } else {
+        setRgb(0, 0, 0); // OFF
+      }
+    }
+  }
 
   delay(10);
 }
