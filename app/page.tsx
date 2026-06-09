@@ -946,9 +946,9 @@ function MonitoringPage(props: PageProps) {
     <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_420px]">
       <div className="grid gap-5">
         <Panel title="Monitoring Sensor Real-time" subtitle={`Sumber data: ${props.telemetrySource}`}>
-          <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-5">
+          <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5">
             <ReadingRow label="Suhu Ruangan" value={props.tempState === "Tidak Terhubung" || props.tempState === "Offline" ? "-" : `${props.visibleTempEstimate.toFixed(1)} C`} status={props.tempState} percent={props.tempState === "Tidak Terhubung" || props.tempState === "Offline" ? 0 : props.tempPercent} tone="blue" />
-            <ReadingRow label="Gas / Asap" value={props.gasState === "Tidak Terhubung" || props.gasState === "Offline" ? "-" : `${props.gasPpm} PPM`} status={props.gasState} percent={props.gasState === "Tidak Terhubung" || props.gasState === "Offline" ? 0 : props.gasPercent} tone="emerald" />
+            <ReadingRow label="Gas / Asap" value={props.gasState === "Tidak Terhubung" || props.gasState === "Offline" ? "-" : `${props.gasPpm} PPM (${props.visibleGasEstimate} RAW)`} status={props.gasState} percent={props.gasState === "Tidak Terhubung" || props.gasState === "Offline" ? 0 : props.gasPercent} tone="emerald" />
             <ReadingRow label="Api" value={props.gasState === "Tidak Terhubung" || props.gasState === "Offline" ? "-" : (props.flameDetected ? "Terdeteksi" : "Tidak Ada")} status={props.gasState === "Tidak Terhubung" ? "Tidak Terhubung" : (props.gasState === "Offline" ? "Offline" : (props.flameDetected ? "Bahaya" : "Normal"))} percent={props.gasState === "Tidak Terhubung" || props.gasState === "Offline" ? 0 : (props.flameDetected ? 100 : 0)} tone="orange" />
             <ReadingRow label="Gerakan (PIR)" value={props.gasState === "Tidak Terhubung" || props.gasState === "Offline" ? "-" : (props.pirDetected ? "Terdeteksi" : "Tidak Ada")} status={props.gasState === "Tidak Terhubung" ? "Tidak Terhubung" : (props.gasState === "Offline" ? "Offline" : (props.pirDetected ? "Ada Gerakan" : "Aman"))} percent={props.gasState === "Tidak Terhubung" || props.gasState === "Offline" ? 0 : (props.pirDetected ? 100 : 0)} tone="orange" />
             <ReadingRow label="Halangan (IR)" value={props.gasState === "Tidak Terhubung" || props.gasState === "Offline" ? "-" : (props.obstacleNear ? "Terdeteksi" : "Tidak Ada")} status={props.gasState === "Tidak Terhubung" ? "Tidak Terhubung" : (props.gasState === "Offline" ? "Offline" : (props.obstacleNear ? "Dekat" : "Jauh"))} percent={props.gasState === "Tidak Terhubung" || props.gasState === "Offline" ? 0 : (props.obstacleNear ? 100 : 0)} tone="blue" />
@@ -1436,7 +1436,7 @@ function StatsGrid(props: PageProps) {
   const hasTemp = props.deviceStatuses.esp32 && props.deviceStatuses.rtc;
   const hasGas = props.deviceStatuses.esp32;
   return (
-    <section className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+    <section className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
       <StatCard 
         label="Suhu Ruangan" 
         value={hasTemp ? `${props.visibleTempEstimate.toFixed(1)} C` : "-"} 
@@ -1445,8 +1445,8 @@ function StatsGrid(props: PageProps) {
       />
       <StatCard 
         label="Status Gas/Asap" 
-        value={hasGas ? props.gasState : "Tidak Terhubung"} 
-        detail={hasGas ? `PPM: ${props.gasPpm}` : "ESP32 Offline"} 
+        value={hasGas ? (props.gasState === "Aman" ? `Aman (${props.gasPpm} PPM)` : `${props.gasState} (${props.gasPpm} PPM)`) : "Tidak Terhubung"} 
+        detail={hasGas ? `Sensor RAW: ${props.visibleGasEstimate}` : "ESP32 Offline"} 
         accent="cyan" 
       />
       <StatCard 
@@ -1459,13 +1459,13 @@ function StatsGrid(props: PageProps) {
         label="Gerakan (PIR)" 
         value={hasGas ? (props.pirDetected ? "Terdeteksi" : "Aman") : "Tidak Terhubung"} 
         detail={hasGas ? (props.pirDetected ? "Terdeteksi gerakan" : "Kondisi aman") : "ESP32 Offline"} 
-        accent="orange" 
+        accent="violet" 
       />
       <StatCard 
         label="Halangan (IR)" 
         value={hasGas ? (props.obstacleNear ? "Terdeteksi" : "Tidak Ada") : "Tidak Terhubung"} 
         detail={hasGas ? (props.obstacleNear ? "Objek mendekat" : "Jalur bersih") : "ESP32 Offline"} 
-        accent="violet" 
+        accent="indigo" 
       />
       <StatCard label="Koneksi Perangkat" value={props.deviceStatuses.esp32 ? `${props.relayActiveCount} / 3` : "- / -"} detail={`Alarm aktif: ${props.activeAlarms}`} accent="indigo" />
     </section>
@@ -1566,24 +1566,57 @@ function Panel({ title, subtitle, children }: { title: string; subtitle: string;
 
 function StatCard({ label, value, detail, accent }: { label: string; value: string; detail: string; accent: "blue" | "cyan" | "orange" | "indigo" | "violet" }) {
   const accentClass = {
-    blue: "from-sky-400 to-blue-600",
-    cyan: "from-cyan-400 to-teal-500",
-    orange: "from-orange-400 to-red-500",
-    indigo: "from-blue-500 to-indigo-600",
-    violet: "from-indigo-500 to-violet-600",
+    blue: "text-blue-600 bg-blue-50 border-blue-100",
+    cyan: "text-cyan-600 bg-cyan-50 border-cyan-100",
+    orange: "text-orange-600 bg-orange-50 border-orange-100",
+    indigo: "text-indigo-600 bg-indigo-50 border-indigo-100",
+    violet: "text-violet-600 bg-violet-50 border-violet-100",
   };
+
+  const icons = {
+    blue: (
+      <svg className="h-6 w-6 shrink-0" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M14 4v10.5a4.5 4.5 0 11-4 0V4a2 2 0 114 0z" />
+      </svg>
+    ),
+    cyan: (
+      <svg className="h-6 w-6 shrink-0" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M3 12h18M3 8h12M3 16h15" />
+      </svg>
+    ),
+    orange: (
+      <svg className="h-6 w-6 shrink-0" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M17.657 18.585A8 8 0 1120 12c0 2.13-.86 4.03-2.243 5.402z" />
+        <path strokeLinecap="round" strokeLinejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+      </svg>
+    ),
+    violet: (
+      <svg className="h-6 w-6 shrink-0" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M12 4a1 1 0 100-2 1 1 0 000 2zM8 9h8a1.5 1.5 0 011.5 1.5v6M9 22V15m6 7v-7M12 9v6" />
+      </svg>
+    ),
+    indigo: (
+      <svg className="h-6 w-6 shrink-0" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+      </svg>
+    ),
+  };
+
   return (
-    <article className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm shadow-slate-200/70">
-      <div className="flex items-center gap-4">
-        <div className={`flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br ${accentClass[accent]} font-black text-white shadow-lg shadow-slate-200`}>
-          {label.slice(0, 1)}
-        </div>
-        <div className="min-w-0">
-          <p className="truncate text-sm font-bold text-slate-700">{label}</p>
-          <p className="mt-1 truncate text-2xl font-black text-slate-950">{value}</p>
+    <article className="relative overflow-hidden rounded-3xl border border-slate-200 bg-white p-6 shadow-sm shadow-slate-100/50 transition-all duration-200 hover:shadow-md hover:border-slate-300 flex flex-col justify-between h-full min-h-[160px]">
+      <div className="flex items-center justify-between gap-4">
+        <span className="text-xs font-bold text-slate-400 uppercase tracking-wider block">{label}</span>
+        <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border ${accentClass[accent]}`}>
+          {icons[accent]}
         </div>
       </div>
-      <div className="mt-4 inline-flex rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">{detail}</div>
+      <div className="mt-4">
+        <h3 className="text-2xl font-black tracking-tight text-slate-900 break-all">{value}</h3>
+        <p className="mt-2 text-xs font-semibold text-slate-500 flex items-center gap-1.5">
+          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+          {detail}
+        </p>
+      </div>
     </article>
   );
 }
@@ -1609,25 +1642,27 @@ function TemperatureChart({ value, series = temperatureSeries }: { value: number
 
 function ReadingRow({ label, value, status, percent, tone }: { label: string; value: string; status: string; percent: number; tone: "blue" | "emerald" | "orange" }) {
   const color = { blue: "bg-blue-600", emerald: "bg-emerald-500", orange: "bg-orange-500" };
-  const warning = status === "Peringatan" || status === "Waspada" || status === "Panas";
+  const warning = status === "Peringatan" || status === "Waspada" || status === "Panas" || status === "Bahaya" || status === "Terdeteksi" || status === "Ada Gerakan" || status === "Dekat";
   const offline = status === "Offline" || status === "Tidak Terhubung";
   const badgeClass = offline
     ? "bg-slate-100 text-slate-500"
-    : (warning ? "bg-red-50 text-red-600" : "bg-emerald-50 text-emerald-600");
+    : (warning ? "bg-red-50 text-red-600 border border-red-200" : "bg-emerald-50 text-emerald-600 border border-emerald-200");
 
   return (
-    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-      <div className="flex items-center justify-between gap-4">
-        <div>
-          <p className="text-sm font-bold text-slate-500">{label}</p>
-          <p className="mt-1 text-2xl font-black text-slate-950">{value}</p>
+    <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm shadow-slate-100/50 flex flex-col justify-between h-full min-h-[140px]">
+      <div>
+        <p className="text-xs font-bold uppercase tracking-wider text-slate-400">{label}</p>
+        <div className="mt-3 flex items-baseline justify-between flex-wrap gap-2">
+          <p className="text-2xl font-black text-slate-950 tracking-tight break-all">{value}</p>
+          <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-bold ${badgeClass} shrink-0`}>
+            {status}
+          </span>
         </div>
-        <span className={`rounded-full px-3 py-1 text-xs font-bold ${badgeClass}`}>
-          {status}
-        </span>
       </div>
-      <div className="mt-4 h-2 overflow-hidden rounded-full bg-slate-200">
-        <div className={`h-full rounded-full ${offline ? "bg-slate-300" : (warning ? "bg-red-500" : color[tone])}`} style={{ width: `${offline ? 0 : Math.min(percent, 100)}%` }} />
+      <div className="mt-4">
+        <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
+          <div className={`h-full rounded-full transition-all duration-500 ${offline ? "bg-slate-200" : (warning ? "bg-red-500" : color[tone])}`} style={{ width: `${offline ? 0 : Math.min(percent, 100)}%` }} />
+        </div>
       </div>
     </div>
   );

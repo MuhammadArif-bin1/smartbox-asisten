@@ -1526,12 +1526,14 @@ void checkWarnings(int gasRaw, float tempC, bool gasWarning, bool tempWarning) {
       publishEvent("WARNING", "gas.detected",
                    "Peringatan asap/gas terdeteksi.");
       lastGasWarning = true;
+      setRelay(1, true, false); // Automatically turn ON Relay 1 (exhaust/warning)
     }
 
     if (tempWarning && !lastTempWarning) {
       publishEvent("WARNING", "temperature.high",
                    "Peringatan suhu tinggi terdeteksi.");
       lastTempWarning = true;
+      setRelay(2, true, false); // Automatically turn ON Relay 2 (cooling fan/AC)
     }
 
     if (millis() - lastWarningAudioAt > WARNING_AUDIO_GAP_MS) {
@@ -1547,6 +1549,12 @@ void checkWarnings(int gasRaw, float tempC, bool gasWarning, bool tempWarning) {
       setBuzzer(false, false);
     if (lastGasWarning || lastTempWarning) {
       publishEvent("INFO", "warning.normal", "Kondisi sensor kembali normal.");
+      if (lastGasWarning) {
+        setRelay(1, false, false); // Automatically turn OFF Relay 1
+      }
+      if (lastTempWarning) {
+        setRelay(2, false, false); // Automatically turn OFF Relay 2
+      }
     }
     lastGasWarning = false;
     lastTempWarning = false;
