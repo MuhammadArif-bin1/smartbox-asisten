@@ -28,6 +28,14 @@ type TelemetryPayload = {
   rtcReady?: boolean;
   lcdReady?: boolean;
   dfPlayerReady?: boolean;
+  pirEnabled?: boolean;
+  sleepModeEnabled?: boolean;
+  pirGreetingEnabled?: boolean;
+  pirGreetingTrack?: number;
+  pirGreetingStart?: string;
+  pirGreetingEnd?: string;
+  dfTrackCount?: number;
+  relaySchedules?: Array<{ id: string; relay: number; enabled: boolean; timeRange: string }>;
 };
 
 const views: Array<{ id: ViewId; label: string }> = [
@@ -152,6 +160,14 @@ export default function Home() {
   const [status, setStatus] = useState<CommandStatus>("idle");
   const [lastCommand, setLastCommand] = useState("Belum ada command dikirim");
   const [toast, setToast] = useState<Toast | null>(null);
+  const [pirEnabled, setPirEnabled] = useState(true);
+  const [sleepModeEnabled, setSleepModeEnabled] = useState(false);
+  const [pirGreetingEnabled, setPirGreetingEnabled] = useState(false);
+  const [pirGreetingTrack, setPirGreetingTrack] = useState(1);
+  const [pirGreetingStart, setPirGreetingStart] = useState("07:00");
+  const [pirGreetingEnd, setPirGreetingEnd] = useState("22:00");
+  const [dfTrackCount, setDfTrackCount] = useState(7);
+  const [relaySchedules, setRelaySchedules] = useState<Array<{ id: string; relay: number; enabled: boolean; timeRange: string }>>([]);
   const [deviceStatus, setDeviceStatus] = useState({
     esp32: false,
     rtc: false,
@@ -234,6 +250,14 @@ export default function Home() {
             if (typeof telemetry.tempEnabled === "boolean") setTemperatureEnabled(telemetry.tempEnabled);
             if (typeof telemetry.gasRaw === "number") setGasEstimate(Math.max(0, Math.min(4095, Math.round(telemetry.gasRaw))));
             if (typeof telemetry.temperatureC === "number") setTempEstimate(roundTemperature(telemetry.temperatureC));
+            if (typeof telemetry.pirEnabled === "boolean") setPirEnabled(telemetry.pirEnabled);
+            if (typeof telemetry.sleepModeEnabled === "boolean") setSleepModeEnabled(telemetry.sleepModeEnabled);
+            if (typeof telemetry.pirGreetingEnabled === "boolean") setPirGreetingEnabled(telemetry.pirGreetingEnabled);
+            if (typeof telemetry.pirGreetingTrack === "number") setPirGreetingTrack(telemetry.pirGreetingTrack);
+            if (telemetry.pirGreetingStart) setPirGreetingStart(telemetry.pirGreetingStart);
+            if (telemetry.pirGreetingEnd) setPirGreetingEnd(telemetry.pirGreetingEnd);
+            if (typeof telemetry.dfTrackCount === "number") setDfTrackCount(telemetry.dfTrackCount);
+            if (Array.isArray(telemetry.relaySchedules)) setRelaySchedules(telemetry.relaySchedules);
           }
         });
 
@@ -457,6 +481,49 @@ export default function Home() {
     publish("smartbox/relay/set", { relay: relay?.mqttKey ?? relayId, enabled: next, pin: relay?.pin }, `${relay?.label ?? relayId} ${next ? "aktif" : "mati"}`);
   }
 
+  function togglePir() {
+    const next = !pirEnabled;
+    setPirEnabled(next);
+    const cmdTopic = `smartbox/${process.env.NEXT_PUBLIC_DEVICE_ID || 'smartbox-001'}/cmd`;
+    publish(cmdTopic, { type: "pirSensor.set", payload: { enabled: next } }, `Sensor PIR ${next ? "aktif" : "mati"}`);
+  }
+
+  function toggleSleepMode() {
+    const next = !sleepModeEnabled;
+    setSleepModeEnabled(next);
+    const cmdTopic = `smartbox/${process.env.NEXT_PUBLIC_DEVICE_ID || 'smartbox-001'}/cmd`;
+    publish(cmdTopic, { type: "sleepMode.set", payload: { enabled: next } }, `Sleep Mode ${next ? "aktif" : "mati"}`);
+  }
+
+  function updatePirGreetingConfig(enabled: boolean, track: number, start: string, end: string) {
+    setPirGreetingEnabled(enabled);
+    setPirGreetingTrack(track);
+    setPirGreetingStart(start);
+    setPirGreetingEnd(end);
+    const cmdTopic = `smartbox/${process.env.NEXT_PUBLIC_DEVICE_ID || 'smartbox-001'}/cmd`;
+    publish(cmdTopic, {
+      type: "pirGreeting.set",
+      payload: { enabled, track, start, end }
+    }, "Update PIR Greeting");
+  }
+
+  function saveRelaySchedule(sch: { id: string; relay: number; start: string; end: string; enabled: boolean }) {
+    const cmdTopic = `smartbox/${process.env.NEXT_PUBLIC_DEVICE_ID || 'smartbox-001'}/cmd`;
+    publish(cmdTopic, {
+      type: "relaySchedule.set",
+      payload: { id: sch.id, relay: sch.relay, start: sch.start, end: sch.end, enabled: sch.enabled }
+    }, `Simpan jadwal ${sch.id}`);
+  }
+
+  function deleteRelaySchedule(id: string) {
+    setRelaySchedules(current => current.filter(s => s.id !== id));
+    const cmdTopic = `smartbox/${process.env.NEXT_PUBLIC_DEVICE_ID || 'smartbox-001'}/cmd`;
+    publish(cmdTopic, {
+      type: "relaySchedule.delete",
+      payload: { id }
+    }, `Hapus jadwal ${id}`);
+  }
+
   function submitLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -505,6 +572,19 @@ export default function Home() {
     toggleRelay,
     toggleTemperature,
     deviceStatuses: deviceStatus,
+    pirEnabled,
+    sleepModeEnabled,
+    pirGreetingEnabled,
+    pirGreetingTrack,
+    pirGreetingStart,
+    pirGreetingEnd,
+    dfTrackCount,
+    relaySchedules,
+    togglePir,
+    toggleSleepMode,
+    updatePirGreetingConfig,
+    saveRelaySchedule,
+    deleteRelaySchedule,
   };
 
   if (!authChecked) {
@@ -571,6 +651,19 @@ type PageProps = {
   toggleRelay: (relayId: RelayId) => void;
   toggleTemperature: () => void;
   deviceStatuses: { esp32: boolean; rtc: boolean; lcd: boolean; dfPlayer: boolean };
+  pirEnabled: boolean;
+  sleepModeEnabled: boolean;
+  pirGreetingEnabled: boolean;
+  pirGreetingTrack: number;
+  pirGreetingStart: string;
+  pirGreetingEnd: string;
+  dfTrackCount: number;
+  relaySchedules: Array<{ id: string; relay: number; enabled: boolean; timeRange: string }>;
+  togglePir: () => void;
+  toggleSleepMode: () => void;
+  updatePirGreetingConfig: (enabled: boolean, track: number, start: string, end: string) => void;
+  saveRelaySchedule: (sch: { id: string; relay: number; start: string; end: string; enabled: boolean }) => void;
+  deleteRelaySchedule: (id: string) => void;
 };
 
 function Sidebar({ activeView, onChange }: { activeView: ViewId; onChange: (view: ViewId) => void }) {
@@ -784,6 +877,8 @@ function MonitoringPage(props: PageProps) {
         <div className="grid gap-3">
           <ControlRow label="Sensor Gas" detail="Aktifkan atau nonaktifkan sensor gas." enabled={props.gasEnabled} onToggle={props.toggleGas} />
           <ControlRow label="Sensor Suhu" detail="Kontrol pembacaan suhu dari ESP32." enabled={props.temperatureEnabled} onToggle={props.toggleTemperature} />
+          <ControlRow label="Sensor PIR (Gerakan)" detail="Aktifkan atau nonaktifkan sensor gerak PIR." enabled={props.pirEnabled} onToggle={props.togglePir} />
+          <ControlRow label="Sleep Mode" detail="Matikan LCD & relay jika tidak ada gerakan 1 jam." enabled={props.sleepModeEnabled} onToggle={props.toggleSleepMode} />
           <ControlRow
             label="Alarm Buzzer"
             detail="Peringatan suara lokal saat bahaya."
@@ -856,6 +951,64 @@ function AiPage(props: PageProps) {
 
 function AlarmsPage(props: PageProps) {
   const [sendingAlarmId, setSendingAlarmId] = useState<string | null>(null);
+
+  // Local states for Relay Schedules
+  const [localSchedules, setLocalSchedules] = useState<Array<{ id: string; relay: number; start: string; end: string; enabled: boolean }>>([]);
+
+  useEffect(() => {
+    if (props.relaySchedules) {
+      const mapped = props.relaySchedules.map(s => {
+        const [start, end] = s.timeRange.split("-");
+        return {
+          id: s.id,
+          relay: s.relay,
+          start: start || "07:00",
+          end: end || "08:00",
+          enabled: s.enabled
+        };
+      });
+      setLocalSchedules(mapped);
+    }
+  }, [props.relaySchedules]);
+
+  function updateLocalSch(id: string, field: string, value: any) {
+    setLocalSchedules(current => current.map(s => s.id === id ? { ...s, [field]: value } : s));
+  }
+
+  function addScheduleRow() {
+    const newSch = {
+      id: `sch${Math.round(Math.random() * 1000)}`,
+      relay: 1,
+      start: "07:00",
+      end: "08:00",
+      enabled: true
+    };
+    props.saveRelaySchedule(newSch);
+  }
+
+  // Local states for PIR Greeting configuration
+  const [localPirGreetingTrack, setLocalPirGreetingTrack] = useState(props.pirGreetingTrack || 1);
+  const [localPirGreetingStart, setLocalPirGreetingStart] = useState(props.pirGreetingStart || "07:00");
+  const [localPirGreetingEnd, setLocalPirGreetingEnd] = useState(props.pirGreetingEnd || "22:00");
+
+  useEffect(() => {
+    setLocalPirGreetingTrack(props.pirGreetingTrack || 1);
+    setLocalPirGreetingStart(props.pirGreetingStart || "07:00");
+    setLocalPirGreetingEnd(props.pirGreetingEnd || "22:00");
+  }, [props.pirGreetingTrack, props.pirGreetingStart, props.pirGreetingEnd]);
+
+  const dynamicTracks = useMemo(() => {
+    const list = [...audioTracks];
+    const maxTrack = props.dfTrackCount || 7;
+    for (let i = 8; i <= maxTrack; i++) {
+      list.push({
+        id: i,
+        name: `Track ${i.toString().padStart(3, "0")}.mp3`,
+        use: "Custom Audio SD Card"
+      });
+    }
+    return list;
+  }, [props.dfTrackCount]);
 
   async function sendAlarm(alarm: Alarm) {
     setSendingAlarmId(alarm.id);
@@ -990,6 +1143,142 @@ function AlarmsPage(props: PageProps) {
         </div>
       </Panel>
 
+      <Panel title="Jadwal Stop Kontak (Relay)" subtitle="Jadwal otomatis menyalakan dan mematikan relay/stop kontak berdasarkan rentang waktu.">
+        <div className="grid gap-3">
+          {localSchedules.length === 0 ? (
+            <p className="py-4 text-center text-sm font-semibold text-slate-500">Belum ada jadwal. Tambahkan jadwal baru di bawah.</p>
+          ) : (
+            localSchedules.map((sch) => (
+              <div key={sch.id} className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 xl:grid-cols-[150px_160px_160px_90px_90px_90px] xl:items-center">
+                <div>
+                  <p className="text-sm font-black text-slate-950">ID: {sch.id}</p>
+                  <p className="text-xs text-slate-500">Asia/Jakarta</p>
+                </div>
+                
+                <select 
+                  className="h-11 rounded-xl border border-slate-200 px-3 text-sm font-semibold outline-none focus:border-blue-400" 
+                  value={sch.relay} 
+                  onChange={(event) => updateLocalSch(sch.id, "relay", Number(event.target.value))}
+                >
+                  <option value={1}>Stop Kontak 1</option>
+                  <option value={2}>Stop Kontak 2</option>
+                </select>
+
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold text-slate-500">ON</span>
+                  <input 
+                    className="h-11 w-full rounded-xl border border-slate-200 px-3 text-sm outline-none focus:border-blue-400" 
+                    type="time" 
+                    value={sch.start} 
+                    onChange={(event) => updateLocalSch(sch.id, "start", event.target.value)} 
+                  />
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold text-slate-500">OFF</span>
+                  <input 
+                    className="h-11 w-full rounded-xl border border-slate-200 px-3 text-sm outline-none focus:border-blue-400" 
+                    type="time" 
+                    value={sch.end} 
+                    onChange={(event) => updateLocalSch(sch.id, "end", event.target.value)} 
+                  />
+                </div>
+
+                <Switch checked={sch.enabled} onChange={() => updateLocalSch(sch.id, "enabled", !sch.enabled)} />
+
+                <div className="flex gap-2">
+                  <button
+                    className="h-11 rounded-xl bg-blue-600 px-4 text-sm font-black text-white transition hover:bg-blue-700 w-full"
+                    onClick={() => props.saveRelaySchedule(sch)}
+                    type="button"
+                  >
+                    Simpan
+                  </button>
+                  <button
+                    className="h-11 rounded-xl bg-red-100 text-red-600 px-4 text-sm font-black transition hover:bg-red-200"
+                    onClick={() => props.deleteRelaySchedule(sch.id)}
+                    type="button"
+                  >
+                    Hapus
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+          
+          <button
+            className="mt-2 h-11 w-full md:w-auto md:px-6 rounded-xl border-2 border-dashed border-slate-300 text-slate-600 hover:border-blue-500 hover:text-blue-600 transition text-sm font-black"
+            onClick={addScheduleRow}
+            type="button"
+          >
+            + Tambah Jadwal Baru
+          </button>
+        </div>
+      </Panel>
+
+      <Panel title="Greeting Wakeup (PIR)" subtitle="Atur pemutaran greeting suara otomatis di DFPlayer saat mendeteksi gerakan.">
+        <div className="grid gap-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+          <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4 lg:items-center">
+            
+            <div className="grid gap-1">
+              <span className="text-xs font-bold text-slate-500">Aktifkan Greeting PIR</span>
+              <div className="flex h-11 items-center">
+                <Switch checked={props.pirGreetingEnabled} onChange={() => props.updatePirGreetingConfig(!props.pirGreetingEnabled, localPirGreetingTrack, localPirGreetingStart, localPirGreetingEnd)} />
+              </div>
+            </div>
+
+            <div className="grid gap-1">
+              <span className="text-xs font-bold text-slate-500">Jalur Suara (Track DFPlayer)</span>
+              <select 
+                className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold outline-none focus:border-blue-400"
+                value={localPirGreetingTrack} 
+                onChange={(event) => setLocalPirGreetingTrack(Number(event.target.value))}
+              >
+                {dynamicTracks.map((track) => (
+                  <option key={track.id} value={track.id}>
+                    {track.id.toString().padStart(3, "0")} - {track.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="grid gap-1">
+              <span className="text-xs font-bold text-slate-500">Jam Mulai Sapa</span>
+              <input 
+                className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400"
+                type="time" 
+                value={localPirGreetingStart} 
+                onChange={(event) => setLocalPirGreetingStart(event.target.value)} 
+              />
+            </div>
+
+            <div className="grid gap-1">
+              <span className="text-xs font-bold text-slate-500">Jam Selesai Sapa</span>
+              <input 
+                className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400"
+                type="time" 
+                value={localPirGreetingEnd} 
+                onChange={(event) => setLocalPirGreetingEnd(event.target.value)} 
+              />
+            </div>
+
+          </div>
+
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between border-t border-slate-200 pt-3">
+            <span className="text-xs font-semibold text-slate-500">
+              * Cooldown otomatis 1 menit diterapkan setelah greeting diputar.
+            </span>
+            <button
+              className="h-11 rounded-xl bg-blue-600 px-6 text-sm font-black text-white transition hover:bg-blue-700"
+              onClick={() => props.updatePirGreetingConfig(props.pirGreetingEnabled, localPirGreetingTrack, localPirGreetingStart, localPirGreetingEnd)}
+              type="button"
+            >
+              Simpan Pengaturan PIR Greeting
+            </button>
+          </div>
+        </div>
+      </Panel>
+
       <Panel title="DFPlayer Audio Map" subtitle="Pilih file MP3 ini langsung pada setiap baris alarm jadwal.">
         <AudioMap />
       </Panel>
@@ -1096,6 +1385,14 @@ function parseTelemetry(message: string): TelemetryPayload {
       rtcReady: readBoolean(payload.rtcReady),
       lcdReady: readBoolean(payload.lcdReady),
       dfPlayerReady: readBoolean(payload.dfPlayerReady),
+      pirEnabled: readBoolean(payload.pirEnabled),
+      sleepModeEnabled: readBoolean(payload.sleepModeEnabled),
+      pirGreetingEnabled: readBoolean(payload.pirGreetingEnabled),
+      pirGreetingTrack: readNumber(payload.pirGreetingTrack),
+      pirGreetingStart: typeof payload.pirGreetingStart === "string" ? payload.pirGreetingStart : undefined,
+      pirGreetingEnd: typeof payload.pirGreetingEnd === "string" ? payload.pirGreetingEnd : undefined,
+      dfTrackCount: readNumber(payload.dfTrackCount),
+      relaySchedules: Array.isArray(payload.relaySchedules) ? payload.relaySchedules : undefined,
     };
   } catch {
     return {};

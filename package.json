@@ -10,7 +10,8 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:generate": "prisma generate",
     "prisma:push": "prisma db push",
-    "worker": "tsx mqtt/worker.ts"
+    "worker": "tsx mqtt/worker.ts",
+    "worker:mqtt": "tsx mqtt/worker.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.4.0",
