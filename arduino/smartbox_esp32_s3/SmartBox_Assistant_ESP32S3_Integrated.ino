@@ -2003,12 +2003,14 @@ void loop() {
                      obstacleNear);
   }
 
-  // Send HTTP Telemetry to Vercel every 60s, or instantly when a warning is
+  // Send HTTP Telemetry to Vercel every 15s, or instantly when a warning is
   // triggered
+  static bool firstHttpSend = true;
   static bool lastHttpWarningState = false;
   bool currentHttpWarningState = gasWarning || tempWarning;
-  if ((millis() - lastHttpTelemetryAt >= 60000) ||
+  if (firstHttpSend || (millis() - lastHttpTelemetryAt >= 15000) ||
       (currentHttpWarningState && !lastHttpWarningState)) {
+    firstHttpSend = false;
     lastHttpTelemetryAt = millis();
     sendTelemetryHttp(gasRaw, tempC, gasWarning, tempWarning, pirDetected,
                       obstacleNear);

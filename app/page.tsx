@@ -359,13 +359,16 @@ export default function Home() {
     loadAlarms();
   }, [isAuthenticated]);
 
-  // Fetch telemetry history from Neon DB on mount
+  // Fetch telemetry history from Neon DB on mount and poll every 8 seconds
   useEffect(() => {
     if (!isAuthenticated) return;
+
+    let active = true;
+
     async function loadTelemetryHistory() {
       try {
         const response = await fetch("/api/telemetry");
-        if (response.ok) {
+        if (response.ok && active) {
           const data = await response.json();
           if (Array.isArray(data) && data.length > 0) {
             const history = data.map((item: any) => item.temperatureC || 28);
@@ -375,7 +378,48 @@ export default function Home() {
             if (latest) {
               if (typeof latest.temperatureC === "number") setTempEstimate(latest.temperatureC);
               if (typeof latest.gasRaw === "number") setGasEstimate(latest.gasRaw);
-              setTelemetrySource("Neon DB Sync");
+              
+              const lastTime = new Date(latest.createdAt).getTime();
+              const now = Date.now();
+              // If the database record is newer than 90 seconds, we count the device as active
+              const isRecent = (now - lastTime) < 90000;
+              
+              if (isRecent) {
+                setTelemetrySource((prev) => {
+                  if (prev !== "ESP32 telemetry") {
+                    return "Neon DB Sync";
+                  }
+                  return prev;
+                });
+                setDeviceStatus((current) => {
+                  if (!current.esp32) {
+                    return {
+                      ...current,
+                      esp32: true,
+                      rtc: latest.tempEnabled ?? true,
+                      lcd: true,
+                      dfPlayer: true,
+                    };
+                  }
+                  return current;
+                });
+              } else {
+                setTelemetrySource((prev) => {
+                  if (prev === "Neon DB Sync") {
+                    return "Offline";
+                  }
+                  return prev;
+                });
+                setDeviceStatus((current) => {
+                  if (current.esp32 && telemetrySource === "Neon DB Sync") {
+                    return {
+                      ...current,
+                      esp32: false,
+                    };
+                  }
+                  return current;
+                });
+              }
             }
           }
         }
@@ -383,8 +427,15 @@ export default function Home() {
         console.error("Gagal memuat riwayat telemetry:", err);
       }
     }
+
     loadTelemetryHistory();
-  }, [isAuthenticated]);
+    const interval = setInterval(loadTelemetryHistory, 8000);
+
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [isAuthenticated, telemetrySource]);
 
   // Web Audio API browser warning sound
   useEffect(() => {
