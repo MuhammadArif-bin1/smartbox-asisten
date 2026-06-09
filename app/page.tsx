@@ -124,7 +124,7 @@ const relayControls: Array<{ id: RelayId; label: string; detail: string; pin: st
 const pinGroups = boardPins.groups;
 
 const temperatureSeries = [28, 28.6, 29.1, 30, 30.5, 30.2, 29.4, 28.8, 28.2, 27.6, 26.8, 25.8, 25.4, 25.6, 26.4, 27.2, 27.8, 27.2];
-const TEMP_WARNING_C = 37;
+const TEMP_WARNING_C = 35;
 const GAS_WARNING_RAW = 1800;
 const BOARD_LED_PIN = boardPins.boardLed;
 const BOARD_LED_DURATION_SECONDS = 10;
@@ -132,6 +132,7 @@ const DEFAULT_MQTT_WS_URL = "ws://192.168.1.12:9001";
 const MQTT_BROKER_LABEL = "mqtt://192.168.1.12:1883";
 const DASHBOARD_PASSWORD = process.env.NEXT_PUBLIC_DASHBOARD_PASSWORD || "smartbox123";
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 async function sendMqttCommand(topic: string, payload: Record<string, unknown>) {
   const response = await fetch("/api/mqtt", {
     method: "POST",
@@ -145,6 +146,21 @@ async function sendMqttCommand(topic: string, payload: Record<string, unknown>) 
 
   return response.json();
 }
+
+async function sendDeviceCommandApi(deviceId: string, type: string, payload: Record<string, unknown>) {
+  const response = await fetch("/api/device/command", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ deviceId, type, payload }),
+  });
+
+  if (!response.ok) {
+    throw new Error("Gagal mengirim command ke API");
+  }
+
+  return response.json();
+}
+
 
 export default function Home() {
   const [activeView, setActiveView] = useState<ViewId>("dashboard");
@@ -186,12 +202,17 @@ export default function Home() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [passwordInput, setPasswordInput] = useState("");
   const [loginError, setLoginError] = useState("");
+  const [events, setEvents] = useState<Array<{ id: string; type: string; message: string; createdAt: string; level: string }>>([]);
 
   const activeAlarms = useMemo(() => alarms.filter((alarm) => alarm.enabled).length, [alarms]);
 
   useEffect(() => {
-    setIsAuthenticated(false);
-    setAuthChecked(true);
+    const isAuth = typeof window !== "undefined" && window.localStorage.getItem("smartbox-authenticated") === "true";
+    const timer = setTimeout(() => {
+      setIsAuthenticated(isAuth);
+      setAuthChecked(true);
+    }, 0);
+    return () => clearTimeout(timer);
   }, []);
 
   useEffect(() => {
@@ -200,6 +221,7 @@ export default function Home() {
     let client: import("mqtt").MqttClient | undefined;
     let cancelled = false;
     const wsUrl = process.env.NEXT_PUBLIC_MQTT_WS_URL || DEFAULT_MQTT_WS_URL;
+    const deviceId = process.env.NEXT_PUBLIC_DEVICE_ID || "smartbox-001";
 
     import("mqtt")
       .then(({ connect }) => {
@@ -216,29 +238,38 @@ export default function Home() {
 
         client.on("connect", () => {
           setMqttRealtime("online");
-          client?.subscribe("smartbox/telemetry");
-          client?.subscribe("smartbox/status");
+          client?.subscribe(`smartbox/${deviceId}/telemetry`);
+          client?.subscribe(`smartbox/${deviceId}/status`);
+          client?.subscribe(`smartbox/${deviceId}/event`);
+          client?.subscribe(`smartbox/${deviceId}/ack`);
         });
 
         client.on("message", (topic, payload) => {
-          if (topic === "smartbox/status") {
-            try {
-              const data = JSON.parse(payload.toString()) as { online?: boolean };
-              const isOnline = data.online === true;
-              setDeviceStatus((current) => ({
-                ...current,
-                esp32: isOnline,
-                rtc: isOnline ? current.rtc : false,
-                lcd: isOnline ? current.lcd : false,
-                dfPlayer: isOnline ? current.dfPlayer : false,
-              }));
-              if (!isOnline) {
-                setTelemetrySource("Offline");
-              }
-            } catch (e) {
-              console.error(e);
+          const topicStr = topic.toString();
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          let data: any;
+          try {
+            data = JSON.parse(payload.toString());
+          } catch (e) {
+            console.error("Failed to parse MQTT message JSON:", e);
+            return;
+          }
+
+          if (topicStr.endsWith("/status")) {
+            const isOnline = data.online === true;
+            setDeviceStatus((current) => ({
+              ...current,
+              esp32: isOnline,
+              rtc: isOnline ? current.rtc : false,
+              lcd: isOnline ? current.lcd : false,
+              dfPlayer: isOnline ? current.dfPlayer : false,
+            }));
+            if (!isOnline) {
+              setTelemetrySource("Offline");
             }
-          } else if (topic === "smartbox/telemetry") {
+          } 
+          
+          else if (topicStr.endsWith("/telemetry")) {
             const telemetry = parseTelemetry(payload.toString());
             setLastTelemetryTime(Date.now());
             setTelemetrySource("ESP32 telemetry");
@@ -266,6 +297,30 @@ export default function Home() {
             if (telemetry.pirGreetingEnd) setPirGreetingEnd(telemetry.pirGreetingEnd);
             if (typeof telemetry.dfTrackCount === "number") setDfTrackCount(telemetry.dfTrackCount);
             if (Array.isArray(telemetry.relaySchedules)) setRelaySchedules(telemetry.relaySchedules);
+
+            // Update relay states and buzzer from telemetry
+            setRelayState({
+              socket1: data.relay1 === true,
+              socket2: data.relay2 === true,
+              ampli: data.bluetoothRelay === true || data.bluetoothAudio === true,
+            });
+            setBuzzerEnabled(data.buzzer === true);
+          }
+          
+          else if (topicStr.endsWith("/event")) {
+            const newEvent = {
+              id: data.id || Math.random().toString(),
+              type: data.type || "event",
+              message: data.message || "",
+              createdAt: data.createdAt || new Date().toISOString(),
+              level: data.level || "INFO",
+            };
+            setEvents((prev) => [newEvent, ...prev.slice(0, 19)]);
+          }
+          
+          else if (topicStr.endsWith("/ack")) {
+            console.log("[MQTT Client] ACK received:", data);
+            notify(`ACK: ${data.message || "Command diproses"}`, data.ok ? "success" : "error");
           }
         });
 
@@ -346,7 +401,11 @@ export default function Home() {
     const savedSchedules = window.localStorage.getItem("smartbox-relay-schedules");
     if (savedSchedules) {
       try {
-        setRelaySchedules(JSON.parse(savedSchedules));
+        const parsed = JSON.parse(savedSchedules);
+        const timer = setTimeout(() => {
+          setRelaySchedules(parsed);
+        }, 0);
+        return () => clearTimeout(timer);
       } catch (e) {
         console.error(e);
       }
@@ -367,7 +426,7 @@ export default function Home() {
         if (response.ok) {
           const data = await response.json();
           if (Array.isArray(data) && data.length > 0) {
-            const mapped = data.map((item: any) => ({
+            const mapped = data.map((item: { id: string; label: string; time: string; greeting: string; dfTrack: number; enabled: boolean }) => ({
               id: item.id,
               label: item.label,
               time: item.time,
@@ -385,34 +444,52 @@ export default function Home() {
     loadAlarms();
   }, [isAuthenticated]);
 
-  // Fetch telemetry history from Neon DB on mount and poll every 8 seconds
+  // Fetch telemetry history from Neon DB (SensorReading table) on mount and poll every 8 seconds
   useEffect(() => {
     if (!isAuthenticated) return;
 
     let active = true;
+    const deviceId = process.env.NEXT_PUBLIC_DEVICE_ID || "smartbox-001";
 
     async function loadTelemetryHistory() {
+      interface ReadingData {
+        temperature?: number;
+        gasRaw?: number;
+        gasSensorEnabled?: boolean;
+        pirDetected?: boolean;
+        relay1?: boolean;
+        relay2?: boolean;
+        bluetoothRelay?: boolean;
+        buzzer?: boolean;
+        createdAt: string;
+      }
       try {
-        const response = await fetch("/api/telemetry");
+        const response = await fetch(`/api/readings?deviceId=${deviceId}&limit=24`);
         if (response.ok && active) {
           const data = await response.json();
           if (Array.isArray(data) && data.length > 0) {
-            const history = data.map((item: any) => item.temperatureC || 28);
+            const history = data.map((item: ReadingData) => item.temperature || 28);
             setTempHistory(history);
             
-            const latest = data[data.length - 1];
+            const latest = data[data.length - 1] as ReadingData | undefined;
             if (latest) {
-              if (typeof latest.temperatureC === "number") setTempEstimate(latest.temperatureC);
+              if (typeof latest.temperature === "number") setTempEstimate(latest.temperature);
               if (typeof latest.gasRaw === "number") setGasEstimate(latest.gasRaw);
-              if (typeof latest.gasEnabled === "boolean") setGasEnabled(latest.gasEnabled);
-              if (typeof latest.tempEnabled === "boolean") setTemperatureEnabled(latest.tempEnabled);
-              if (typeof latest.flameDetected === "boolean") setFlameDetected(latest.flameDetected);
+              if (typeof latest.gasSensorEnabled === "boolean") setGasEnabled(latest.gasSensorEnabled);
+              // In our new schema, DS3231 temperature enabled matches whether rtcReady was true
+              setTemperatureEnabled(true);
               if (typeof latest.pirDetected === "boolean") setPirDetected(latest.pirDetected);
-              if (typeof latest.obstacleNear === "boolean") setObstacleNear(latest.obstacleNear);
               
+              setRelayState({
+                socket1: latest.relay1 === true,
+                socket2: latest.relay2 === true,
+                ampli: latest.bluetoothRelay === true,
+              });
+              setBuzzerEnabled(latest.buzzer === true);
+
               const lastTime = new Date(latest.createdAt).getTime();
               const now = Date.now();
-              // If the database record is newer than 90 seconds, we count the device as active
+              // If the database record is newer than 90 seconds, count device active
               const isRecent = (now - lastTime) < 90000;
               
               if (isRecent) {
@@ -427,7 +504,7 @@ export default function Home() {
                     return {
                       ...current,
                       esp32: true,
-                      rtc: latest.tempEnabled ?? true,
+                      rtc: true,
                       lcd: true,
                       dfPlayer: true,
                     };
@@ -455,7 +532,7 @@ export default function Home() {
           }
         }
       } catch (err) {
-        console.error("Gagal memuat riwayat telemetry:", err);
+        console.error("Gagal memuat riwayat readings:", err);
       }
     }
 
@@ -468,6 +545,36 @@ export default function Home() {
     };
   }, [isAuthenticated, telemetrySource]);
 
+  // Fetch EventLogs from Neon DB on mount and poll every 8 seconds
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    let active = true;
+    const deviceId = process.env.NEXT_PUBLIC_DEVICE_ID || "smartbox-001";
+
+    async function loadEventsHistory() {
+      try {
+        const response = await fetch(`/api/events?deviceId=${deviceId}&limit=15`);
+        if (response.ok && active) {
+          const data = await response.json();
+          if (Array.isArray(data)) {
+            setEvents(data);
+          }
+        }
+      } catch (err) {
+        console.error("Gagal memuat log event:", err);
+      }
+    }
+
+    loadEventsHistory();
+    const interval = setInterval(loadEventsHistory, 8000);
+
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [isAuthenticated]);
+
   // Web Audio API browser warning sound
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -479,6 +586,7 @@ export default function Home() {
 
     function playBeep() {
       try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
         audioCtx = new AudioContextClass();
         
@@ -516,6 +624,7 @@ export default function Home() {
   useEffect(() => {
     if (!isAuthenticated) return;
     if (telemetrySource === "Offline" || !temperatureEnabled) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setTempHistory((current) => [...current.slice(1), visibleTempEstimate]);
   }, [isAuthenticated, telemetrySource, temperatureEnabled, visibleTempEstimate]);
 
@@ -523,19 +632,51 @@ export default function Home() {
     setToast({ id: Date.now(), message, tone });
   }
 
-  async function publish(topic: string, payload: Record<string, unknown>, label: string) {
+  async function sendDeviceCommand(type: string, payload: Record<string, unknown>, label: string) {
     setStatus("sending");
     setLastCommand(label);
     try {
-      await sendMqttCommand(topic, payload);
+      const devId = process.env.NEXT_PUBLIC_DEVICE_ID || "smartbox-001";
+      await sendDeviceCommandApi(devId, type, payload);
       setStatus("sent");
       notify(`${label} berhasil dikirim`, "success");
       return true;
     } catch {
       setStatus("error");
-      notify(`${label} gagal dikirim. Periksa koneksi MQTT.`, "error");
+      notify(`${label} gagal dikirim. Periksa koneksi API/MQTT.`, "error");
       return false;
     }
+  }
+
+  async function publish(topic: string, payload: Record<string, unknown>, label: string) {
+    // Backwards compatible wrapper: maps legacy publish calls to new API command endpoint
+    let type = "unknown";
+    if (topic.includes("alarm")) {
+      type = "alarm.set";
+    } else if (topic.includes("relay/set")) {
+      // Map to correct relay.set format
+      const isAmpli = payload.relay === "bluetooth_ampli";
+      if (isAmpli) {
+        return sendDeviceCommand("bluetooth.set", { state: payload.enabled }, label);
+      } else {
+        const relayNum = payload.relay === "socket_2" ? 2 : 1;
+        return sendDeviceCommand("relay.set", { relay: relayNum, state: payload.enabled }, label);
+      }
+    } else if (topic.includes("buzzer")) {
+      type = "buzzer.set";
+      return sendDeviceCommand(type, { state: payload.enabled }, label);
+    } else if (topic.includes("voice")) {
+      type = "voice.mode";
+      return sendDeviceCommand(type, { enabled: payload.enabled }, label);
+    } else if (topic.includes("sensor/gas")) {
+      type = "gasSensor.set";
+      return sendDeviceCommand(type, { enabled: payload.enabled }, label);
+    } else if (topic.includes("sensor/temperature")) {
+      type = "tempSensor.set";
+      return sendDeviceCommand(type, { enabled: payload.enabled }, label);
+    }
+
+    return sendDeviceCommand(type, payload, label);
   }
 
   function updateAlarm(id: string, field: keyof Alarm, value: string | number | boolean) {
@@ -546,35 +687,38 @@ export default function Home() {
     const next = !gasEnabled;
     setGasEnabled(next);
     if (next && gasEstimate === 0) setGasEstimate(720);
-    publish("smartbox/sensor/gas", { enabled: next, pin: boardPins.gas, estimateRaw: next ? gasEstimate : 0, threshold: GAS_WARNING_RAW }, `Sensor gas ${next ? "aktif" : "mati"}`);
+    sendDeviceCommand("gasSensor.set", { enabled: next }, `Sensor gas ${next ? "aktif" : "mati"}`);
   }
 
   function toggleTemperature() {
     const next = !temperatureEnabled;
     setTemperatureEnabled(next);
-    if (next && tempEstimate === 0) setTempEstimate(37);
-    publish("smartbox/sensor/temperature", { enabled: next, estimateC: next ? tempEstimate : 0, thresholdC: TEMP_WARNING_C }, `Sensor suhu ${next ? "aktif" : "mati"}`);
+    if (next && tempEstimate === 0) setTempEstimate(35);
+    sendDeviceCommand("tempSensor.set", { enabled: next }, `Sensor suhu ${next ? "aktif" : "mati"}`);
   }
 
   function toggleRelay(relayId: RelayId) {
-    const relay = relayControls.find((item) => item.id === relayId);
     const next = !relayState[relayId];
     setRelayState((current) => ({ ...current, [relayId]: next }));
-    publish("smartbox/relay/set", { relay: relay?.mqttKey ?? relayId, enabled: next, pin: relay?.pin }, `${relay?.label ?? relayId} ${next ? "aktif" : "mati"}`);
+    
+    if (relayId === "ampli") {
+      sendDeviceCommand("bluetooth.set", { state: next }, `Relay Bluetooth ${next ? "aktif" : "mati"}`);
+    } else {
+      const relayNum = relayId === "socket2" ? 2 : 1;
+      sendDeviceCommand("relay.set", { relay: relayNum, state: next }, `Stop Kontak ${relayNum} ${next ? "aktif" : "mati"}`);
+    }
   }
 
   function togglePir() {
     const next = !pirEnabled;
     setPirEnabled(next);
-    const cmdTopic = `smartbox/${process.env.NEXT_PUBLIC_DEVICE_ID || 'smartbox-001'}/cmd`;
-    publish(cmdTopic, { type: "pirSensor.set", payload: { enabled: next } }, `Sensor PIR ${next ? "aktif" : "mati"}`);
+    sendDeviceCommand("pirSensor.set", { enabled: next }, `Sensor PIR ${next ? "aktif" : "mati"}`);
   }
 
   function toggleSleepMode() {
     const next = !sleepModeEnabled;
     setSleepModeEnabled(next);
-    const cmdTopic = `smartbox/${process.env.NEXT_PUBLIC_DEVICE_ID || 'smartbox-001'}/cmd`;
-    publish(cmdTopic, { type: "sleepMode.set", payload: { enabled: next } }, `Sleep Mode ${next ? "aktif" : "mati"}`);
+    sendDeviceCommand("sleepMode.set", { enabled: next }, `Sleep Mode ${next ? "aktif" : "mati"}`);
   }
 
   function updatePirGreetingConfig(enabled: boolean, track: number, start: string, end: string) {
@@ -582,11 +726,7 @@ export default function Home() {
     setPirGreetingTrack(track);
     setPirGreetingStart(start);
     setPirGreetingEnd(end);
-    const cmdTopic = `smartbox/${process.env.NEXT_PUBLIC_DEVICE_ID || 'smartbox-001'}/cmd`;
-    publish(cmdTopic, {
-      type: "pirGreeting.set",
-      payload: { enabled, track, start, end }
-    }, "Update PIR Greeting");
+    sendDeviceCommand("pirGreeting.set", { enabled, track, start, end }, "Update PIR Greeting");
   }
 
   function saveRelaySchedule(sch: { id: string; relay: number; start: string; end: string; enabled: boolean }) {
@@ -601,20 +741,12 @@ export default function Home() {
       return [...current, { id: sch.id, relay: sch.relay, enabled: sch.enabled, timeRange }];
     });
 
-    const cmdTopic = `smartbox/${process.env.NEXT_PUBLIC_DEVICE_ID || 'smartbox-001'}/cmd`;
-    publish(cmdTopic, {
-      type: "relaySchedule.set",
-      payload: { id: sch.id, relay: sch.relay, start: sch.start, end: sch.end, enabled: sch.enabled }
-    }, `Simpan jadwal ${sch.id}`);
+    sendDeviceCommand("relaySchedule.set", { id: sch.id, relay: sch.relay, start: sch.start, end: sch.end, enabled: sch.enabled }, `Simpan jadwal ${sch.id}`);
   }
 
   function deleteRelaySchedule(id: string) {
     setRelaySchedules(current => current.filter(s => s.id !== id));
-    const cmdTopic = `smartbox/${process.env.NEXT_PUBLIC_DEVICE_ID || 'smartbox-001'}/cmd`;
-    publish(cmdTopic, {
-      type: "relaySchedule.delete",
-      payload: { id }
-    }, `Hapus jadwal ${id}`);
+    sendDeviceCommand("relaySchedule.delete", { id }, `Hapus jadwal ${id}`);
   }
 
   function submitLogin(event: FormEvent<HTMLFormElement>) {
@@ -681,6 +813,8 @@ export default function Home() {
     flameDetected,
     pirDetected,
     obstacleNear,
+    sendDeviceCommand,
+    events,
   };
 
   if (!authChecked) {
@@ -763,6 +897,8 @@ type PageProps = {
   flameDetected: boolean;
   pirDetected: boolean;
   obstacleNear: boolean;
+  sendDeviceCommand: (type: string, payload: Record<string, unknown>, label: string) => Promise<boolean>;
+  events: Array<{ id: string; type: string; message: string; createdAt: string; level: string }>;
 };
 
 function Sidebar({ activeView, onChange }: { activeView: ViewId; onChange: (view: ViewId) => void }) {
@@ -923,9 +1059,76 @@ function DashboardPage(props: PageProps) {
     <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
       <div className="grid gap-5">
         <StatsGrid {...props} />
+        
+        {/* Quick Control Panel */}
+        <Panel title="Kontrol Cepat Real-time" subtitle="Kirim perintah langsung ke perangkat ESP32-S3 via database-tracked API.">
+          <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
+            <QuickControlRow 
+              label="Sensor Gas" 
+              detail={props.gasEnabled ? "Sensor Aktif" : "Sensor Nonaktif"} 
+              enabled={props.gasEnabled} 
+              onToggle={props.toggleGas} 
+            />
+            <QuickControlRow 
+              label="Alarm Buzzer" 
+              detail={props.buzzerEnabled ? "Buzzer ON" : "Buzzer OFF"} 
+              enabled={props.buzzerEnabled} 
+              onToggle={() => {
+                const next = !props.buzzerEnabled;
+                props.setBuzzerEnabled(next);
+                props.sendDeviceCommand("buzzer.set", { state: next }, `Buzzer ${next ? "aktif" : "mati"}`);
+              }} 
+            />
+            <QuickControlRow 
+              label="Relay Bluetooth" 
+              detail={props.relayState.ampli ? "Relay ON" : "Relay OFF"} 
+              enabled={props.relayState.ampli} 
+              onToggle={() => props.toggleRelay("ampli")} 
+            />
+            
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 flex flex-col justify-between min-h-[110px]">
+              <div>
+                <p className="text-sm font-bold text-slate-900">Test Suara DFPlayer</p>
+                <p className="text-xs text-slate-500">Pilih track audio.</p>
+              </div>
+              <div className="mt-3 flex gap-2">
+                <select 
+                  id="dashboard-dfplayer-track"
+                  className="h-9 rounded-xl border border-slate-200 bg-white px-2 text-xs font-semibold outline-none flex-1"
+                  defaultValue={5}
+                >
+                  <option value={1}>001 - BLE Song</option>
+                  <option value={5}>005 - Asap Terdeteksi</option>
+                  <option value={6}>006 - Suhu Tinggi</option>
+                  <option value={7}>007 - Sistem Mati</option>
+                  <option value={8}>008 - Listening Mode</option>
+                </select>
+                <button
+                  onClick={() => {
+                    const select = document.getElementById("dashboard-dfplayer-track") as HTMLSelectElement;
+                    const track = Number(select?.value || 5);
+                    props.sendDeviceCommand("dfplayer.play", { track }, `DFPlayer Play Track ${track}`);
+                  }}
+                  className="h-9 rounded-xl bg-blue-600 px-3 text-xs font-bold text-white transition hover:bg-blue-700"
+                  type="button"
+                >
+                  Play
+                </button>
+                <button
+                  onClick={() => props.sendDeviceCommand("dfplayer.stop", {}, "DFPlayer Stop")}
+                  className="h-9 rounded-xl bg-red-100 text-red-600 px-3 text-xs font-bold transition hover:bg-red-200"
+                  type="button"
+                >
+                  Stop
+                </button>
+              </div>
+            </div>
+          </div>
+        </Panel>
+
         <div className="grid gap-5 2xl:grid-cols-[minmax(0,1.25fr)_minmax(360px,0.75fr)]">
           <Panel title="Grafik Suhu Ruangan" subtitle="Ringkasan suhu 24 jam terakhir.">
-            <TemperatureChart value={props.visibleTempEstimate} />
+            <TemperatureChart value={props.visibleTempEstimate} series={props.tempHistory} />
           </Panel>
           <Panel title="Ringkasan Sistem" subtitle="Status cepat tanpa kontrol detail.">
             <div className="grid gap-3">
@@ -937,6 +1140,20 @@ function DashboardPage(props: PageProps) {
         </div>
       </div>
       <RightRail {...props} />
+    </div>
+  );
+}
+
+function QuickControlRow({ label, detail, enabled, onToggle }: { label: string; detail: string; enabled: boolean; onToggle: () => void }) {
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-4 flex flex-col justify-between min-h-[110px]">
+      <div>
+        <p className="text-sm font-bold text-slate-900">{label}</p>
+        <p className="mt-1 text-xs text-slate-500">{detail}</p>
+      </div>
+      <div className="mt-3 flex justify-end">
+        <Switch checked={enabled} onChange={onToggle} />
+      </div>
     </div>
   );
 }
@@ -1068,10 +1285,14 @@ function AlarmsPage(props: PageProps) {
           enabled: s.enabled
         };
       });
-      setLocalSchedules(mapped);
+      const timer = setTimeout(() => {
+        setLocalSchedules(mapped);
+      }, 0);
+      return () => clearTimeout(timer);
     }
   }, [props.relaySchedules]);
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function updateLocalSch(id: string, field: string, value: any) {
     setLocalSchedules(current => current.map(s => s.id === id ? { ...s, [field]: value } : s));
   }
@@ -1093,9 +1314,12 @@ function AlarmsPage(props: PageProps) {
   const [localPirGreetingEnd, setLocalPirGreetingEnd] = useState(props.pirGreetingEnd || "22:00");
 
   useEffect(() => {
-    setLocalPirGreetingTrack(props.pirGreetingTrack || 1);
-    setLocalPirGreetingStart(props.pirGreetingStart || "07:00");
-    setLocalPirGreetingEnd(props.pirGreetingEnd || "22:00");
+    const timer = setTimeout(() => {
+      setLocalPirGreetingTrack(props.pirGreetingTrack || 1);
+      setLocalPirGreetingStart(props.pirGreetingStart || "07:00");
+      setLocalPirGreetingEnd(props.pirGreetingEnd || "22:00");
+    }, 0);
+    return () => clearTimeout(timer);
   }, [props.pirGreetingTrack, props.pirGreetingStart, props.pirGreetingEnd]);
 
   const dynamicTracks = useMemo(() => {
@@ -1391,18 +1615,29 @@ function AlarmsPage(props: PageProps) {
 }
 
 function HistoryPage(props: PageProps) {
-  const logs = [
-    `Suhu ruangan: ${props.visibleTempEstimate.toFixed(1)} C`,
-    `Kadar gas: ${props.gasPpm} PPM`,
-    `MQTT: ${props.mqttOnline ? "Terhubung" : "Offline"}`,
-    `Command terakhir: ${props.lastCommand}`,
-    `Telemetry: ${props.telemetrySource}`,
-  ];
-
   return (
-    <Panel title="Riwayat Aktivitas" subtitle="Log ringkas status dan command terakhir.">
+    <Panel title="Riwayat Aktivitas (Neon DB)" subtitle="Semua event log tersinkronisasi dari database PostgreSQL Neon.">
       <div className="grid gap-3">
-        {logs.map((log, index) => <Activity key={log} label={log} time={index === 0 ? "baru saja" : props.status} />)}
+        {props.events.length === 0 ? (
+          <p className="text-sm font-semibold text-slate-500 py-4 text-center">Belum ada riwayat tercatat.</p>
+        ) : (
+          props.events.map((evt) => (
+            <div key={evt.id} className="grid grid-cols-[1fr_auto] gap-3 rounded-2xl bg-white border border-slate-200 p-4 text-sm shadow-sm">
+              <div>
+                <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-bold mr-2 ${
+                  evt.level === "WARNING" || evt.level === "CRITICAL" ? "bg-red-50 text-red-600 border border-red-100" : "bg-blue-50 text-blue-600 border border-blue-100"
+                }`}>
+                  {evt.level}
+                </span>
+                <span className="font-bold text-slate-900">{evt.type}</span>
+                <p className="mt-1 text-slate-600">{evt.message}</p>
+              </div>
+              <span className="text-xs font-bold text-slate-400">
+                {new Date(evt.createdAt).toLocaleString("id-ID", { dateStyle: "short", timeStyle: "short" })}
+              </span>
+            </div>
+          ))
+        )}
       </div>
     </Panel>
   );
@@ -1481,12 +1716,19 @@ function RightRail(props: PageProps) {
           <p className="mt-1">Kondisi ruangan saat ini {props.tempState.toLowerCase()}, gas {props.gasState.toLowerCase()}, dan MQTT {props.mqttOnline ? "terhubung" : "offline"}.</p>
         </div>
       </Panel>
-      <Panel title="Aktivitas Terbaru" subtitle="Log ringkas sistem.">
+      <Panel title="Aktivitas Terbaru (MQTT/DB)" subtitle="Log event realtime.">
         <div className="grid gap-3">
-          <Activity label={`Suhu ruangan: ${props.visibleTempEstimate.toFixed(1)} C`} time="baru saja" />
-          <Activity label={`Kadar gas: ${props.gasPpm} PPM`} time="baru saja" />
-          <Activity label={props.lastCommand} time={props.status} />
-          <Activity label={`Telemetry: ${props.telemetrySource}`} time={props.mqttOnline ? "online" : "offline"} />
+          {props.events.length === 0 ? (
+            <p className="text-xs font-semibold text-slate-400 py-2 text-center">Belum ada aktivitas.</p>
+          ) : (
+            props.events.slice(0, 5).map((evt) => (
+              <Activity 
+                key={evt.id} 
+                label={`[${evt.level}] ${evt.message || evt.type}`} 
+                time={new Date(evt.createdAt).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" })} 
+              />
+            ))
+          )}
         </div>
       </Panel>
     </aside>
@@ -1499,10 +1741,10 @@ function parseTelemetry(message: string): TelemetryPayload {
     const payload = isRecord(parsed) && isRecord(parsed.data) ? parsed.data : parsed;
     if (!isRecord(payload)) return {};
     return {
-      gasEnabled: readBoolean(payload.gasEnabled),
+      gasEnabled: readBoolean(payload.gasSensorEnabled) ?? readBoolean(payload.gasEnabled),
       gasRaw: readNumber(payload.gasRaw),
-      tempEnabled: readBoolean(payload.tempEnabled),
-      temperatureC: readFirstNumber(payload, ["temperatureC", "temperature", "tempC", "temp", "suhuC", "suhu"]),
+      tempEnabled: readBoolean(payload.rtcReady) ?? readBoolean(payload.tempEnabled),
+      temperatureC: readFirstNumber(payload, ["temperature", "temperatureC", "tempC", "temp", "suhuC", "suhu"]),
       flameDetected: readBoolean(payload.flameDetected),
       pirDetected: readBoolean(payload.pirDetected),
       obstacleNear: readBoolean(payload.obstacleNear),

@@ -16,18 +16,38 @@ const client = mqtt.connect(brokerUrl, {
   reconnectPeriod: 5000,
 });
 
-// Throttling maps to prevent spamming the database with normal telemetry
-// Saves telemetry every 30 seconds, unless a warning is triggered.
-const lastSavedTelemetry = new Map<string, number>();
+async function ensureDevice(deviceId: string, isOnline: boolean = true) {
+  try {
+    return await prisma.device.upsert({
+      where: { deviceId },
+      update: {
+        status: isOnline ? "online" : "offline",
+        lastSeenAt: new Date(),
+        updatedAt: new Date(),
+      },
+      create: {
+        id: deviceId, // Keep id = deviceId for backward compatibility
+        deviceId,
+        name: `SmartBox ${deviceId}`,
+        status: isOnline ? "online" : "offline",
+        lastSeenAt: new Date(),
+      },
+    });
+  } catch (err) {
+    console.error(`[Worker] Error upserting device ${deviceId}:`, err);
+  }
+}
 
 client.on("connect", () => {
   console.log("[Worker] Connected to MQTT broker!");
   
-  // Subscribe to device status (online/offline) and telemetry topics
-  client.subscribe("smartbox/status", { qos: 1 });
-  client.subscribe("smartbox/telemetry", { qos: 1 });
+  // Subscribe to wildcard topics to support dynamic devices
+  client.subscribe("smartbox/+/telemetry", { qos: 1 });
+  client.subscribe("smartbox/+/event", { qos: 1 });
+  client.subscribe("smartbox/+/ack", { qos: 1 });
+  client.subscribe("smartbox/+/status", { qos: 1 });
   
-  console.log("[Worker] Subscribed to smartbox/status and smartbox/telemetry");
+  console.log("[Worker] Subscribed to wildcard topics: smartbox/+/telemetry, event, ack, status");
 });
 
 client.on("message", async (topic, message) => {
@@ -35,119 +55,112 @@ client.on("message", async (topic, message) => {
   console.log(`[Worker] Message received on [${topic}]: ${payloadStr}`);
   
   try {
-    const data = JSON.parse(payloadStr);
-
-    if (topic === "smartbox/status") {
-      const { deviceId, online } = data;
-      if (!deviceId) {
-        console.warn("[Worker] Missing deviceId in status message");
-        return;
-      }
-      
-      console.log(`[Worker] Device ${deviceId} status changed to: ${online ? "ONLINE" : "OFFLINE"}`);
-      
-      // Update device online status in database
-      await prisma.device.upsert({
-        where: { id: deviceId },
-        update: {
-          online: Boolean(online),
-          updatedAt: new Date(),
-        },
-        create: {
-          id: deviceId,
-          name: "SmartBox Assistant S3",
-          mqttBase: `smartbox/${deviceId}`,
-          online: Boolean(online),
-        },
-      });
+    const parts = topic.split("/");
+    if (parts.length < 3) {
+      console.warn(`[Worker] Ignored message with invalid topic structure: ${topic}`);
+      return;
     }
     
-    else if (topic === "smartbox/telemetry") {
-      // The updated ESP32 telemetry will include deviceId, gasRaw, temperatureC, gasDetected, pirDetected, obstacleNear etc.
+    const deviceId = parts[1];
+    const messageType = parts[2];
+    const data = JSON.parse(payloadStr);
+
+    if (messageType === "status") {
+      const isOnline = data.online === true;
+      console.log(`[Worker] Device ${deviceId} status changed to: ${isOnline ? "ONLINE" : "OFFLINE"}`);
+      await ensureDevice(deviceId, isOnline);
+    }
+    
+    else if (messageType === "telemetry") {
       const {
-        deviceId = process.env.NEXT_PUBLIC_DEVICE_ID || "smartbox-001",
-        gasEnabled = true,
-        gasRaw = null,
+        temperature = 0,
+        temperatureC,
+        gasRaw = 0,
         gasDetected = false,
-        tempEnabled = true,
-        temperatureC = null,
-        flameDetected = false,
+        gasLevel = "normal",
+        temperatureHigh = false,
         pirDetected = false,
-        obstacleNear = false,
+        relay1 = false,
+        relay2 = false,
+        bluetoothRelay = false,
+        bluetoothAudio,
+        buzzer = false,
+        gasSensorEnabled = true,
       } = data;
+
+      // Extract temperature value (support fallback keys)
+      const finalTemperature = typeof temperature === "number" ? temperature : (typeof temperatureC === "number" ? temperatureC : 0);
+      // Extract bluetoothRelay value (support fallback keys)
+      const finalBluetooth = typeof bluetoothRelay === "boolean" ? bluetoothRelay : (typeof bluetoothAudio === "boolean" ? bluetoothAudio : false);
+
+      await ensureDevice(deviceId, true);
+
+      // Create new SensorReading record
+      await prisma.sensorReading.create({
+        data: {
+          deviceId,
+          temperature: finalTemperature,
+          gasRaw: typeof gasRaw === "number" ? Math.round(gasRaw) : 0,
+          gasDetected: Boolean(gasDetected),
+          gasLevel: gasLevel || "normal",
+          temperatureHigh: Boolean(temperatureHigh),
+          pirDetected: Boolean(pirDetected),
+          relay1: Boolean(relay1),
+          relay2: Boolean(relay2),
+          bluetoothRelay: finalBluetooth,
+          buzzer: Boolean(buzzer),
+          gasSensorEnabled: Boolean(gasSensorEnabled),
+          createdAt: data.createdAt ? new Date(data.createdAt) : new Date(),
+        },
+      });
+
+      console.log(`[Worker] Saved SensorReading for ${deviceId}: Temp=${finalTemperature}°C, GasRaw=${gasRaw}, Level=${gasLevel}`);
+    }
+    
+    else if (messageType === "event") {
+      const { level = "INFO", type = "generic", message = "" } = data;
       
-      // Check if we should write this snapshot to the database.
-      // We write if:
-      // 1. A warning state is detected (critical event, write immediately).
-      // 2. Or, at least 30 seconds have passed since the last saved telemetry snapshot for this device.
-      const now = Date.now();
-      const lastSavedTime = lastSavedTelemetry.get(deviceId) || 0;
-      const timeDiff = now - lastSavedTime;
-      const isWarning = Boolean(gasDetected) || (typeof temperatureC === "number" && temperatureC > 37.0);
+      await ensureDevice(deviceId, true);
+
+      await prisma.eventLog.create({
+        data: {
+          deviceId,
+          level,
+          type,
+          message,
+          payload: data,
+          createdAt: data.createdAt ? new Date(data.createdAt) : new Date(),
+        },
+      });
+
+      console.log(`[Worker] Logged EventLog for ${deviceId}: [${level}] ${type} - ${message}`);
+    }
+    
+    else if (messageType === "ack") {
+      const { id: commandId, message = "" } = data;
       
-      if (isWarning || timeDiff >= 30000) {
-        console.log(`[Worker] Saving telemetry snapshot for ${deviceId} to DB (Warning: ${isWarning}, Time elapsed: ${Math.round(timeDiff / 1000)}s)`);
-        
-        // Ensure device is marked online
-        await prisma.device.upsert({
-          where: { id: deviceId },
-          update: {
-            online: true,
+      await ensureDevice(deviceId, true);
+
+      if (commandId) {
+        const result = await prisma.deviceCommand.updateMany({
+          where: {
+            id: commandId,
+            deviceId: deviceId,
+          },
+          data: {
+            status: "ACK",
+            ack: data,
             updatedAt: new Date(),
           },
-          create: {
-            id: deviceId,
-            name: "SmartBox Assistant S3",
-            mqttBase: `smartbox/${deviceId}`,
-            online: true,
-          },
         });
-        
-        // Create sensor snapshot record
-        const snapshot = await prisma.sensorSnapshot.create({
-          data: {
-            deviceId,
-            gasEnabled: Boolean(gasEnabled),
-            gasRaw: typeof gasRaw === "number" ? Math.round(gasRaw) : null,
-            gasDetected: Boolean(gasDetected),
-            tempEnabled: Boolean(tempEnabled),
-            temperatureC: typeof temperatureC === "number" ? temperatureC : null,
-            flameDetected: Boolean(flameDetected),
-            pirDetected: Boolean(pirDetected),
-            obstacleNear: Boolean(obstacleNear),
-          },
-        });
-        
-        // Update the last saved timestamp
-        lastSavedTelemetry.set(deviceId, now);
-        
-        // Create warnings events if they occurred
-        if (Boolean(gasDetected)) {
-          await prisma.deviceEvent.create({
-            data: {
-              deviceId,
-              type: "GAS_WARNING",
-              severity: "critical",
-              message: `Sensor MQ-2 mendeteksi gas berbahaya! Kadar: ${gasRaw} raw.`,
-            },
-          });
-          console.log(`[Worker] Logged GAS_WARNING event for ${deviceId}`);
-        }
-        
-        if (typeof temperatureC === "number" && temperatureC > 37.0) {
-          await prisma.deviceEvent.create({
-            data: {
-              deviceId,
-              type: "TEMP_WARNING",
-              severity: "warning",
-              message: `Suhu ruangan panas terdeteksi: ${temperatureC}°C.`,
-            },
-          });
-          console.log(`[Worker] Logged TEMP_WARNING event for ${deviceId}`);
+
+        if (result.count > 0) {
+          console.log(`[Worker] Updated DeviceCommand ${commandId} to ACK. Message: ${message}`);
+        } else {
+          console.warn(`[Worker] ACK received for command ${commandId} but command was not found in DB`);
         }
       } else {
-        // Just print a micro log, don't hit database to prevent Neon DB connection/write overload
-        console.log(`[Worker] Telemetry for ${deviceId} ignored (throttled). Next DB save in ${Math.round((30000 - timeDiff) / 1000)}s`);
+        console.warn(`[Worker] Received ACK on topic [${topic}] but missing command ID ('id')`);
       }
     }
   } catch (err) {

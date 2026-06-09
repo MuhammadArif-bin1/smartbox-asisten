@@ -87,7 +87,7 @@ const char *DEVICE_ID = "smartbox-001";
 // Input user
 #define BLACK_BTN_PIN 7
 #define WHITE_BTN_PIN 19 // Jika USB bermasalah, pindah ke GPIO39.
-#define RED_BTN_PIN    20  // Tombol Merah (Tekan Cepat = Nyala/Mati Bluetooth)
+#define RED_BTN_PIN 20   // Tombol Merah (Tekan Cepat = Nyala/Mati Bluetooth)
 
 // Output aktuator
 #define RELAY_1_PIN 21 // Stop kontak 1, LOW level trigger.
@@ -124,7 +124,7 @@ const char *DEVICE_ID = "smartbox-001";
 // 4. THRESHOLD & TIMER
 // ==========================================================
 int GAS_THRESHOLD = 1800;
-float TEMP_THRESHOLD = 37.0;
+float TEMP_THRESHOLD = 35.0;
 
 const unsigned long TELEMETRY_INTERVAL_MS = 3000;
 const unsigned long LCD_INTERVAL_MS = 1000;
@@ -272,7 +272,7 @@ void saveSchedules();
 // ==========================================================
 String topicBase() { return String("smartbox/") + DEVICE_ID; }
 
-String topicTelemetry() { return "smartbox/telemetry"; }
+String topicTelemetry() { return topicBase() + "/telemetry"; }
 
 String topicEvent() { return topicBase() + "/event"; }
 
@@ -280,7 +280,7 @@ String topicAck() { return topicBase() + "/ack"; }
 
 String topicCommand() { return topicBase() + "/cmd"; }
 
-String topicStatus() { return "smartbox/status"; }
+String topicStatus() { return topicBase() + "/status"; }
 
 // ==========================================================
 // 8. UTILITY FUNCTIONS
@@ -411,8 +411,9 @@ class MyServerCallbacks : public BLEServerCallbacks {
     static unsigned long lastBleGreetingTime = 0;
     if (millis() - lastBleGreetingTime >= 15000) {
       lastBleGreetingTime = millis();
-      
-      // Play Bluetooth Connected voice notification (Track 6), then play a song (Track 1)
+
+      // Play Bluetooth Connected voice notification (Track 6), then play a song
+      // (Track 1)
       playDfTrack(6); // Sistem hidup / Welcome
       pendingBluetoothSongPlay = true;
       bluetoothSongPlayTime = millis() + 4000;
@@ -421,7 +422,8 @@ class MyServerCallbacks : public BLEServerCallbacks {
 
   void onDisconnect(BLEServer *pServer) {
     deviceConnected = false;
-    pendingBluetoothSongPlay = false; // Reset song play if disconnected before track starts
+    pendingBluetoothSongPlay =
+        false; // Reset song play if disconnected before track starts
     Serial.println("BLE terputus");
 
     if (bluetoothAktif) {
@@ -1392,79 +1394,37 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
 // ==========================================================
 // 12. SENSOR, TELEMETRY, WARNING, ALARM
 // ==========================================================
+String getIsoTimestamp() {
+  if (!rtcReady) {
+    return "2026-06-09T12:00:00.000Z";
+  }
+  DateTime now = rtc.now();
+  char buf[32];
+  snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02d.000Z", now.year(),
+           now.month(), now.day(), now.hour(), now.minute(), now.second());
+  return String(buf);
+}
+
 void publishTelemetry(int gasRaw, float tempC, bool gasWarning,
-                      bool tempWarning, bool pirDetected, bool obstacleNear) {
+                      bool tempWarning, bool pirDetected,
+                      const String &gasLevel) {
   StaticJsonDocument<1024> doc;
 
   doc["deviceId"] = DEVICE_ID;
   doc["temperature"] = tempC;
-  doc["temperatureC"] = tempC;
-  doc["tempEnabled"] = tempEnabled;
-  doc["tempWarning"] = tempWarning;
-  doc["tempDetected"] = tempWarning;
-
-  doc["gasEnabled"] = gasEnabled;
   doc["gasRaw"] = gasRaw;
   doc["gasDetected"] = gasWarning;
-
-  doc["flameDetected"] = false;
+  doc["gasLevel"] = gasLevel;
+  doc["temperatureHigh"] = tempWarning;
   doc["pirDetected"] = pirDetected;
-  doc["motion"] = pirDetected;
-  doc["obstacleNear"] = obstacleNear;
-  doc["obstacle"] = obstacleNear;
-
   doc["relay1"] = relay1State;
   doc["relay2"] = relay2State;
-  doc["bluetoothAudio"] = bluetoothAudioState;
-  doc["ampRelay"] = bluetoothAudioState;
-  doc["buzzerActive"] = digitalRead(BUZZER_PIN) == HIGH;
-
+  doc["bluetoothRelay"] = bluetoothAudioState;
+  doc["buzzer"] = (digitalRead(BUZZER_PIN) == HIGH);
+  doc["gasSensorEnabled"] = gasEnabled;
   doc["rtcReady"] = rtcReady;
-  doc["lcdReady"] = lcdReady;
-  doc["dfPlayerReady"] = dfPlayerReady;
-  doc["voiceMode"] = voiceMode;
-
   doc["wifiRssi"] = WiFi.RSSI();
-  doc["uptime"] = millis() / 1000;
-
-  // New system status fields
-  doc["sleepModeEnabled"] = sleepModeEnabled;
-  doc["pirEnabled"] = pirEnabled;
-  doc["pirGreetingEnabled"] = pirGreetingEnabled;
-  doc["pirGreetingTrack"] = pirGreetingTrack;
-
-  char startStr[6];
-  snprintf(startStr, sizeof(startStr), "%02d:%02d", pirGreetingStartHour,
-           pirGreetingStartMinute);
-  doc["pirGreetingStart"] = startStr;
-
-  char endStr[6];
-  snprintf(endStr, sizeof(endStr), "%02d:%02d", pirGreetingEndHour,
-           pirGreetingEndMinute);
-  doc["pirGreetingEnd"] = endStr;
-
-  int totalTracks = 7; // Default dynamic fallback
-  if (dfPlayerReady) {
-    int count = dfPlayer.readFileCounts();
-    if (count > 0)
-      totalTracks = count;
-  }
-  doc["dfTrackCount"] = totalTracks;
-
-  // Relay schedules list
-  JsonArray schArr = doc.createNestedArray("relaySchedules");
-  for (int i = 0; i < relayScheduleCount; i++) {
-    JsonObject schObj = schArr.createNestedObject();
-    schObj["id"] = relaySchedules[i].id;
-    schObj["relay"] = relaySchedules[i].relayNum;
-    schObj["enabled"] = relaySchedules[i].enabled;
-
-    char timeStr[13];
-    snprintf(timeStr, sizeof(timeStr), "%02d:%02d-%02d:%02d",
-             relaySchedules[i].startHour, relaySchedules[i].startMinute,
-             relaySchedules[i].endHour, relaySchedules[i].endMinute);
-    schObj["timeRange"] = timeStr;
-  }
+  doc["createdAt"] = getIsoTimestamp();
 
   publishJson(topicTelemetry(), doc, false);
 }
@@ -1526,21 +1486,23 @@ void checkWarnings(int gasRaw, float tempC, bool gasWarning, bool tempWarning) {
       publishEvent("WARNING", "gas.detected",
                    "Peringatan asap/gas terdeteksi.");
       lastGasWarning = true;
-      setRelay(1, true, false); // Automatically turn ON Relay 1 (exhaust/warning)
+      setRelay(1, true,
+               false); // Automatically turn ON Relay 1 (exhaust/warning)
     }
 
     if (tempWarning && !lastTempWarning) {
       publishEvent("WARNING", "temperature.high",
                    "Peringatan suhu tinggi terdeteksi.");
       lastTempWarning = true;
-      setRelay(2, true, false); // Automatically turn ON Relay 2 (cooling fan/AC)
+      setRelay(2, true,
+               false); // Automatically turn ON Relay 2 (cooling fan/AC)
     }
 
     if (millis() - lastWarningAudioAt > WARNING_AUDIO_GAP_MS) {
       if (gasWarning) {
-        playDfTrack(4); // 0004_asap_terdeteksi.mp3 = peringatan gas/asap.
+        playDfTrack(5); // Track 5 = Peringatan gas
       } else if (tempWarning) {
-        playDfTrack(5); // 0005_suhu_panas.mp3 = peringatan suhu tinggi.
+        playDfTrack(6); // Track 6 = Peringatan suhu
       }
       lastWarningAudioAt = millis();
     }
@@ -1606,7 +1568,8 @@ void updateLcd(int gasRaw, float tempC, bool gasWarning, bool tempWarning,
     return;
   lastLcdAt = millis();
 
-  // Handle temporary overrides (like status messages from button press or BLE connect)
+  // Handle temporary overrides (like status messages from button press or BLE
+  // connect)
   if (millis() < lcdOverrideUntil) {
     lcd.clear();
     lcd.setCursor(0, 0);
@@ -1624,22 +1587,19 @@ void updateLcd(int gasRaw, float tempC, bool gasWarning, bool tempWarning,
     lcd.print("AWAS ADA ASAP/GAS");
     lcd.setCursor(0, 1);
     lcd.print("SEGERA PERIKSA!");
-  }
-  else if (tempWarning) {
+  } else if (tempWarning) {
     lcd.setCursor(0, 0);
     lcd.print("SUHU PANAS!");
     char tempStr[16];
     snprintf(tempStr, sizeof(tempStr), "SUHU: %0.1f C", tempC);
     lcd.setCursor(0, 1);
     lcd.print(tempStr);
-  }
-  else if (bluetoothAktif) {
+  } else if (bluetoothAktif) {
     lcd.setCursor(0, 0);
     lcd.print("BLUETOOTH ACTIVE");
     lcd.setCursor(0, 1);
     lcd.print(deviceConnected ? "CONNECTED" : "WAITING FOR HP");
-  }
-  else if (relay1State || relay2State) {
+  } else if (relay1State || relay2State) {
     lcd.setCursor(0, 0);
     if (relay1State && relay2State) {
       lcd.print("SK 1 & SK 2 ON");
@@ -1650,8 +1610,7 @@ void updateLcd(int gasRaw, float tempC, bool gasWarning, bool tempWarning,
     }
     lcd.setCursor(0, 1);
     lcd.print("TIMER ACTIVE");
-  }
-  else {
+  } else {
     // Base State: Show initial ready message
     lcd.setCursor(0, 0);
     lcd.print("SMARTBOX ASISTEN");
@@ -2016,9 +1975,13 @@ void loop() {
 
     // Otomatis nyalakan lampu (Relay 1)
     if (!relay1State) {
-      setRelay(1, true, false); // Turn on Relay 1 (Light) without playing relay audio track to avoid overlapping with greeting
-      Serial.println("[PIR] Motion detected, automatically turned ON Relay 1 (Light)");
-      publishEvent("INFO", "pir.light.on", "Gerakan terdeteksi: Lampu (Relay 1) dinyalakan.");
+      setRelay(1, true,
+               false); // Turn on Relay 1 (Light) without playing relay audio
+                       // track to avoid overlapping with greeting
+      Serial.println(
+          "[PIR] Motion detected, automatically turned ON Relay 1 (Light)");
+      publishEvent("INFO", "pir.light.on",
+                   "Gerakan terdeteksi: Lampu (Relay 1) dinyalakan.");
     }
 
     if (pirGreetingEnabled && isPirGreetingScheduled()) {
@@ -2035,19 +1998,41 @@ void loop() {
   checkWarnings(gasRaw, tempC, gasWarning, tempWarning);
   updateLcd(gasRaw, tempC, gasWarning, tempWarning, pirDetected);
 
-  if (millis() - lastTelemetryAt >= TELEMETRY_INTERVAL_MS) {
+  // PIR rising edge detection
+  static bool lastPirState = false;
+  bool pirStateChanged = (pirDetected && !lastPirState);
+  lastPirState = pirDetected;
+
+  if (pirStateChanged) {
+    publishEvent("INFO", "pir.motion", "Gerakan terdeteksi.");
+  }
+
+  // Determine Gas Level string
+  String gasLevel = "normal";
+  if (gasRaw >= 1800) {
+    gasLevel = "bahaya";
+  } else if (gasRaw >= 1300) {
+    gasLevel = "waspada";
+  }
+
+  // Instant telemetry trigger on state transitions (PIR or warnings) or
+  // periodic (3s)
+  static bool lastHttpWarningState = false;
+  bool currentHttpWarningState = gasWarning || tempWarning;
+  bool warningStateChanged = (currentHttpWarningState != lastHttpWarningState);
+
+  if (pirStateChanged || warningStateChanged ||
+      (millis() - lastTelemetryAt >= TELEMETRY_INTERVAL_MS)) {
     lastTelemetryAt = millis();
     publishTelemetry(gasRaw, tempC, gasWarning, tempWarning, pirDetected,
-                     obstacleNear);
+                     gasLevel);
   }
 
   // Send HTTP Telemetry to Vercel every 15s, or instantly when a warning is
   // triggered
   static bool firstHttpSend = true;
-  static bool lastHttpWarningState = false;
-  bool currentHttpWarningState = gasWarning || tempWarning;
   if (firstHttpSend || (millis() - lastHttpTelemetryAt >= 15000) ||
-      (currentHttpWarningState && !lastHttpWarningState)) {
+      warningStateChanged) {
     firstHttpSend = false;
     lastHttpTelemetryAt = millis();
     sendTelemetryHttp(gasRaw, tempC, gasWarning, tempWarning, pirDetected,
@@ -2059,10 +2044,12 @@ void loop() {
   if (pendingBluetoothSongPlay && millis() >= bluetoothSongPlayTime) {
     pendingBluetoothSongPlay = false;
     playDfTrack(1); // Play song (Track 1)
-    Serial.println("[BLE] Playing song (Track 1) after connection announcement");
+    Serial.println(
+        "[BLE] Playing song (Track 1) after connection announcement");
   }
 
-  // Blink LED green if Bluetooth is active but not connected (and no warning is active)
+  // Blink LED green if Bluetooth is active but not connected (and no warning is
+  // active)
   if (bluetoothAktif && !deviceConnected && !gasWarning && !tempWarning) {
     static unsigned long lastBlink = 0;
     static bool blinkState = false;

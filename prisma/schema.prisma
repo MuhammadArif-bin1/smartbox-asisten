@@ -1,29 +1,35 @@
 // This is your Prisma schema file,
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
-// Get a free hosted Postgres database in seconds: `npx create-db`
-
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 model Device {
-  id          String       @id @default(cuid())
+  id          String          @id @default(cuid())
+  deviceId    String          @unique
   name        String
-  mqttBase    String       @default("smartbox/device-01")
-  location    String?
-  online      Boolean      @default(false)
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
-  alarms      Alarm[]
-  audioTracks AudioTrack[]
-  events      DeviceEvent[]
-  snapshots   SensorSnapshot[]
+  status      String          @default("offline")
+  lastSeenAt  DateTime?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  
+  // Relations
+  readings    SensorReading[]
+  events      EventLog[]
+  commands    DeviceCommand[]
+
+  // Keep existing relations to avoid breaking old pages
+  alarms       Alarm[]
+  audioTracks  AudioTrack[]
+  snapshots    SensorSnapshot[]
+  deviceEvents DeviceEvent[]
 }
 
 model Alarm {
@@ -38,7 +44,7 @@ model Alarm {
   repeatDays  String[] @default(["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"])
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
-  device      Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  device      Device   @relation(fields: [deviceId], references: [deviceId], onDelete: Cascade)
 }
 
 model AudioTrack {
@@ -51,7 +57,7 @@ model AudioTrack {
   volume      Int      @default(22)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
-  device      Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  device      Device   @relation(fields: [deviceId], references: [deviceId], onDelete: Cascade)
 
   @@unique([deviceId, trackNumber])
 }
@@ -68,7 +74,7 @@ model SensorSnapshot {
   pirDetected   Boolean  @default(false)
   obstacleNear  Boolean  @default(false)
   createdAt     DateTime @default(now())
-  device        Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  device        Device   @relation(fields: [deviceId], references: [deviceId], onDelete: Cascade)
 }
 
 model DeviceEvent {
@@ -80,7 +86,7 @@ model DeviceEvent {
   topic     String?
   payload   Json?
   createdAt DateTime @default(now())
-  device    Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  device    Device   @relation(fields: [deviceId], references: [deviceId], onDelete: Cascade)
 }
 
 model PinAssignment {
@@ -93,3 +99,48 @@ model PinAssignment {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
+
+model SensorReading {
+  id               String   @id @default(cuid())
+  deviceId         String
+  temperature      Float
+  gasRaw           Int
+  gasDetected      Boolean
+  gasLevel         String
+  temperatureHigh  Boolean
+  pirDetected      Boolean
+  relay1           Boolean
+  relay2           Boolean
+  bluetoothRelay   Boolean
+  buzzer           Boolean
+  gasSensorEnabled Boolean
+  createdAt        DateTime @default(now())
+
+  device           Device   @relation(fields: [deviceId], references: [deviceId], onDelete: Cascade)
+}
+
+model EventLog {
+  id        String   @id @default(cuid())
+  deviceId  String
+  level     String
+  type      String
+  message   String
+  payload   Json
+  createdAt DateTime @default(now())
+
+  device    Device   @relation(fields: [deviceId], references: [deviceId], onDelete: Cascade)
+}
+
+model DeviceCommand {
+  id        String   @id @default(cuid())
+  deviceId  String
+  type      String
+  payload   Json
+  status    String   @default("SENT")
+  ack       Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  device    Device   @relation(fields: [deviceId], references: [deviceId], onDelete: Cascade)
+}
+

@@ -48,13 +48,14 @@ export async function POST(request: Request) {
 
     // Ensure the device exists and is marked online
     await prisma.device.upsert({
-      where: { id: deviceId },
-      update: { online: true, updatedAt: new Date() },
+      where: { deviceId },
+      update: { status: "online", lastSeenAt: new Date(), updatedAt: new Date() },
       create: {
         id: deviceId,
+        deviceId,
         name: "SmartBox Assistant S3",
-        mqttBase: `smartbox/${deviceId}`,
-        online: true,
+        status: "online",
+        lastSeenAt: new Date(),
       },
     });
 
