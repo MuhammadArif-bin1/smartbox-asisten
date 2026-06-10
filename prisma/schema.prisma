@@ -50,16 +50,16 @@ model Alarm {
 model AudioTrack {
   id          String   @id @default(cuid())
   deviceId    String
-  trackNumber Int
+  track       Int
   fileName    String
   label       String
-  purpose     String
-  volume      Int      @default(22)
+  feature     String
+  description String?
   createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
   device      Device   @relation(fields: [deviceId], references: [deviceId], onDelete: Cascade)
 
-  @@unique([deviceId, trackNumber])
+  @@index([deviceId])
+  @@unique([deviceId, track])
 }
 
 model SensorSnapshot {

@@ -60,19 +60,24 @@ const views: Array<{ id: ViewId; label: string }> = [
 ];
 
 const initialAlarms: Alarm[] = [
-  { id: "morning", label: "Pagi", time: "07:00", greeting: "Pengingat aktivitas pagi", track: 1, enabled: true },
-  { id: "noon", label: "Siang", time: "12:30", greeting: "Pengingat istirahat siang", track: 2, enabled: true },
-  { id: "evening", label: "Malam", time: "19:30", greeting: "Pengingat istirahat malam", track: 3, enabled: true },
+  { id: "morning", label: "Pagi", time: "07:00", greeting: "Pengingat aktivitas pagi", track: 4, enabled: true },
+  { id: "noon", label: "Siang", time: "12:30", greeting: "Pengingat istirahat siang", track: 5, enabled: true },
+  { id: "evening", label: "Malam", time: "19:30", greeting: "Pengingat istirahat malam", track: 6, enabled: true },
 ];
 
 const audioTracks = [
-  { id: 1, name: "001_selamat_pagi.mp3", use: "Alarm pagi" },
-  { id: 2, name: "002_selamat_siang.mp3", use: "Alarm siang" },
-  { id: 3, name: "003_selamat_sore.mp3", use: "Alarm sore" },
-  { id: 4, name: "004_asap_terdeteksi.mp3", use: "Sensor MQ-2" },
-  { id: 5, name: "005_suhu_panas.mp3", use: "Sensor suhu" },
-  { id: 6, name: "006_sistem_hidup.mp3", use: "Voice command" },
-  { id: 7, name: "007_sistem_mati.mp3", use: "Voice command" },
+  { id: 1, name: "0001.mp3", label: "SmartBox siap digunakan", use: "Sistem utama" },
+  { id: 2, name: "0002.mp3", label: "Menampilkan jam & suhu", use: "Sistem utama" },
+  { id: 3, name: "0003.mp3", label: "Sapaan Bluetooth", use: "Bluetooth/audio" },
+  { id: 4, name: "0004.mp3", label: "Alarm pagi", use: "Alarm" },
+  { id: 5, name: "0005.mp3", label: "Alarm siang", use: "Alarm" },
+  { id: 6, name: "0006.mp3", label: "Alarm sore", use: "Alarm" },
+  { id: 7, name: "0007.mp3", label: "Asap terdeteksi", use: "Sensor MQ-2" },
+  { id: 8, name: "0008.mp3", label: "Gas terdeteksi", use: "Sensor MQ-2" },
+  { id: 9, name: "0009.mp3", label: "Suhu terdeteksi", use: "Sensor DS3231" },
+  { id: 10, name: "0010.mp3", label: "Gerakan berjalan", use: "Sensor PIR" },
+  { id: 11, name: "0011.mp3", label: "Gerakan melompat", use: "Sensor PIR" },
+  { id: 12, name: "0012.mp3", label: "Gerakan melambaikan tangan", use: "Sensor PIR" },
 ];
 
 type BoardProfile = "ESP32_S3" | "ESP32_WROOM";
@@ -194,7 +199,7 @@ export default function Home() {
   const [pirGreetingTrack, setPirGreetingTrack] = useState(1);
   const [pirGreetingStart, setPirGreetingStart] = useState("07:00");
   const [pirGreetingEnd, setPirGreetingEnd] = useState("22:00");
-  const [dfTrackCount, setDfTrackCount] = useState(7);
+  const [dfTrackCount, setDfTrackCount] = useState(12);
   const [relaySchedules, setRelaySchedules] = useState<Array<{ id: string; relay: number; enabled: boolean; timeRange: string }>>([]);
   const [deviceStatus, setDeviceStatus] = useState({
     esp32: false,
@@ -1104,40 +1109,115 @@ function DashboardPage(props: PageProps) {
             <div className="rounded-2xl border border-slate-200 bg-white p-4 flex flex-col justify-between min-h-[110px]">
               <div>
                 <p className="text-sm font-bold text-slate-900">Test Suara DFPlayer</p>
-                <p className="text-xs text-slate-500">Pilih track audio.</p>
+                <p className="text-xs text-slate-500">Pilih track audio 1-12.</p>
               </div>
               <div className="mt-3 flex gap-2">
                 <select 
                   id="dashboard-dfplayer-track"
-                  className="h-9 rounded-xl border border-slate-200 bg-white px-2 text-xs font-semibold outline-none flex-1"
-                  defaultValue={5}
+                  className="h-9 rounded-xl border border-slate-200 bg-white px-2 text-xs font-semibold outline-none flex-1 focus:ring-2 focus:ring-blue-500/20"
+                  defaultValue={1}
                 >
-                  <option value={1}>001 - BLE Song</option>
-                  <option value={5}>005 - Asap Terdeteksi</option>
-                  <option value={6}>006 - Suhu Tinggi</option>
-                  <option value={7}>007 - Sistem Mati</option>
-                  <option value={8}>008 - Listening Mode</option>
+                  {audioTracks.map((track) => (
+                    <option key={track.id} value={track.id}>
+                      {track.id.toString().padStart(4, "0")} - {track.label}
+                    </option>
+                  ))}
                 </select>
                 <button
                   onClick={() => {
                     const select = document.getElementById("dashboard-dfplayer-track") as HTMLSelectElement;
-                    const track = Number(select?.value || 5);
+                    const track = Number(select?.value || 1);
                     props.sendDeviceCommand("dfplayer.play", { track }, `DFPlayer Play Track ${track}`);
                   }}
-                  className="h-9 rounded-xl bg-blue-600 px-3 text-xs font-bold text-white transition hover:bg-blue-700"
+                  className="h-9 rounded-xl bg-blue-600 px-3 text-xs font-bold text-white transition hover:bg-blue-700 active:scale-95 shadow-sm"
                   type="button"
                 >
                   Play
                 </button>
                 <button
                   onClick={() => props.sendDeviceCommand("dfplayer.stop", {}, "DFPlayer Stop")}
-                  className="h-9 rounded-xl bg-red-100 text-red-600 px-3 text-xs font-bold transition hover:bg-red-200"
+                  className="h-9 rounded-xl bg-red-100 text-red-600 px-3 text-xs font-bold transition hover:bg-red-200 active:scale-95"
                   type="button"
                 >
                   Stop
                 </button>
               </div>
             </div>
+          </div>
+        </Panel>
+
+        <Panel title="Test Simulasi Fitur Suara SmartBox" subtitle="Kirim command suara khusus ke perangkat menggunakan API voice.play.">
+          <div className="grid gap-3 grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+            <button
+              onClick={() => props.sendDeviceCommand("voice.play", { voice: "btGreeting" }, "Test Bluetooth Greeting")}
+              className="h-12 rounded-2xl border border-slate-200 text-slate-700 bg-white hover:bg-slate-50 text-xs font-bold transition hover:border-slate-300 hover:shadow-sm active:scale-95"
+              type="button"
+            >
+              Test Bluetooth Greeting
+            </button>
+            <button
+              onClick={() => props.sendDeviceCommand("voice.play", { voice: "alarmMorning" }, "Test Alarm Pagi")}
+              className="h-12 rounded-2xl border border-slate-200 text-slate-700 bg-white hover:bg-slate-50 text-xs font-bold transition hover:border-slate-300 hover:shadow-sm active:scale-95"
+              type="button"
+            >
+              Test Alarm Pagi
+            </button>
+            <button
+              onClick={() => props.sendDeviceCommand("voice.play", { voice: "alarmNoon" }, "Test Alarm Siang")}
+              className="h-12 rounded-2xl border border-slate-200 text-slate-700 bg-white hover:bg-slate-50 text-xs font-bold transition hover:border-slate-300 hover:shadow-sm active:scale-95"
+              type="button"
+            >
+              Test Alarm Siang
+            </button>
+            <button
+              onClick={() => props.sendDeviceCommand("voice.play", { voice: "alarmEvening" }, "Test Alarm Sore")}
+              className="h-12 rounded-2xl border border-slate-200 text-slate-700 bg-white hover:bg-slate-50 text-xs font-bold transition hover:border-slate-300 hover:shadow-sm active:scale-95"
+              type="button"
+            >
+              Test Alarm Sore
+            </button>
+            <button
+              onClick={() => props.sendDeviceCommand("voice.play", { voice: "smokeDetected" }, "Test Asap")}
+              className="h-12 rounded-2xl border border-red-200 text-red-700 bg-red-50 hover:bg-red-100 text-xs font-bold transition hover:shadow-sm active:scale-95"
+              type="button"
+            >
+              Test Asap
+            </button>
+            <button
+              onClick={() => props.sendDeviceCommand("voice.play", { voice: "gasDetected" }, "Test Gas")}
+              className="h-12 rounded-2xl border border-orange-200 text-orange-700 bg-orange-50 hover:bg-orange-100 text-xs font-bold transition hover:shadow-sm active:scale-95"
+              type="button"
+            >
+              Test Gas
+            </button>
+            <button
+              onClick={() => props.sendDeviceCommand("voice.play", { voice: "temperatureDetected" }, "Test Suhu")}
+              className="h-12 rounded-2xl border border-amber-200 text-amber-700 bg-amber-50 hover:bg-amber-100 text-xs font-bold transition hover:shadow-sm active:scale-95"
+              type="button"
+            >
+              Test Suhu
+            </button>
+            <button
+              onClick={() => props.sendDeviceCommand("voice.play", { voice: "pirWalk" }, "Test PIR Walk")}
+              className="h-12 rounded-2xl border border-teal-200 text-teal-700 bg-teal-50 hover:bg-teal-100 text-xs font-bold transition hover:shadow-sm active:scale-95"
+              type="button"
+            >
+              Test PIR Walk
+            </button>
+            <button
+              onClick={() => props.sendDeviceCommand("voice.play", { voice: "pirJump" }, "Test PIR Jump")}
+              className="h-12 rounded-2xl border border-indigo-200 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 text-xs font-bold transition hover:shadow-sm active:scale-95"
+              type="button"
+            >
+              Test PIR Jump
+            </button>
+            <button
+              onClick={() => props.sendDeviceCommand("voice.play", { voice: "pirWave" }, "Test PIR Wave")}
+              className="h-12 rounded-2xl border border-pink-200 text-pink-700 bg-pink-50 hover:bg-pink-100 text-xs font-bold transition hover:shadow-sm active:scale-95"
+              type="button"
+            >
+              Test PIR Wave
+            </button>
           </div>
         </Panel>
 

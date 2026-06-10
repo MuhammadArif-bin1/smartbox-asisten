@@ -123,7 +123,21 @@ const char *DEVICE_ID = "smartbox-001";
 // ==========================================================
 // 4. THRESHOLD & TIMER
 // ==========================================================
-#define BT_GREETING_TRACK 6
+#define TRACK_SYSTEM_READY 1
+#define TRACK_SHOW_TIME_TEMP 2
+#define TRACK_BT_GREETING 3
+
+#define TRACK_ALARM_MORNING 4
+#define TRACK_ALARM_NOON 5
+#define TRACK_ALARM_EVENING 6
+
+#define TRACK_SMOKE_DETECTED 7
+#define TRACK_GAS_DETECTED 8
+#define TRACK_TEMP_DETECTED 9
+
+#define TRACK_PIR_WALK 10
+#define TRACK_PIR_JUMP 11
+#define TRACK_PIR_WAVE 12
 
 int mq2Baseline = 1000;
 int gasWarningThreshold = 1300;
@@ -282,6 +296,16 @@ int getFilteredGas();
 void playBluetoothGreeting();
 void nyalakanBluetooth();
 void matikanBluetooth();
+
+// New Voice Mappings Forward Declarations
+void playVoiceTrack(int track);
+void playSystemReady();
+void playTimeTemperatureVoice();
+void playAlarmVoice(String alarmType);
+void playGasWarningVoice(String gasType);
+void playTemperatureWarningVoice();
+void playPirGreeting(String motionType);
+void publishVoicePlayedEvent(int track, const char* source);
 
 // ==========================================================
 // 7. MQTT TOPICS
@@ -502,8 +526,118 @@ void setupBluetooth() {
   Serial.println("Nama BLE: SMARTBOX_ASISTEN");
 }
 
+void playVoiceTrack(int track) {
+  playDfTrack(track);
+}
+
+void publishVoicePlayedEvent(int track, const char* source) {
+  StaticJsonDocument<256> doc;
+  doc["deviceId"] = DEVICE_ID;
+  doc["level"] = "INFO";
+  doc["type"] = "voice.played";
+  doc["message"] = "Suara diputar";
+  doc["millis"] = millis();
+  
+  JsonObject payload = doc.createNestedObject("payload");
+  payload["track"] = track;
+  payload["source"] = source;
+  
+  publishJson(topicEvent(), doc, false);
+}
+
+void playSystemReady() {
+  playVoiceTrack(TRACK_SYSTEM_READY);
+  setLcdOverride("SMARTBOX READY", "SIAP DIGUNAKAN", 4000);
+  publishEvent("INFO", "system.ready", "SmartBox Assistant siap digunakan");
+}
+
+void playTimeTemperatureVoice() {
+  playVoiceTrack(TRACK_SHOW_TIME_TEMP);
+  if (rtcReady) {
+    DateTime now = rtc.now();
+    float tempC = rtc.getTemperature() + tempOffset;
+    char line1[17];
+    char line2[17];
+    snprintf(line1, sizeof(line1), "WAKTU: %02d:%02d:%02d", now.hour(),
+             now.minute(), now.second());
+    snprintf(line2, sizeof(line2), "SUHU RTC: %4.1f C", tempC);
+    setLcdOverride(line1, line2, 4000);
+  } else {
+    setLcdOverride("RTC TIDAK READY", "Suhu: -", 3000);
+  }
+  publishEvent("INFO", "display.time.temperature", "Menampilkan jam dan suhu real-time");
+}
+
 void playBluetoothGreeting() {
-  playDfTrack(BT_GREETING_TRACK);
+  setBluetoothAudio(true);
+  delay(250);
+  playVoiceTrack(TRACK_BT_GREETING);
+  publishEvent("INFO", "bluetooth.on", "Bluetooth/audio aktif dan sapaan diputar");
+}
+
+void playAlarmVoice(String alarmType) {
+  int track = -1;
+  if (alarmType == "morning") {
+    track = TRACK_ALARM_MORNING;
+  } else if (alarmType == "noon") {
+    track = TRACK_ALARM_NOON;
+  } else if (alarmType == "evening") {
+    track = TRACK_ALARM_EVENING;
+  }
+  
+  if (track != -1) {
+    playVoiceTrack(track);
+    String eventType = "alarm." + alarmType;
+    publishEvent("INFO", eventType.c_str(), ("Alarm " + alarmType + " aktif.").c_str());
+    publishVoicePlayedEvent(track, "alarm");
+  }
+}
+
+void playGasWarningVoice(String gasType) {
+  if (millis() - lastGasAudioTime < 10000) {
+    return; // 10s cooldown
+  }
+  lastGasAudioTime = millis();
+  
+  int track = -1;
+  if (gasType == "smoke") {
+    track = TRACK_SMOKE_DETECTED;
+    publishEvent("WARNING", "smoke.detected", "Asap terdeteksi!");
+  } else if (gasType == "gas") {
+    track = TRACK_GAS_DETECTED;
+    publishEvent("WARNING", "gas.detected", "Gas terdeteksi!");
+  }
+  
+  if (track != -1) {
+    playVoiceTrack(track);
+    publishVoicePlayedEvent(track, "sensor");
+  }
+}
+
+void playTemperatureWarningVoice() {
+  if (millis() - lastTempAudioTime < 10000) {
+    return; // 10s cooldown
+  }
+  lastTempAudioTime = millis();
+  
+  setBuzzer(true, false);
+  setBluetoothAudio(true);
+  
+  playVoiceTrack(TRACK_TEMP_DETECTED);
+  publishEvent("WARNING", "temperature.high", "Suhu terdeteksi melebihi ambang batas");
+  publishVoicePlayedEvent(TRACK_TEMP_DETECTED, "sensor");
+}
+
+void playPirGreeting(String motionType) {
+  int track = TRACK_PIR_WALK;
+  if (motionType == "jump") {
+    track = TRACK_PIR_JUMP;
+  } else if (motionType == "wave") {
+    track = TRACK_PIR_WAVE;
+  }
+  
+  playVoiceTrack(track);
+  publishVoicePlayedEvent(track, "pir");
 }
 
 void nyalakanBluetooth() {
@@ -512,23 +646,14 @@ void nyalakanBluetooth() {
   bluetoothAktif = true;
   deviceConnected = false;
 
-  // 1. GPIO14 HIGH
-  setBluetoothAudio(true);
-
-  // 2. delay 250 ms
-  delay(250);
-
-  // 3. DFPlayer play sapaan
+  // Memutar sapaan dan mengaktifkan audio amplifier
   playBluetoothGreeting();
 
-  // 4. LCD tampil "BT AKTIF"
+  // LCD tampil "BT AKTIF"
   setLcdOverride("BT AKTIF", "MENUNGGU HP", 3000);
 
   waktuBluetoothMulai = millis();
   setRgb(0, 255, 0); // Green LED
-
-  // 5. publish event bluetooth.on
-  publishEvent("INFO", "bluetooth.on", "Bluetooth/audio diaktifkan.");
 
   Serial.println("Bluetooth/audio aktif");
 }
@@ -1360,6 +1485,45 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
     publishAck(cmdId, type, true, "DFPlayer stop.");
   }
 
+  else if (strcmp(type, "pirGreeting.play") == 0) {
+    const char *motionType = data["motionType"] | "walk";
+    playPirGreeting(motionType);
+    publishAck(cmdId, type, true, "PIR Greeting played successfully.");
+  }
+
+  else if (strcmp(type, "voice.play") == 0) {
+    const char *voice = data["voice"] | "";
+    int track = -1;
+    if (strcmp(voice, "systemReady") == 0) track = TRACK_SYSTEM_READY;
+    else if (strcmp(voice, "timeTemperature") == 0) track = TRACK_SHOW_TIME_TEMP;
+    else if (strcmp(voice, "btGreeting") == 0) track = TRACK_BT_GREETING;
+    else if (strcmp(voice, "alarmMorning") == 0) track = TRACK_ALARM_MORNING;
+    else if (strcmp(voice, "alarmNoon") == 0) track = TRACK_ALARM_NOON;
+    else if (strcmp(voice, "alarmEvening") == 0) track = TRACK_ALARM_EVENING;
+    else if (strcmp(voice, "smokeDetected") == 0) track = TRACK_SMOKE_DETECTED;
+    else if (strcmp(voice, "gasDetected") == 0) track = TRACK_GAS_DETECTED;
+    else if (strcmp(voice, "temperatureDetected") == 0) track = TRACK_TEMP_DETECTED;
+    else if (strcmp(voice, "pirWalk") == 0) track = TRACK_PIR_WALK;
+    else if (strcmp(voice, "pirJump") == 0) track = TRACK_PIR_JUMP;
+    else if (strcmp(voice, "pirWave") == 0) track = TRACK_PIR_WAVE;
+
+    if (track != -1) {
+      playVoiceTrack(track);
+      
+      // Publish ACK according to Rule 11
+      StaticJsonDocument<256> ackDoc;
+      ackDoc["deviceId"] = DEVICE_ID;
+      ackDoc["id"] = cmdId;
+      ackDoc["type"] = "voice.play";
+      ackDoc["ok"] = true;
+      ackDoc["message"] = "Voice track berhasil diputar";
+      ackDoc["track"] = track;
+      publishJson(topicAck(), ackDoc, false);
+    } else {
+      publishAck(cmdId, type, false, "Unknown voice identifier.");
+    }
+  }
+
   else if (strcmp(type, "threshold.set") == 0) {
     bool hasAny = false;
     if (data["gasWarningThreshold"].is<int>()) {
@@ -1584,38 +1748,33 @@ void sendTelemetryHttp(int gasRaw, float tempC, bool gasWarning,
   http.end();
 }
 
-void checkWarnings(int gasRaw, float tempC, bool gasDanger, bool tempWarning) {
-  if (gasDanger || tempWarning) {
+void checkWarnings(int gasRaw, float tempC, bool gasWarning, bool tempWarning) {
+  if (gasWarning || tempWarning) {
     setBuzzer(true, false);
     setBluetoothAudio(true);
     setRgb(255, 80, 0);
 
-    if (gasDanger) {
+    if (gasWarning) {
       if (!lastGasWarning) {
-        publishEvent("WARNING", "gas.detected", "Peringatan asap/gas terdeteksi.");
         lastGasWarning = true;
         setRelay(1, true, false); // Automatically turn ON Relay 1 (exhaust/warning)
         sendTelemetryNow();
       }
 
-      if (millis() - lastGasAudioTime >= 10000) {
-        playDfTrack(5); // Track 5 = Peringatan gas
-        lastGasAudioTime = millis();
+      if (gasRaw >= gasDangerThreshold) {
+        playGasWarningVoice("gas");
+      } else {
+        playGasWarningVoice("smoke");
       }
     }
 
     if (tempWarning) {
       if (!lastTempWarning) {
-        publishEvent("WARNING", "temperature.high", "Peringatan suhu tinggi terdeteksi.");
         lastTempWarning = true;
         setRelay(2, true, false); // Automatically turn ON Relay 2 (cooling fan/AC)
         sendTelemetryNow();
       }
-
-      if (millis() - lastTempAudioTime >= 10000) {
-        playDfTrack(6); // Track 6 = Peringatan suhu
-        lastTempAudioTime = millis();
-      }
+      playTemperatureWarningVoice();
     }
   } else {
     if (!buzzerManual) {
@@ -1657,12 +1816,12 @@ void checkAlarms() {
                alarmList[i].id, alarmList[i].hour, alarmList[i].minute);
 
       Serial.println(msg);
-      publishEvent("INFO", "alarm.triggered", msg);
 
-      setBluetoothAudio(true);
       setBuzzer(true, false);
       setRgb(0, 0, 255);
-      playDfTrack(alarmList[i].track);
+      
+      // Menggunakan fungsi playAlarmVoice
+      playAlarmVoice(alarmList[i].id);
     }
   }
 }
@@ -1874,21 +2033,7 @@ void checkButtons() {
           // Short press
           Serial.println(
               "[BUTTON] Black Button SHORT PRESS -> Tampilkan Jam/Suhu");
-
-          if (rtcReady) {
-            DateTime now = rtc.now();
-            float tempC = rtc.getTemperature();
-            char line1[17];
-            char line2[17];
-            snprintf(line1, sizeof(line1), "WAKTU: %02d:%02d:%02d", now.hour(),
-                     now.minute(), now.second());
-            snprintf(line2, sizeof(line2), "SUHU RTC: %4.1f C", tempC);
-            setLcdOverride(line1, line2, 4000);
-          } else {
-            setLcdOverride("RTC TIDAK READY", "Suhu: -", 3000);
-          }
-          publishEvent("INFO", "button.black.short",
-                       "Tombol hitam ditekan cepat: Tampilkan jam/suhu.");
+          playTimeTemperatureVoice();
         }
       }
       blackBtnIsPressed = false;
@@ -2091,7 +2236,7 @@ void setup() {
 
   systemBooting = false;
   publishEvent("INFO", "device.boot", "SmartBox boot selesai.");
-  nyalakanBluetooth();
+  playSystemReady();
 }
 
 // ==========================================================
@@ -2162,19 +2307,19 @@ void loop() {
     if (pirGreetingEnabled && isPirGreetingScheduled()) {
       if (millis() - lastPirGreetingTime >= PIR_GREETING_COOLDOWN) {
         lastPirGreetingTime = millis();
-        Serial.printf("[PIR GREETING] Triggered, playing track %d\n", pirGreetingTrack);
-        playDfTrack(pirGreetingTrack);
+        Serial.println("[PIR GREETING] Triggered, playing walk greeting");
+        playPirGreeting("walk");
         publishEvent("INFO", "pir.greeting", "Greeting wake-up diputar.");
       }
     }
   }
 
-  checkWarnings(gasRaw, tempC, gasDanger, tempWarning);
+  checkWarnings(gasRaw, tempC, gasWarning, tempWarning);
   updateLcd(gasRaw, tempC, gasWarning, tempWarning, pirDetected);
 
   // Telemetry publish checks
   static bool lastHttpWarningState = false;
-  bool currentHttpWarningState = gasDanger || tempWarning;
+  bool currentHttpWarningState = gasWarning || tempWarning;
   bool warningStateChanged = (currentHttpWarningState != lastHttpWarningState);
 
   if (pirStateChanged || warningStateChanged || (millis() - lastTelemetryAt >= TELEMETRY_INTERVAL_MS)) {

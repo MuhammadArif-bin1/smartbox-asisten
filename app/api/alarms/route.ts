@@ -33,9 +33,9 @@ export async function GET(request: Request) {
       // Seed default alarms
       await prisma.alarm.createMany({
         data: [
-          { id: "morning", deviceId, label: "Pagi", time: "07:00", greeting: "Pengingat aktivitas pagi", dfTrack: 1, enabled: true },
-          { id: "noon", deviceId, label: "Siang", time: "12:30", greeting: "Pengingat istirahat siang", dfTrack: 2, enabled: true },
-          { id: "evening", deviceId, label: "Malam", time: "19:30", greeting: "Pengingat istirahat malam", dfTrack: 3, enabled: true },
+          { id: "morning", deviceId, label: "Pagi", time: "07:00", greeting: "Pengingat aktivitas pagi", dfTrack: 4, enabled: true },
+          { id: "noon", deviceId, label: "Siang", time: "12:30", greeting: "Pengingat istirahat siang", dfTrack: 5, enabled: true },
+          { id: "evening", deviceId, label: "Malam", time: "19:30", greeting: "Pengingat istirahat malam", dfTrack: 6, enabled: true },
         ],
       });
       alarms = await prisma.alarm.findMany({
