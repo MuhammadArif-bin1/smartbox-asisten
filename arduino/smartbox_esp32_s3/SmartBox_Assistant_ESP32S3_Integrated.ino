@@ -552,19 +552,9 @@ void matikanBluetooth() {
 }
 
 void cekTimerBluetooth() {
-  if (!bluetoothAktif)
-    return;
-  // If a device is connected, refresh the timer so it doesn't timeout while in
-  // use
-  if (deviceConnected) {
-    waktuBluetoothMulai = millis();
-    return;
-  }
-
-  if (millis() - waktuBluetoothMulai >= durasiBluetooth) {
-    Serial.println("Timer 1 menit selesai");
-    matikanBluetooth();
-  }
+  // Dinonaktifkan timer otomatis agar modul Bluetooth speaker fisik (classic audio) tetap menyala stabil.
+  // Pengguna dapat mematikannya secara manual via tombol merah atau dashboard.
+  return;
 }
 
 void prosesDataBluetooth() {
@@ -1813,14 +1803,28 @@ void checkClaps() {
 void checkButtons() {
   static unsigned long lastButtonAt = 0;
 
-  // States for Black Button
+  // States for Black Button logic
   static bool blackBtnWasHigh = true;
   static unsigned long blackBtnPressStart = 0;
   static bool blackBtnIsPressed = false;
   static bool blackBtnLongPressed = false;
 
-  // Read Black Button (Active LOW)
-  bool blackBtnState = (digitalRead(BLACK_BTN_PIN) == LOW);
+  // Read Black Button (Active LOW) with software debounce
+  static bool lastRawState = HIGH;
+  static unsigned long lastDebounceTime = 0;
+  static bool debouncedState = HIGH;
+
+  bool rawState = digitalRead(BLACK_BTN_PIN);
+  if (rawState != lastRawState) {
+    lastDebounceTime = millis();
+    lastRawState = rawState;
+  }
+
+  if (millis() - lastDebounceTime > 50) {
+    debouncedState = rawState;
+  }
+
+  bool blackBtnState = (debouncedState == LOW);
 
   if (blackBtnState) {
     if (blackBtnWasHigh) {
