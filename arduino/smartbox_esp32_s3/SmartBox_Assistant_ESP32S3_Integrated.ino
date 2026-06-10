@@ -123,8 +123,18 @@ const char *DEVICE_ID = "smartbox-001";
 // ==========================================================
 // 4. THRESHOLD & TIMER
 // ==========================================================
-int GAS_THRESHOLD = 1800;
-float TEMP_THRESHOLD = 35.0;
+#define BT_GREETING_TRACK 6
+
+int mq2Baseline = 1000;
+int gasWarningThreshold = 1300;
+int gasDangerThreshold = 1800;
+float tempThreshold = 35.0;
+float tempOffset = 0.0;
+float gasRawFiltered = -1.0;
+
+unsigned long lastGasAudioTime = 0;
+unsigned long lastTempAudioTime = 0;
+unsigned long lastPirEventTime = 0;
 
 const unsigned long TELEMETRY_INTERVAL_MS = 3000;
 const unsigned long LCD_INTERVAL_MS = 1000;
@@ -266,6 +276,12 @@ void handleRelayScheduleCommand(JsonObject data, const char *cmdId,
 void deleteRelaySchedule(const char *schId);
 void saveSettings();
 void saveSchedules();
+void calibrateMQ2(int samples);
+void sendTelemetryNow();
+int getFilteredGas();
+void playBluetoothGreeting();
+void nyalakanBluetooth();
+void matikanBluetooth();
 
 // ==========================================================
 // 7. MQTT TOPICS
@@ -345,8 +361,16 @@ void loadSettings() {
   pirGreetingEndHour = preferences.getInt("pirGreetEH", 22);
   pirGreetingEndMinute = preferences.getInt("pirGreetEM", 0);
 
+  // Load MQ2 and Temp settings
+  mq2Baseline = preferences.getInt("mq2Baseline", 1000);
+  gasWarningThreshold = preferences.getInt("gasWarning", 1300);
+  gasDangerThreshold = preferences.getInt("gasDanger", 1800);
+  tempThreshold = preferences.getFloat("tempThreshold", 35.0);
+  tempOffset = preferences.getFloat("tempOffset", 0.0);
+
   preferences.end();
-  Serial.println("[SETTINGS] Loaded settings from NVS");
+  Serial.printf("[SETTINGS] Loaded settings from NVS. Baseline: %d, Warning: %d, Danger: %d, TempThreshold: %0.1f, TempOffset: %0.1f\n", 
+                mq2Baseline, gasWarningThreshold, gasDangerThreshold, tempThreshold, tempOffset);
 }
 
 void saveSettings() {
@@ -361,6 +385,13 @@ void saveSettings() {
   preferences.putInt("pirGreetSM", pirGreetingStartMinute);
   preferences.putInt("pirGreetEH", pirGreetingEndHour);
   preferences.putInt("pirGreetEM", pirGreetingEndMinute);
+
+  // Save MQ2 and Temp settings
+  preferences.putInt("mq2Baseline", mq2Baseline);
+  preferences.putInt("gasWarning", gasWarningThreshold);
+  preferences.putInt("gasDanger", gasDangerThreshold);
+  preferences.putFloat("tempThreshold", tempThreshold);
+  preferences.putFloat("tempOffset", tempOffset);
 
   preferences.end();
   Serial.println("[SETTINGS] Saved settings to NVS");
@@ -406,24 +437,11 @@ class MyServerCallbacks : public BLEServerCallbacks {
     Serial.println("BLE tersambung");
     setRgb(0, 0, 255); // Blue LED
     setLcdOverride("BT CONNECTED", "CONNECTED", 3000);
-
-    // Prevent greeting from repeating due to rapid BLE reconnection handshakes
-    static unsigned long lastBleGreetingTime = 0;
-    if (millis() - lastBleGreetingTime >= 15000) {
-      lastBleGreetingTime = millis();
-
-      // Play Bluetooth Connected voice notification (Track 6), then play a song
-      // (Track 1)
-      playDfTrack(6); // Sistem hidup / Welcome
-      pendingBluetoothSongPlay = true;
-      bluetoothSongPlayTime = millis() + 4000;
-    }
   }
 
   void onDisconnect(BLEServer *pServer) {
     deviceConnected = false;
-    pendingBluetoothSongPlay =
-        false; // Reset song play if disconnected before track starts
+    pendingBluetoothSongPlay = false; // Reset song play
     Serial.println("BLE terputus");
 
     if (bluetoothAktif) {
@@ -484,24 +502,35 @@ void setupBluetooth() {
   Serial.println("Nama BLE: SMARTBOX_ASISTEN");
 }
 
+void playBluetoothGreeting() {
+  playDfTrack(BT_GREETING_TRACK);
+}
+
 void nyalakanBluetooth() {
   setupBluetooth();
 
   bluetoothAktif = true;
   deviceConnected = false;
 
-  // Make sure amplifier is powered
-  digitalWrite(BT_BASE_PIN, HIGH);
+  // 1. GPIO14 HIGH
+  setBluetoothAudio(true);
 
-  delay(100);
-  BLEDevice::startAdvertising();
+  // 2. delay 250 ms
+  delay(250);
+
+  // 3. DFPlayer play sapaan
+  playBluetoothGreeting();
+
+  // 4. LCD tampil "BT AKTIF"
+  setLcdOverride("BT AKTIF", "MENUNGGU HP", 3000);
 
   waktuBluetoothMulai = millis();
-
   setRgb(0, 255, 0); // Green LED
 
-  Serial.println("BLE aktif selama 1 menit");
-  setLcdOverride("BT AKTIF", "DURASI 1 MENIT", 3000);
+  // 5. publish event bluetooth.on
+  publishEvent("INFO", "bluetooth.on", "Bluetooth/audio diaktifkan.");
+
+  Serial.println("Bluetooth/audio aktif");
 }
 
 void matikanBluetooth() {
@@ -512,15 +541,14 @@ void matikanBluetooth() {
     BLEDevice::getAdvertising()->stop();
   }
 
-  // Restore amplifier power base state if bluetooth audio state is false
-  if (!bluetoothAudioState) {
-    digitalWrite(BT_BASE_PIN, LOW);
-  }
+  // Restore amplifier power base state
+  setBluetoothAudio(false);
 
   setRgb(255, 0, 0); // Red LED
 
-  Serial.println("BLE dimatikan");
-  setLcdOverride("BT DIMATIKAN", "TIMER HABIS", 3000);
+  Serial.println("Bluetooth/audio dimatikan");
+  setLcdOverride("BT DIMATIKAN", "OFFLINE", 3000);
+  publishEvent("INFO", "bluetooth.off", "Bluetooth/audio dimatikan.");
 }
 
 void cekTimerBluetooth() {
@@ -1018,6 +1046,7 @@ void publishOnlineStatus(bool online) {
   doc["rssi"] = WiFi.RSSI();
 
   publishJson(topicStatus(), doc, true);
+  publishJson("smartbox/status", doc, true);
 }
 
 void connectMqtt() {
@@ -1223,8 +1252,12 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
     } else if (data["enabled"].is<bool>()) {
       state = data["enabled"].as<bool>();
     }
-    setBluetoothAudio(state);
-    publishAck(cmdId, type, true, "Bluetooth audio power updated.");
+    if (state) {
+      nyalakanBluetooth();
+    } else {
+      matikanBluetooth();
+    }
+    publishAck(cmdId, type, true, state ? "Bluetooth audio powered ON and greeting played." : "Bluetooth audio powered OFF.");
   }
 
   else if (strcmp(type, "buzzer.set") == 0) {
@@ -1338,19 +1371,47 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
   }
 
   else if (strcmp(type, "threshold.set") == 0) {
-    if (data["gasThreshold"].is<int>()) {
-      GAS_THRESHOLD = data["gasThreshold"].as<int>();
-    } else if (data["gas"].is<int>()) {
-      GAS_THRESHOLD = data["gas"].as<int>();
+    bool hasAny = false;
+    if (data["gasWarningThreshold"].is<int>()) {
+      gasWarningThreshold = data["gasWarningThreshold"].as<int>();
+      hasAny = true;
     }
-
+    if (data["gasDangerThreshold"].is<int>()) {
+      gasDangerThreshold = data["gasDangerThreshold"].as<int>();
+      hasAny = true;
+    }
     if (data["tempThreshold"].is<float>() || data["tempThreshold"].is<int>()) {
-      TEMP_THRESHOLD = data["tempThreshold"].as<float>();
-    } else if (data["temperature"].is<float>() ||
-               data["temperature"].is<int>()) {
-      TEMP_THRESHOLD = data["temperature"].as<float>();
+      tempThreshold = data["tempThreshold"].as<float>();
+      hasAny = true;
     }
-    publishAck(cmdId, type, true, "Threshold updated.");
+    if (hasAny) {
+      saveSettings();
+      publishAck(cmdId, type, true, "Thresholds set successfully.");
+      publishEvent("INFO", "threshold.updated", "Threshold baru disimpan.");
+    } else {
+      publishAck(cmdId, type, false, "No valid thresholds provided.");
+    }
+  }
+
+  else if (strcmp(type, "calibration.mq2") == 0) {
+    int samples = 100;
+    if (data["samples"].is<int>()) {
+      samples = data["samples"].as<int>();
+    }
+    calibrateMQ2(samples);
+    publishAck(cmdId, type, true, "MQ2 Calibration completed successfully.");
+    publishEvent("INFO", "calibration.mq2.done", "Kalibrasi MQ2 berhasil diselesaikan.");
+  }
+
+  else if (strcmp(type, "calibration.temperature") == 0) {
+    if (data["offset"].is<float>() || data["offset"].is<int>()) {
+      tempOffset = data["offset"].as<float>();
+      saveSettings();
+      publishAck(cmdId, type, true, "Temperature offset updated successfully.");
+      publishEvent("INFO", "calibration.temperature.done", "Kalibrasi offset suhu berhasil.");
+    } else {
+      publishAck(cmdId, type, false, "Invalid offset value.");
+    }
   }
 
   else if (strcmp(type, "led.effect") == 0) {
@@ -1394,6 +1455,36 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
 // ==========================================================
 // 12. SENSOR, TELEMETRY, WARNING, ALARM
 // ==========================================================
+int getFilteredGas() {
+  int raw = analogRead(MQ2_PIN);
+  if (gasRawFiltered < 0.0) {
+    gasRawFiltered = raw;
+  } else {
+    gasRawFiltered = (0.15 * raw) + (0.85 * gasRawFiltered);
+  }
+  return (int)gasRawFiltered;
+}
+
+void calibrateMQ2(int samples) {
+  Serial.printf("[MQ2 CALIBRATION] Starting calibration with %d samples...\n", samples);
+  long sum = 0;
+  for (int i = 0; i < samples; i++) {
+    sum += analogRead(MQ2_PIN);
+    delay(50);
+  }
+  mq2Baseline = sum / samples;
+  gasWarningThreshold = mq2Baseline + 300;
+  gasDangerThreshold = mq2Baseline + 700;
+  if (gasDangerThreshold < 1800) {
+    gasDangerThreshold = 1800;
+  }
+
+  saveSettings();
+
+  Serial.printf("[MQ2 CALIBRATION] Done. Baseline: %d, Warning: %d, Danger: %d\n", 
+                mq2Baseline, gasWarningThreshold, gasDangerThreshold);
+}
+
 String getIsoTimestamp() {
   if (!rtcReady) {
     return "2026-06-09T12:00:00.000Z";
@@ -1407,26 +1498,53 @@ String getIsoTimestamp() {
 
 void publishTelemetry(int gasRaw, float tempC, bool gasWarning,
                       bool tempWarning, bool pirDetected,
-                      const String &gasLevel) {
+                      const String &gasLevel, bool obstacleNear) {
   StaticJsonDocument<1024> doc;
 
   doc["deviceId"] = DEVICE_ID;
+  doc["online"] = true;
   doc["temperature"] = tempC;
+  doc["temperatureC"] = tempC;
   doc["gasRaw"] = gasRaw;
-  doc["gasDetected"] = gasWarning;
+  doc["gasPPM"] = gasRaw;
+  doc["gasDetected"] = (gasLevel == "bahaya");
   doc["gasLevel"] = gasLevel;
   doc["temperatureHigh"] = tempWarning;
   doc["pirDetected"] = pirDetected;
+  doc["motion"] = pirDetected;
+  doc["obstacleNear"] = obstacleNear;
+  doc["flameDetected"] = false;
   doc["relay1"] = relay1State;
   doc["relay2"] = relay2State;
   doc["bluetoothRelay"] = bluetoothAudioState;
+  doc["ampRelay"] = bluetoothAudioState;
   doc["buzzer"] = (digitalRead(BUZZER_PIN) == HIGH);
   doc["gasSensorEnabled"] = gasEnabled;
   doc["rtcReady"] = rtcReady;
+  doc["lcdReady"] = lcdReady;
+  doc["dfPlayerReady"] = dfPlayerReady;
   doc["wifiRssi"] = WiFi.RSSI();
   doc["createdAt"] = getIsoTimestamp();
 
   publishJson(topicTelemetry(), doc, false);
+  publishJson("smartbox/telemetry", doc, false);
+}
+
+void sendTelemetryNow() {
+  int gas = getFilteredGas();
+  float temp = rtcReady ? (rtc.getTemperature() + tempOffset) : 0.0;
+  bool gasDanger = (gas >= gasDangerThreshold);
+  bool tempWarning = tempEnabled && rtcReady && (temp >= tempThreshold);
+  bool pirHardwareState = (digitalRead(PIR_PIN) == HIGH);
+  bool pir = pirEnabled && pirHardwareState;
+  bool obstacle = (digitalRead(IR_PIN) == LOW);
+  String gasLevel = "normal";
+  if (gas >= gasDangerThreshold) {
+    gasLevel = "bahaya";
+  } else if (gas >= gasWarningThreshold) {
+    gasLevel = "waspada";
+  }
+  publishTelemetry(gas, temp, gasDanger, tempWarning, pir, gasLevel, obstacle);
 }
 
 void sendTelemetryHttp(int gasRaw, float tempC, bool gasWarning,
@@ -1476,39 +1594,43 @@ void sendTelemetryHttp(int gasRaw, float tempC, bool gasWarning,
   http.end();
 }
 
-void checkWarnings(int gasRaw, float tempC, bool gasWarning, bool tempWarning) {
-  if (gasWarning || tempWarning) {
+void checkWarnings(int gasRaw, float tempC, bool gasDanger, bool tempWarning) {
+  if (gasDanger || tempWarning) {
     setBuzzer(true, false);
     setBluetoothAudio(true);
     setRgb(255, 80, 0);
 
-    if (gasWarning && !lastGasWarning) {
-      publishEvent("WARNING", "gas.detected",
-                   "Peringatan asap/gas terdeteksi.");
-      lastGasWarning = true;
-      setRelay(1, true,
-               false); // Automatically turn ON Relay 1 (exhaust/warning)
-    }
-
-    if (tempWarning && !lastTempWarning) {
-      publishEvent("WARNING", "temperature.high",
-                   "Peringatan suhu tinggi terdeteksi.");
-      lastTempWarning = true;
-      setRelay(2, true,
-               false); // Automatically turn ON Relay 2 (cooling fan/AC)
-    }
-
-    if (millis() - lastWarningAudioAt > WARNING_AUDIO_GAP_MS) {
-      if (gasWarning) {
-        playDfTrack(5); // Track 5 = Peringatan gas
-      } else if (tempWarning) {
-        playDfTrack(6); // Track 6 = Peringatan suhu
+    if (gasDanger) {
+      if (!lastGasWarning) {
+        publishEvent("WARNING", "gas.detected", "Peringatan asap/gas terdeteksi.");
+        lastGasWarning = true;
+        setRelay(1, true, false); // Automatically turn ON Relay 1 (exhaust/warning)
+        sendTelemetryNow();
       }
-      lastWarningAudioAt = millis();
+
+      if (millis() - lastGasAudioTime >= 10000) {
+        playDfTrack(5); // Track 5 = Peringatan gas
+        lastGasAudioTime = millis();
+      }
+    }
+
+    if (tempWarning) {
+      if (!lastTempWarning) {
+        publishEvent("WARNING", "temperature.high", "Peringatan suhu tinggi terdeteksi.");
+        lastTempWarning = true;
+        setRelay(2, true, false); // Automatically turn ON Relay 2 (cooling fan/AC)
+        sendTelemetryNow();
+      }
+
+      if (millis() - lastTempAudioTime >= 10000) {
+        playDfTrack(6); // Track 6 = Peringatan suhu
+        lastTempAudioTime = millis();
+      }
     }
   } else {
-    if (!buzzerManual)
+    if (!buzzerManual) {
       setBuzzer(false, false);
+    }
     if (lastGasWarning || lastTempWarning) {
       publishEvent("INFO", "warning.normal", "Kondisi sensor kembali normal.");
       if (lastGasWarning) {
@@ -1517,6 +1639,7 @@ void checkWarnings(int gasRaw, float tempC, bool gasWarning, bool tempWarning) {
       if (lastTempWarning) {
         setRelay(2, false, false); // Automatically turn OFF Relay 2
       }
+      sendTelemetryNow();
     }
     lastGasWarning = false;
     lastTempWarning = false;
@@ -1926,6 +2049,34 @@ void setup() {
   mqttClient.setCallback(mqttCallback);
   mqttClient.setBufferSize(1024);
 
+  // 30-second Warm-up MQ2
+  if (lcdReady) {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("MQ2 Warmup...");
+  }
+  Serial.println("[MQ2] Warmup starting...");
+  for (int i = 30; i > 0; i--) {
+    if (lcdReady) {
+      lcd.setCursor(0, 1);
+      lcd.print("Waktu: ");
+      lcd.print(i);
+      lcd.print("s   ");
+    }
+    Serial.printf("[MQ2] Warmup: %d seconds left\n", i);
+    delay(1000);
+  }
+
+  // Calibrate MQ2
+  if (lcdReady) {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Calibrating MQ2...");
+    lcd.setCursor(0, 1);
+    lcd.print("Ambil 100 sampel");
+  }
+  calibrateMQ2(100);
+
   if (lcdReady) {
     lcd.clear();
     lcd.setCursor(0, 0);
@@ -1959,97 +2110,84 @@ void loop() {
   checkButtons();
   checkAlarms();
 
-  int gasRaw = analogRead(MQ2_PIN);
-  float tempC = rtcReady ? rtc.getTemperature() : 0.0;
+  int gasRaw = getFilteredGas();
+  float tempC = rtcReady ? (rtc.getTemperature() + tempOffset) : 0.0;
 
-  bool gasWarning = gasEnabled && gasRaw >= GAS_THRESHOLD;
-  bool tempWarning = tempEnabled && rtcReady && tempC >= TEMP_THRESHOLD;
+  // Determine Gas Level string and warning/danger states
+  String gasLevel = "normal";
+  bool gasDanger = false;
+  bool gasWarning = false;
+  if (gasEnabled) {
+    if (gasRaw >= gasDangerThreshold) {
+      gasLevel = "bahaya";
+      gasDanger = true;
+      gasWarning = true;
+    } else if (gasRaw >= gasWarningThreshold) {
+      gasLevel = "waspada";
+      gasWarning = true;
+    }
+  }
+
+  bool tempWarning = tempEnabled && rtcReady && (tempC >= tempThreshold);
 
   bool pirHardwareState = (digitalRead(PIR_PIN) == HIGH);
   bool pirDetected = pirEnabled && pirHardwareState;
-  bool obstacleNear = digitalRead(IR_PIN) == LOW;
+  bool obstacleNear = (digitalRead(IR_PIN) == LOW);
 
-  // Handle PIR movement events
+  // Handle PIR movement events (Debounced / Cooldown 10s)
+  static bool lastPirDetected = false;
+  bool pirStateChanged = (pirDetected && !lastPirDetected);
+  lastPirDetected = pirDetected;
+
   if (pirDetected) {
     wakeUpFromSleep();
 
-    // Otomatis nyalakan lampu (Relay 1)
+    // Automatically turn ON Relay 1 (Light) if not already on
     if (!relay1State) {
-      setRelay(1, true,
-               false); // Turn on Relay 1 (Light) without playing relay audio
-                       // track to avoid overlapping with greeting
-      Serial.println(
-          "[PIR] Motion detected, automatically turned ON Relay 1 (Light)");
-      publishEvent("INFO", "pir.light.on",
-                   "Gerakan terdeteksi: Lampu (Relay 1) dinyalakan.");
+      setRelay(1, true, false);
+      Serial.println("[PIR] Motion detected, automatically turned ON Relay 1 (Light)");
+      publishEvent("INFO", "pir.light.on", "Gerakan terdeteksi: Lampu (Relay 1) dinyalakan.");
+    }
+
+    if (pirStateChanged || (millis() - lastPirEventTime >= 10000)) {
+      lastPirEventTime = millis();
+      publishEvent("INFO", "pir.motion", "Gerakan terdeteksi.");
+      sendTelemetryNow(); // publish telemetry realtime immediately
     }
 
     if (pirGreetingEnabled && isPirGreetingScheduled()) {
       if (millis() - lastPirGreetingTime >= PIR_GREETING_COOLDOWN) {
         lastPirGreetingTime = millis();
-        Serial.printf("[PIR GREETING] Triggered, playing track %d\n",
-                      pirGreetingTrack);
+        Serial.printf("[PIR GREETING] Triggered, playing track %d\n", pirGreetingTrack);
         playDfTrack(pirGreetingTrack);
         publishEvent("INFO", "pir.greeting", "Greeting wake-up diputar.");
       }
     }
   }
 
-  checkWarnings(gasRaw, tempC, gasWarning, tempWarning);
+  checkWarnings(gasRaw, tempC, gasDanger, tempWarning);
   updateLcd(gasRaw, tempC, gasWarning, tempWarning, pirDetected);
 
-  // PIR rising edge detection
-  static bool lastPirState = false;
-  bool pirStateChanged = (pirDetected && !lastPirState);
-  lastPirState = pirDetected;
-
-  if (pirStateChanged) {
-    publishEvent("INFO", "pir.motion", "Gerakan terdeteksi.");
-  }
-
-  // Determine Gas Level string
-  String gasLevel = "normal";
-  if (gasRaw >= 1800) {
-    gasLevel = "bahaya";
-  } else if (gasRaw >= 1300) {
-    gasLevel = "waspada";
-  }
-
-  // Instant telemetry trigger on state transitions (PIR or warnings) or
-  // periodic (3s)
+  // Telemetry publish checks
   static bool lastHttpWarningState = false;
-  bool currentHttpWarningState = gasWarning || tempWarning;
+  bool currentHttpWarningState = gasDanger || tempWarning;
   bool warningStateChanged = (currentHttpWarningState != lastHttpWarningState);
 
-  if (pirStateChanged || warningStateChanged ||
-      (millis() - lastTelemetryAt >= TELEMETRY_INTERVAL_MS)) {
+  if (pirStateChanged || warningStateChanged || (millis() - lastTelemetryAt >= TELEMETRY_INTERVAL_MS)) {
     lastTelemetryAt = millis();
-    publishTelemetry(gasRaw, tempC, gasWarning, tempWarning, pirDetected,
-                     gasLevel);
+    publishTelemetry(gasRaw, tempC, gasWarning, tempWarning, pirDetected, gasLevel, obstacleNear);
   }
 
-  // Send HTTP Telemetry to Vercel every 15s, or instantly when a warning is
-  // triggered
+  // Send HTTP Telemetry to Vercel every 15s, or instantly when warning state changes
   static bool firstHttpSend = true;
-  if (firstHttpSend || (millis() - lastHttpTelemetryAt >= 15000) ||
-      warningStateChanged) {
+  if (firstHttpSend || (millis() - lastHttpTelemetryAt >= 15000) || warningStateChanged) {
     firstHttpSend = false;
     lastHttpTelemetryAt = millis();
-    sendTelemetryHttp(gasRaw, tempC, gasWarning, tempWarning, pirDetected,
-                      obstacleNear);
+    sendTelemetryHttp(gasRaw, tempC, gasWarning, tempWarning, pirDetected, obstacleNear);
   }
   lastHttpWarningState = currentHttpWarningState;
 
-  // Handle delayed Bluetooth connection song play
-  if (pendingBluetoothSongPlay && millis() >= bluetoothSongPlayTime) {
-    pendingBluetoothSongPlay = false;
-    playDfTrack(1); // Play song (Track 1)
-    Serial.println(
-        "[BLE] Playing song (Track 1) after connection announcement");
-  }
-
-  // Blink LED green if Bluetooth is active but not connected (and no warning is
-  // active)
+  // Blink LED green if Bluetooth is active but not connected (and no warning is active)
   if (bluetoothAktif && !deviceConnected && !gasWarning && !tempWarning) {
     static unsigned long lastBlink = 0;
     static bool blinkState = false;

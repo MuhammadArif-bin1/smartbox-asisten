@@ -39,6 +39,14 @@ type TelemetryPayload = {
   pirGreetingEnd?: string;
   dfTrackCount?: number;
   relaySchedules?: Array<{ id: string; relay: number; enabled: boolean; timeRange: string }>;
+  relay1?: boolean;
+  relay2?: boolean;
+  bluetoothRelay?: boolean;
+  ampRelay?: boolean;
+  buzzer?: boolean;
+  online?: boolean;
+  gasLevel?: string;
+  gasDetected?: boolean;
 };
 
 const views: Array<{ id: ViewId; label: string }> = [
@@ -169,6 +177,7 @@ export default function Home() {
   const [temperatureEnabled, setTemperatureEnabled] = useState(true);
   const [gasEstimate, setGasEstimate] = useState(0);
   const [tempEstimate, setTempEstimate] = useState(0);
+  const [gasLevel, setGasLevel] = useState<string>("normal");
   const [telemetrySource, setTelemetrySource] = useState("Offline");
   const [mqttRealtime, setMqttRealtime] = useState<"connecting" | "online" | "offline">("connecting");
   const [mqttApiOnline, setMqttApiOnline] = useState(false);
@@ -264,7 +273,10 @@ export default function Home() {
               lcd: isOnline ? current.lcd : false,
               dfPlayer: isOnline ? current.dfPlayer : false,
             }));
-            if (!isOnline) {
+            if (isOnline) {
+              setLastTelemetryTime(Date.now());
+              setTelemetrySource("ESP32 telemetry");
+            } else {
               setTelemetrySource("Offline");
             }
           } 
@@ -285,6 +297,7 @@ export default function Home() {
             if (typeof telemetry.gasEnabled === "boolean") setGasEnabled(telemetry.gasEnabled);
             if (typeof telemetry.tempEnabled === "boolean") setTemperatureEnabled(telemetry.tempEnabled);
             if (typeof telemetry.gasRaw === "number") setGasEstimate(Math.max(0, Math.min(4095, Math.round(telemetry.gasRaw))));
+            if (typeof telemetry.gasLevel === "string") setGasLevel(telemetry.gasLevel);
             if (typeof telemetry.temperatureC === "number") setTempEstimate(roundTemperature(telemetry.temperatureC));
             if (typeof telemetry.flameDetected === "boolean") setFlameDetected(telemetry.flameDetected);
             if (typeof telemetry.pirDetected === "boolean") setPirDetected(telemetry.pirDetected);
@@ -300,11 +313,11 @@ export default function Home() {
 
             // Update relay states and buzzer from telemetry
             setRelayState({
-              socket1: data.relay1 === true,
-              socket2: data.relay2 === true,
-              ampli: data.bluetoothRelay === true || data.bluetoothAudio === true,
+              socket1: telemetry.relay1 === true,
+              socket2: telemetry.relay2 === true,
+              ampli: telemetry.bluetoothRelay === true,
             });
-            setBuzzerEnabled(data.buzzer === true);
+            setBuzzerEnabled(telemetry.buzzer === true);
           }
           
           else if (topicStr.endsWith("/event")) {
@@ -361,23 +374,31 @@ export default function Home() {
 
   useEffect(() => {
     if (!isAuthenticated) return;
-    if (telemetrySource !== "ESP32 telemetry") return;
 
     const checkTimeout = setInterval(() => {
       const now = Date.now();
-      if (lastTelemetryTime > 0 && now - lastTelemetryTime > 10000) {
+      const isConnected = lastTelemetryTime > 0 && (now - lastTelemetryTime <= 10000);
+
+      setDeviceStatus((current) => {
+        if (current.esp32 !== isConnected) {
+          return {
+            ...current,
+            esp32: isConnected,
+            rtc: isConnected ? current.rtc : false,
+            lcd: isConnected ? current.lcd : false,
+            dfPlayer: isConnected ? current.dfPlayer : false,
+          };
+        }
+        return current;
+      });
+
+      if (!isConnected) {
         setTelemetrySource("Offline");
-        setDeviceStatus({
-          esp32: false,
-          rtc: false,
-          lcd: false,
-          dfPlayer: false,
-        });
       }
-    }, 2000);
+    }, 1000);
 
     return () => clearInterval(checkTimeout);
-  }, [isAuthenticated, lastTelemetryTime, telemetrySource]);
+  }, [isAuthenticated, lastTelemetryTime]);
 
   // Hapus interval simulasi acak lokal agar angka tidak terdeteksi saat sensor/perangkat dicabut
   const hasTempSensor = deviceStatus.esp32 && deviceStatus.rtc;
@@ -388,9 +409,9 @@ export default function Home() {
   const gasPpm = Math.round(visibleGasEstimate / 60);
   const gasPercent = Math.round((visibleGasEstimate / 4095) * 100);
   const tempPercent = Math.round((visibleTempEstimate / 50) * 100);
-  const gasWarning = hasGasSensor && gasEnabled && visibleGasEstimate >= GAS_WARNING_RAW;
+  const gasWarning = hasGasSensor && gasEnabled && (gasLevel === "bahaya" || gasLevel === "waspada" || visibleGasEstimate >= GAS_WARNING_RAW);
   const tempWarning = hasTempSensor && temperatureEnabled && visibleTempEstimate > TEMP_WARNING_C;
-  const gasState = !hasGasSensor ? "Tidak Terhubung" : (gasEnabled ? (gasWarning ? "Peringatan" : "Aman") : "Nonaktif");
+  const gasState = !hasGasSensor ? "Tidak Terhubung" : (gasEnabled ? (gasLevel === "bahaya" ? "Bahaya" : (gasLevel === "waspada" ? "Waspada" : "Aman")) : "Nonaktif");
   const tempState = !hasTempSensor ? "Tidak Terhubung" : (temperatureEnabled ? (tempWarning ? "Peringatan" : "Aman") : "Nonaktif");
   const mqttOnline = mqttRealtime === "online" || mqttApiOnline;
   const relayActiveCount = relayControls.filter((relay) => relayState[relay.id]).length;
@@ -1670,6 +1691,16 @@ function SettingsPage(props: PageProps) {
 function StatsGrid(props: PageProps) {
   const hasTemp = props.deviceStatuses.esp32 && props.deviceStatuses.rtc;
   const hasGas = props.deviceStatuses.esp32;
+
+  // Determine gas accent color dynamically based on state
+  const gasAccent = !hasGas 
+    ? "cyan" 
+    : (props.gasState === "Bahaya" 
+      ? "red" 
+      : (props.gasState === "Waspada" 
+        ? "orange" 
+        : "emerald"));
+
   return (
     <section className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
       <StatCard 
@@ -1682,7 +1713,7 @@ function StatsGrid(props: PageProps) {
         label="Status Gas/Asap" 
         value={hasGas ? (props.gasState === "Aman" ? `Aman (${props.gasPpm} PPM)` : `${props.gasState} (${props.gasPpm} PPM)`) : "Tidak Terhubung"} 
         detail={hasGas ? `Sensor RAW: ${props.visibleGasEstimate}` : "ESP32 Offline"} 
-        accent="cyan" 
+        accent={gasAccent} 
       />
       <StatCard 
         label="Status Api" 
@@ -1692,7 +1723,7 @@ function StatsGrid(props: PageProps) {
       />
       <StatCard 
         label="Gerakan (PIR)" 
-        value={hasGas ? (props.pirDetected ? "Terdeteksi" : "Aman") : "Tidak Terhubung"} 
+        value={hasGas ? (props.pirDetected ? "Gerakan Terdeteksi" : "Aman") : "Tidak Terhubung"} 
         detail={hasGas ? (props.pirDetected ? "Terdeteksi gerakan" : "Kondisi aman") : "ESP32 Offline"} 
         accent="violet" 
       />
@@ -1702,7 +1733,7 @@ function StatsGrid(props: PageProps) {
         detail={hasGas ? (props.obstacleNear ? "Objek mendekat" : "Jalur bersih") : "ESP32 Offline"} 
         accent="indigo" 
       />
-      <StatCard label="Koneksi Perangkat" value={props.deviceStatuses.esp32 ? `${props.relayActiveCount} / 3` : "- / -"} detail={`Alarm aktif: ${props.activeAlarms}`} accent="indigo" />
+      <StatCard label="Koneksi Perangkat" value={props.deviceStatuses.esp32 ? "Terhubung" : "Tidak Terhubung"} detail={props.deviceStatuses.esp32 ? `Relay aktif: ${props.relayActiveCount} / 3` : "Perangkat offline"} accent="indigo" />
     </section>
   );
 }
@@ -1746,7 +1777,7 @@ function parseTelemetry(message: string): TelemetryPayload {
       tempEnabled: readBoolean(payload.rtcReady) ?? readBoolean(payload.tempEnabled),
       temperatureC: readFirstNumber(payload, ["temperature", "temperatureC", "tempC", "temp", "suhuC", "suhu"]),
       flameDetected: readBoolean(payload.flameDetected),
-      pirDetected: readBoolean(payload.pirDetected),
+      pirDetected: readBoolean(payload.pirDetected) ?? readBoolean(payload.motion),
       obstacleNear: readBoolean(payload.obstacleNear),
       rtcReady: readBoolean(payload.rtcReady),
       lcdReady: readBoolean(payload.lcdReady),
@@ -1759,6 +1790,13 @@ function parseTelemetry(message: string): TelemetryPayload {
       pirGreetingEnd: typeof payload.pirGreetingEnd === "string" ? payload.pirGreetingEnd : undefined,
       dfTrackCount: readNumber(payload.dfTrackCount),
       relaySchedules: Array.isArray(payload.relaySchedules) ? payload.relaySchedules : undefined,
+      relay1: readBoolean(payload.relay1),
+      relay2: readBoolean(payload.relay2),
+      bluetoothRelay: readBoolean(payload.bluetoothRelay) ?? readBoolean(payload.ampRelay) ?? readBoolean(payload.bluetoothAudio),
+      buzzer: readBoolean(payload.buzzer),
+      gasLevel: typeof payload.gasLevel === "string" ? payload.gasLevel : undefined,
+      gasDetected: readBoolean(payload.gasDetected),
+      online: readBoolean(payload.online),
     };
   } catch {
     return {};
@@ -1806,13 +1844,49 @@ function Panel({ title, subtitle, children }: { title: string; subtitle: string;
   );
 }
 
-function StatCard({ label, value, detail, accent }: { label: string; value: string; detail: string; accent: "blue" | "cyan" | "orange" | "indigo" | "violet" }) {
+function StatCard({ 
+  label, 
+  value, 
+  detail, 
+  accent 
+}: { 
+  label: string; 
+  value: string; 
+  detail: string; 
+  accent: "blue" | "cyan" | "orange" | "indigo" | "violet" | "red" | "emerald";
+}) {
   const accentClass = {
     blue: "text-blue-600 bg-blue-50 border-blue-100",
     cyan: "text-cyan-600 bg-cyan-50 border-cyan-100",
     orange: "text-orange-600 bg-orange-50 border-orange-100",
     indigo: "text-indigo-600 bg-indigo-50 border-indigo-100",
     violet: "text-violet-600 bg-violet-50 border-violet-100",
+    red: "text-red-600 bg-red-50 border-red-100",
+    emerald: "text-emerald-600 bg-emerald-50 border-emerald-100",
+  };
+
+  const cardBorderClass = {
+    blue: "border-slate-200 hover:border-slate-300 bg-white",
+    cyan: "border-slate-200 hover:border-slate-300 bg-white",
+    orange: "border-slate-200 hover:border-slate-300 bg-white",
+    indigo: "border-slate-200 hover:border-slate-300 bg-white",
+    violet: "border-slate-200 hover:border-slate-300 bg-white",
+    emerald: "border-emerald-200 bg-emerald-50/20 hover:border-emerald-300",
+    orange_warn: "border-orange-200 bg-orange-50/20 hover:border-orange-300",
+    red: "border-red-200 bg-red-50/40 hover:border-red-300 animate-pulse",
+  };
+
+  // Map warning classes to specific accents
+  const resolvedCardStyle = cardBorderClass[accent] || "border-slate-200 hover:border-slate-300 bg-white";
+
+  const dotColor = {
+    blue: "bg-blue-500",
+    cyan: "bg-cyan-500",
+    orange: "bg-orange-500",
+    indigo: "bg-indigo-500",
+    violet: "bg-violet-500",
+    red: "bg-red-500",
+    emerald: "bg-emerald-500",
   };
 
   const icons = {
@@ -1842,10 +1916,20 @@ function StatCard({ label, value, detail, accent }: { label: string; value: stri
         <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
       </svg>
     ),
+    red: (
+      <svg className="h-6 w-6 shrink-0" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+      </svg>
+    ),
+    emerald: (
+      <svg className="h-6 w-6 shrink-0" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+    ),
   };
 
   return (
-    <article className="relative overflow-hidden rounded-3xl border border-slate-200 bg-white p-6 shadow-sm shadow-slate-100/50 transition-all duration-200 hover:shadow-md hover:border-slate-300 flex flex-col justify-between h-full min-h-[160px]">
+    <article className={`relative overflow-hidden rounded-3xl border p-6 shadow-sm shadow-slate-100/50 transition-all duration-200 hover:shadow-md flex flex-col justify-between h-full min-h-[160px] ${resolvedCardStyle}`}>
       <div className="flex items-center justify-between gap-4">
         <span className="text-xs font-bold text-slate-400 uppercase tracking-wider block">{label}</span>
         <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border ${accentClass[accent]}`}>
@@ -1855,7 +1939,7 @@ function StatCard({ label, value, detail, accent }: { label: string; value: stri
       <div className="mt-4">
         <h3 className="text-2xl font-black tracking-tight text-slate-900 break-all">{value}</h3>
         <p className="mt-2 text-xs font-semibold text-slate-500 flex items-center gap-1.5">
-          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+          <span className={`h-1.5 w-1.5 rounded-full ${dotColor[accent] || "bg-emerald-500"} animate-pulse`}></span>
           {detail}
         </p>
       </div>

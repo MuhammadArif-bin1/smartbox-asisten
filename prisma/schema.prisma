@@ -109,6 +109,7 @@ model SensorReading {
   gasLevel         String
   temperatureHigh  Boolean
   pirDetected      Boolean
+  obstacleNear     Boolean  @default(false)
   relay1           Boolean
   relay2           Boolean
   bluetoothRelay   Boolean

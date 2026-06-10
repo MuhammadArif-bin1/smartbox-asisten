@@ -80,9 +80,12 @@ client.on("message", async (topic, message) => {
         gasLevel = "normal",
         temperatureHigh = false,
         pirDetected = false,
+        motion,
+        obstacleNear = false,
         relay1 = false,
         relay2 = false,
         bluetoothRelay = false,
+        ampRelay,
         bluetoothAudio,
         buzzer = false,
         gasSensorEnabled = true,
@@ -91,7 +94,13 @@ client.on("message", async (topic, message) => {
       // Extract temperature value (support fallback keys)
       const finalTemperature = typeof temperature === "number" ? temperature : (typeof temperatureC === "number" ? temperatureC : 0);
       // Extract bluetoothRelay value (support fallback keys)
-      const finalBluetooth = typeof bluetoothRelay === "boolean" ? bluetoothRelay : (typeof bluetoothAudio === "boolean" ? bluetoothAudio : false);
+      const finalBluetooth = typeof bluetoothRelay === "boolean" 
+        ? bluetoothRelay 
+        : (typeof ampRelay === "boolean" 
+          ? ampRelay 
+          : (typeof bluetoothAudio === "boolean" ? bluetoothAudio : false));
+      // Extract PIR detected value (support fallback keys)
+      const finalPir = typeof pirDetected === "boolean" ? pirDetected : (typeof motion === "boolean" ? motion : false);
 
       await ensureDevice(deviceId, true);
 
@@ -104,7 +113,8 @@ client.on("message", async (topic, message) => {
           gasDetected: Boolean(gasDetected),
           gasLevel: gasLevel || "normal",
           temperatureHigh: Boolean(temperatureHigh),
-          pirDetected: Boolean(pirDetected),
+          pirDetected: finalPir,
+          obstacleNear: Boolean(obstacleNear),
           relay1: Boolean(relay1),
           relay2: Boolean(relay2),
           bluetoothRelay: finalBluetooth,
