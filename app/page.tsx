@@ -1419,11 +1419,12 @@ function AlarmsPage(props: PageProps) {
 
   const dynamicTracks = useMemo(() => {
     const list = [...audioTracks];
-    const maxTrack = props.dfTrackCount || 7;
-    for (let i = 8; i <= maxTrack; i++) {
+    const maxTrack = props.dfTrackCount || 12;
+    for (let i = 13; i <= maxTrack; i++) {
       list.push({
         id: i,
-        name: `Track ${i.toString().padStart(3, "0")}.mp3`,
+        name: `Track ${i.toString().padStart(4, "0")}.mp3`,
+        label: `Track ${i.toString().padStart(4, "0")}`,
         use: "Custom Audio SD Card"
       });
     }
