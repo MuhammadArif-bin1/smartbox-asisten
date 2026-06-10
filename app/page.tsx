@@ -216,9 +216,8 @@ export default function Home() {
   const activeAlarms = useMemo(() => alarms.filter((alarm) => alarm.enabled).length, [alarms]);
 
   useEffect(() => {
-    const isAuth = typeof window !== "undefined" && window.localStorage.getItem("smartbox-authenticated") === "true";
     const timer = setTimeout(() => {
-      setIsAuthenticated(isAuth);
+      setIsAuthenticated(false);
       setAuthChecked(true);
     }, 0);
     return () => clearTimeout(timer);
@@ -377,7 +376,8 @@ export default function Home() {
 
     const checkTimeout = setInterval(() => {
       const now = Date.now();
-      const isConnected = lastTelemetryTime > 0 && (now - lastTelemetryTime <= 10000);
+      const timeoutLimit = (telemetrySource === "ESP32 telemetry") ? 10000 : 25000;
+      const isConnected = lastTelemetryTime > 0 && (now - lastTelemetryTime <= timeoutLimit);
 
       setDeviceStatus((current) => {
         if (current.esp32 !== isConnected) {
@@ -398,7 +398,7 @@ export default function Home() {
     }, 1000);
 
     return () => clearInterval(checkTimeout);
-  }, [isAuthenticated, lastTelemetryTime]);
+  }, [isAuthenticated, lastTelemetryTime, telemetrySource]);
 
   // Hapus interval simulasi acak lokal agar angka tidak terdeteksi saat sensor/perangkat dicabut
   const hasTempSensor = deviceStatus.esp32 && deviceStatus.rtc;
@@ -510,16 +510,14 @@ export default function Home() {
 
               const lastTime = new Date(latest.createdAt).getTime();
               const now = Date.now();
-              // If the database record is newer than 90 seconds, count device active
-              const isRecent = (now - lastTime) < 90000;
+              // Database polling is every 8 seconds. We consider it recent if the record is within 25 seconds.
+              const isRecent = (now - lastTime) < 25000;
               
               if (isRecent) {
-                setTelemetrySource((prev) => {
-                  if (prev !== "ESP32 telemetry") {
-                    return "Neon DB Sync";
-                  }
-                  return prev;
-                });
+                if (telemetrySource !== "ESP32 telemetry") {
+                  setTelemetrySource("Neon DB Sync");
+                  setLastTelemetryTime(lastTime);
+                }
                 setDeviceStatus((current) => {
                   if (!current.esp32) {
                     return {
@@ -533,21 +531,18 @@ export default function Home() {
                   return current;
                 });
               } else {
-                setTelemetrySource((prev) => {
-                  if (prev === "Neon DB Sync") {
-                    return "Offline";
-                  }
-                  return prev;
-                });
-                setDeviceStatus((current) => {
-                  if (current.esp32 && telemetrySource === "Neon DB Sync") {
-                    return {
-                      ...current,
-                      esp32: false,
-                    };
-                  }
-                  return current;
-                });
+                if (telemetrySource === "Neon DB Sync") {
+                  setTelemetrySource("Offline");
+                  setDeviceStatus((current) => {
+                    if (current.esp32) {
+                      return {
+                        ...current,
+                        esp32: false,
+                      };
+                    }
+                    return current;
+                  });
+                }
               }
             }
           }
@@ -774,7 +769,6 @@ export default function Home() {
     event.preventDefault();
 
     if (passwordInput === DASHBOARD_PASSWORD) {
-      window.localStorage.setItem("smartbox-authenticated", "true");
       setIsAuthenticated(true);
       setLoginError("");
       setPasswordInput("");
