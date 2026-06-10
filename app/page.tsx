@@ -553,7 +553,7 @@ export default function Home() {
     }
 
     loadTelemetryHistory();
-    const interval = setInterval(loadTelemetryHistory, 8000);
+    const interval = setInterval(loadTelemetryHistory, 1500);
 
     return () => {
       active = false;
@@ -561,7 +561,7 @@ export default function Home() {
     };
   }, [isAuthenticated, telemetrySource]);
 
-  // Fetch EventLogs from Neon DB on mount and poll every 8 seconds
+  // Fetch EventLogs from Neon DB on mount and poll every 1.5 seconds
   useEffect(() => {
     if (!isAuthenticated) return;
 
@@ -583,7 +583,7 @@ export default function Home() {
     }
 
     loadEventsHistory();
-    const interval = setInterval(loadEventsHistory, 8000);
+    const interval = setInterval(loadEventsHistory, 1500);
 
     return () => {
       active = false;
