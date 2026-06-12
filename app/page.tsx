@@ -89,21 +89,20 @@ const boardPinProfiles = {
   ESP32_S3: {
     label: "ESP32-S3",
     boardLed: "GPIO 48",
-    gas: "GPIO 1",
-    buzzer: "GPIO 2",
-    relaySocket1: "GPIO 35",
-    relaySocket2: "GPIO 36",
-    relayAmpli: "GPIO 37",
+    gas: "GPIO 3",
+    buzzer: "GPIO 10",
+    relaySocket1: "GPIO 21",
+    relaySocket2: "GPIO 47",
+    relayAmpli: "GPIO 14",
     groups: [
-      ["DFPlayer TX/RX", "GPIO 16 / 17"],
-      ["PT8211 BCK/DIN/WS", "GPIO 12 / 13 / 14"],
-      ["Mic INMP441", "GPIO 5 / 4 / 6"],
-      ["RTC + LCD I2C", "GPIO 8 / 9"],
-      ["Push button", "GPIO 10 / 11 / 15"],
-      ["PIR + IR", "GPIO 41 / 42"],
-      ["Buzzer + MQ-2", "GPIO 2 / 1"],
-      ["Relay", "GPIO 35 / 36 / 37"],
-      ["LED 12V PWM", "GPIO 18"],
+      ["DFPlayer RX/TX", "GPIO 8 / 18"],
+      ["Mic INMP441 SCK/WS/SD", "GPIO 4 / 5 / 6"],
+      ["RTC + LCD I2C SDA/SCL", "GPIO 1 / 2"],
+      ["Push button", "GPIO 7 / 19 / 20"],
+      ["PIR + IR", "GPIO 9 / 42"],
+      ["Buzzer + MQ-2", "GPIO 10 / 3"],
+      ["Relay 1 / Relay 2 / Bluetooth", "GPIO 21 / 47 / 14"],
+      ["LED 12V", "GPIO 12"],
     ],
   },
   ESP32_WROOM: {
@@ -136,12 +135,9 @@ const relayControls: Array<{ id: RelayId; label: string; detail: string; pin: st
   { id: "ampli", label: "Bluetooth Ampli", detail: "Power amplifier audio", pin: boardPins.relayAmpli, mqttKey: "bluetooth_ampli" },
 ];
 
-const pinGroups = boardPins.groups;
-
 const temperatureSeries = [28, 28.6, 29.1, 30, 30.5, 30.2, 29.4, 28.8, 28.2, 27.6, 26.8, 25.8, 25.4, 25.6, 26.4, 27.2, 27.8, 27.2];
 const TEMP_WARNING_C = 35;
 const GAS_WARNING_RAW = 1800;
-const BOARD_LED_PIN = boardPins.boardLed;
 const BOARD_LED_DURATION_SECONDS = 10;
 const DEFAULT_MQTT_WS_URL = "ws://192.168.1.12:9001";
 const MQTT_BROKER_LABEL = "mqtt://192.168.1.12:1883";
@@ -191,7 +187,7 @@ export default function Home() {
   const [voiceMode, setVoiceMode] = useState(true);
   const [buzzerEnabled, setBuzzerEnabled] = useState(false);
   const [boardLedScheduleEnabled, setBoardLedScheduleEnabled] = useState(true);
-  const [relayState, setRelayState] = useState<Record<RelayId, boolean>>({ socket1: true, socket2: false, ampli: true });
+  const [relayState, setRelayState] = useState<Record<RelayId, boolean>>({ socket1: false, socket2: false, ampli: false });
   const relayPendingRef = useRef<Record<RelayId, number>>({ socket1: 0, socket2: 0, ampli: 0 });
   const [status, setStatus] = useState<CommandStatus>("idle");
   const [lastCommand, setLastCommand] = useState("Belum ada command dikirim");
@@ -199,9 +195,12 @@ export default function Home() {
   const [pirEnabled, setPirEnabled] = useState(true);
   const [sleepModeEnabled, setSleepModeEnabled] = useState(false);
   const [pirGreetingEnabled, setPirGreetingEnabled] = useState(false);
-  const [pirGreetingTrack, setPirGreetingTrack] = useState(1);
+  const [pirGreetingTrack, setPirGreetingTrack] = useState(10);
   const [pirGreetingStart, setPirGreetingStart] = useState("07:00");
   const [pirGreetingEnd, setPirGreetingEnd] = useState("22:00");
+  const [pirGreetingCooldown, setPirGreetingCooldown] = useState(10);
+  const [pirGreetingDays, setPirGreetingDays] = useState<string[]>(["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]);
+  const [pirGreetingPlayMode, setPirGreetingPlayMode] = useState("cooldown");
   const [dfTrackCount, setDfTrackCount] = useState(12);
   const [relaySchedules, setRelaySchedules] = useState<Array<{
     id: string;
@@ -224,7 +223,7 @@ export default function Home() {
   const [lastTelemetryTime, setLastTelemetryTime] = useState<number>(0);
   const [tempHistory, setTempHistory] = useState(temperatureSeries);
   const [flameDetected, setFlameDetected] = useState(false);
-  const [pirDetected, setPirDetected] = useState(false);
+  const [pirDetected, setPirDetected] = useState<boolean | null>(null);
   const [obstacleNear, setObstacleNear] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -514,6 +513,37 @@ export default function Home() {
     loadAlarms();
   }, [isAuthenticated]);
 
+  // Fetch PIR greeting settings from DB on mount
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    async function loadPirGreeting() {
+      try {
+        const response = await fetch("/api/pir-greeting-settings");
+        if (response.ok) {
+          const data = await response.json();
+          if (data) {
+            setPirGreetingEnabled(data.enabled);
+            setPirGreetingTrack(data.track);
+            setPirGreetingStart(data.startTime);
+            setPirGreetingEnd(data.endTime);
+            setPirGreetingCooldown(data.cooldownSeconds);
+            setPirGreetingPlayMode(data.playMode);
+            try {
+              if (data.days) {
+                setPirGreetingDays(JSON.parse(data.days));
+              }
+            } catch (e) {
+              console.error("Error parsing PIR greeting days:", e);
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Gagal memuat setting PIR dari database:", err);
+      }
+    }
+    loadPirGreeting();
+  }, [isAuthenticated]);
+
   // Fetch telemetry history from Neon DB (SensorReading table) on mount and poll every 8 seconds
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -771,16 +801,22 @@ export default function Home() {
     sendDeviceCommand("tempSensor.set", { enabled: next }, `Sensor suhu ${next ? "aktif" : "mati"}`);
   }
 
-  function toggleRelay(relayId: RelayId) {
+  async function toggleRelay(relayId: RelayId) {
     const next = !relayState[relayId];
     setRelayState((current) => ({ ...current, [relayId]: next }));
     relayPendingRef.current[relayId] = Date.now();
     
+    let ok: boolean;
     if (relayId === "ampli") {
-      sendDeviceCommand("bluetooth.set", { state: next, durationSeconds: 60 }, `Relay Bluetooth ${next ? "aktif" : "mati"}`);
+      ok = await sendDeviceCommand("bluetooth.set", { state: next, durationSeconds: 60 }, `Relay Bluetooth ${next ? "aktif" : "mati"}`);
     } else {
       const relayNum = relayId === "socket2" ? 2 : 1;
-      sendDeviceCommand("relay.set", { relay: relayNum, state: next }, `Stop Kontak ${relayNum} ${next ? "aktif" : "mati"}`);
+      ok = await sendDeviceCommand("relay.set", { relay: relayNum, state: next }, `Stop Kontak ${relayNum} ${next ? "aktif" : "mati"}`);
+    }
+
+    if (!ok) {
+      relayPendingRef.current[relayId] = 0;
+      setRelayState((current) => ({ ...current, [relayId]: !next }));
     }
   }
 
@@ -796,12 +832,62 @@ export default function Home() {
     sendDeviceCommand("sleepMode.set", { enabled: next }, `Sleep Mode ${next ? "aktif" : "mati"}`);
   }
 
-  function updatePirGreetingConfig(enabled: boolean, track: number, start: string, end: string) {
+  async function updatePirGreetingConfig(
+    enabled: boolean,
+    track: number,
+    start: string,
+    end: string,
+    cooldown: number,
+    playMode: string,
+    days: string[]
+  ) {
+    if (track < 10 || track > 12 || cooldown < 10 || days.length === 0) {
+      notify("Track greeting harus 0010-0012, cooldown minimal 10 detik, dan hari aktif wajib dipilih.", "error");
+      return;
+    }
+
     setPirGreetingEnabled(enabled);
     setPirGreetingTrack(track);
     setPirGreetingStart(start);
     setPirGreetingEnd(end);
-    sendDeviceCommand("pirGreeting.set", { enabled, track, start, end }, "Update PIR Greeting");
+    setPirGreetingCooldown(cooldown);
+    setPirGreetingPlayMode(playMode);
+    setPirGreetingDays(days);
+
+    try {
+      const response = await fetch("/api/pir-greeting-settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          enabled,
+          track,
+          startTime: start,
+          endTime: end,
+          cooldownSeconds: cooldown,
+          playMode,
+          days: JSON.stringify(days),
+        }),
+      });
+      if (!response.ok) throw new Error("Setting PIR ditolak API");
+    } catch (err) {
+      console.error("Gagal menyimpan setting PIR ke database:", err);
+      notify("Gagal menyimpan pengaturan PIR greeting.", "error");
+      return;
+    }
+
+    await sendDeviceCommand(
+      "pirGreeting.set",
+      {
+        enabled,
+        track,
+        startTime: start,
+        endTime: end,
+        cooldownSeconds: cooldown,
+        playMode,
+        days,
+      },
+      "Update PIR Greeting"
+    );
   }
 
   async function saveRelaySchedule(sch: { id?: string; name: string; relayNumber: number; startTime: string; endTime: string; days: string; enabled: boolean }) {
@@ -825,15 +911,9 @@ export default function Home() {
           }
         });
         notify(isEdit ? "Jadwal berhasil diperbarui" : "Jadwal berhasil ditambahkan", "success");
-        
-        // Synchronize with ESP32 local schedules via MQTT
-        sendDeviceCommand(
-          "relaySchedule.set",
-          { id: saved.id, relay: saved.relayNumber, start: saved.startTime, end: saved.endTime, enabled: saved.enabled },
-          `Simpan jadwal ${saved.name}`
-        );
       } else {
-        notify("Gagal menyimpan jadwal", "error");
+        const result = await response.json().catch(() => null);
+        notify(result?.error || "Gagal menyimpan jadwal", "error");
       }
     } catch (err) {
       console.error("Error saving schedule:", err);
@@ -850,9 +930,6 @@ export default function Home() {
       if (response.ok) {
         setRelaySchedules((current) => current.filter((s) => s.id !== id));
         notify("Jadwal berhasil dihapus", "success");
-        
-        // Delete schedule on ESP32 via MQTT
-        sendDeviceCommand("relaySchedule.delete", { id }, `Hapus jadwal`);
       } else {
         notify("Gagal menghapus jadwal", "error");
       }
@@ -915,6 +992,9 @@ export default function Home() {
     pirGreetingTrack,
     pirGreetingStart,
     pirGreetingEnd,
+    pirGreetingCooldown,
+    pirGreetingDays,
+    pirGreetingPlayMode,
     dfTrackCount,
     relaySchedules,
     togglePir,
@@ -990,7 +1070,7 @@ type PageProps = {
   setBoardLedScheduleEnabled: (enabled: boolean) => void;
   setVoiceMode: (enabled: boolean) => void;
   toggleGas: () => void;
-  toggleRelay: (relayId: RelayId) => void;
+  toggleRelay: (relayId: RelayId) => Promise<void>;
   toggleTemperature: () => void;
   deviceStatuses: { esp32: boolean; rtc: boolean; lcd: boolean; dfPlayer: boolean; ip?: string; rssi?: number; lastSeen?: string };
   pirEnabled: boolean;
@@ -999,15 +1079,26 @@ type PageProps = {
   pirGreetingTrack: number;
   pirGreetingStart: string;
   pirGreetingEnd: string;
+  pirGreetingCooldown: number;
+  pirGreetingDays: string[];
+  pirGreetingPlayMode: string;
   dfTrackCount: number;
   relaySchedules: Array<{ id: string; name: string; relayNumber: number; startTime: string; endTime: string; days: string; enabled: boolean }>;
   togglePir: () => void;
   toggleSleepMode: () => void;
-  updatePirGreetingConfig: (enabled: boolean, track: number, start: string, end: string) => void;
+  updatePirGreetingConfig: (
+    enabled: boolean,
+    track: number,
+    start: string,
+    end: string,
+    cooldown: number,
+    playMode: string,
+    days: string[]
+  ) => Promise<void>;
   saveRelaySchedule: (sch: { id?: string; name: string; relayNumber: number; startTime: string; endTime: string; days: string; enabled: boolean }) => Promise<void>;
   deleteRelaySchedule: (id: string) => Promise<void>;
   flameDetected: boolean;
-  pirDetected: boolean;
+  pirDetected: boolean | null;
   obstacleNear: boolean;
   sendDeviceCommand: (type: string, payload: Record<string, unknown>, label: string, successMsg?: string, errorMsg?: string) => Promise<boolean>;
   events: Array<{ id: string; type: string; message: string; createdAt: string; level: string }>;
@@ -1167,6 +1258,8 @@ function ToastMessage({ toast, onClose }: { toast: Toast; onClose: () => void })
 }
 
 function DashboardPage(props: PageProps) {
+  const isSending = props.status === "sending";
+
   return (
     <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
       <div className="grid gap-5">
@@ -1174,31 +1267,41 @@ function DashboardPage(props: PageProps) {
         
         {/* Quick Control Panel */}
         <Panel title="Kontrol Cepat Real-time" subtitle="Kirim perintah langsung ke perangkat ESP32-S3 via database-tracked API.">
-          <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
-            <QuickControlRow 
-              label="Sensor Gas" 
-              detail={props.gasEnabled ? "Sensor Aktif" : "Sensor Nonaktif"} 
-              enabled={props.gasEnabled} 
-              onToggle={props.toggleGas} 
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+            <QuickControlRow
+              label="Stop Kontak 1 (Kipas)"
+              detail={props.relayState.socket1 ? "Kipas Menyala" : "Kipas Mati"}
+              enabled={props.relayState.socket1}
+              onToggle={() => props.toggleRelay("socket1")}
+              disabled={isSending}
             />
-            <QuickControlRow 
-              label="Alarm Buzzer" 
-              detail={props.buzzerEnabled ? "Buzzer ON" : "Buzzer OFF"} 
-              enabled={props.buzzerEnabled} 
+            <QuickControlRow
+              label="Stop Kontak 2 (Charger)"
+              detail={props.relayState.socket2 ? "Charger ON" : "Charger OFF"}
+              enabled={props.relayState.socket2}
+              onToggle={() => props.toggleRelay("socket2")}
+              disabled={isSending}
+            />
+            <QuickControlRow
+              label="Relay Bluetooth"
+              detail={props.relayState.ampli ? "Bluetooth Aktif (1 m)" : "Bluetooth Mati"}
+              enabled={props.relayState.ampli}
+              onToggle={() => props.toggleRelay("ampli")}
+              disabled={isSending}
+            />
+            <QuickControlRow
+              label="Alarm Buzzer"
+              detail={props.buzzerEnabled ? "Buzzer ON" : "Buzzer OFF"}
+              enabled={props.buzzerEnabled}
               onToggle={() => {
                 const next = !props.buzzerEnabled;
                 props.setBuzzerEnabled(next);
                 props.sendDeviceCommand("buzzer.set", { state: next }, `Buzzer ${next ? "aktif" : "mati"}`);
               }} 
-            />
-            <QuickControlRow 
-              label="Relay Bluetooth (Smartbox Assistant)" 
-              detail={props.relayState.ampli ? "Bluetooth Aktif (Timer 1 m)" : "Bluetooth Mati"} 
-              enabled={props.relayState.ampli} 
-              onToggle={() => props.toggleRelay("ampli")} 
+              disabled={isSending}
             />
             
-            <div className="rounded-2xl border border-slate-200 bg-white p-4 flex flex-col justify-between min-h-[110px]">
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 flex flex-col justify-between min-h-[110px] relative">
               <div>
                 <p className="text-sm font-bold text-slate-900">Test Suara DFPlayer</p>
                 <p className="text-xs text-slate-500">Pilih track audio 1-12.</p>
@@ -1208,6 +1311,7 @@ function DashboardPage(props: PageProps) {
                   id="dashboard-dfplayer-track"
                   className="h-9 rounded-xl border border-slate-200 bg-white px-2 text-xs font-semibold outline-none flex-1 focus:ring-2 focus:ring-blue-500/20"
                   defaultValue={1}
+                  disabled={isSending}
                 >
                   {audioTracks.map((track) => (
                     <option key={track.id} value={track.id}>
@@ -1221,19 +1325,26 @@ function DashboardPage(props: PageProps) {
                     const track = Number(select?.value || 1);
                     await props.sendDeviceCommand("voice.play", { track }, "Perintah suara", "Perintah suara dikirim", "Gagal mengirim perintah");
                   }}
-                  className="h-9 rounded-xl bg-blue-600 px-3 text-xs font-bold text-white transition hover:bg-blue-700 active:scale-95 shadow-sm"
+                  disabled={isSending}
+                  className="h-9 rounded-xl bg-blue-600 px-3 text-xs font-bold text-white transition hover:bg-blue-700 active:scale-95 shadow-sm disabled:opacity-50"
                   type="button"
                 >
                   Play
                 </button>
                 <button
                   onClick={() => props.sendDeviceCommand("dfplayer.stop", {}, "DFPlayer Stop")}
-                  className="h-9 rounded-xl bg-red-100 text-red-600 px-3 text-xs font-bold transition hover:bg-red-200 active:scale-95"
+                  disabled={isSending}
+                  className="h-9 rounded-xl bg-red-100 text-red-600 px-3 text-xs font-bold transition hover:bg-red-200 active:scale-95 disabled:opacity-50"
                   type="button"
                 >
                   Stop
                 </button>
               </div>
+              {isSending && (
+                <div className="absolute inset-0 bg-white/40 backdrop-blur-[0.5px] rounded-2xl flex items-center justify-center">
+                  <span className="text-[10px] font-black text-blue-600 animate-pulse bg-blue-50/90 px-2.5 py-1 rounded-full border border-blue-100 shadow-sm">Mengirim...</span>
+                </div>
+              )}
             </div>
           </div>
         </Panel>
@@ -1256,22 +1367,46 @@ function DashboardPage(props: PageProps) {
   );
 }
 
-function QuickControlRow({ label, detail, enabled, onToggle }: { label: string; detail: string; enabled: boolean; onToggle: () => void }) {
+function QuickControlRow({
+  label,
+  detail,
+  enabled,
+  onToggle,
+  disabled
+}: {
+  label: string;
+  detail: string;
+  enabled: boolean;
+  onToggle: () => void;
+  disabled?: boolean;
+}) {
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4 flex flex-col justify-between min-h-[110px]">
+    <div className="rounded-2xl border border-slate-200 bg-white p-4 flex flex-col justify-between min-h-[110px] relative">
       <div>
         <p className="text-sm font-bold text-slate-900">{label}</p>
         <p className="mt-1 text-xs text-slate-500">{detail}</p>
       </div>
-      <div className="mt-3 flex justify-end">
-        <Switch checked={enabled} onChange={onToggle} />
+      <div className="mt-3 flex justify-between items-center">
+        <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold border ${
+          enabled ? "bg-emerald-50 text-emerald-600 border-emerald-200" : "bg-slate-100 text-slate-400 border-slate-200"
+        }`}>
+          <span className={`h-1.5 w-1.5 rounded-full ${enabled ? "bg-emerald-500 animate-pulse" : "bg-slate-300"}`} />
+          {enabled ? "ON" : "OFF"}
+        </span>
+        <Switch checked={enabled} onChange={onToggle} disabled={disabled} />
       </div>
+      {disabled && (
+        <div className="absolute inset-0 bg-white/40 backdrop-blur-[0.5px] rounded-2xl flex items-center justify-center">
+          <span className="text-[10px] font-black text-blue-600 animate-pulse bg-blue-50/90 px-2.5 py-1 rounded-full border border-blue-100 shadow-sm">Mengirim...</span>
+        </div>
+      )}
     </div>
   );
 }
 
 function MonitoringPage(props: PageProps) {
   const isTempDataWaiting = !props.deviceStatuses.esp32 || props.visibleTempEstimate === 0;
+  const isSending = props.status === "sending";
   return (
     <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_420px]">
       <div className="grid gap-5">
@@ -1287,10 +1422,10 @@ function MonitoringPage(props: PageProps) {
             <ReadingRow label="Gas / Asap" value={props.gasState === "Tidak Terhubung" || props.gasState === "Offline" ? "-" : `${props.gasPpm} PPM (${props.visibleGasEstimate} RAW)`} status={props.gasState} percent={props.gasState === "Tidak Terhubung" || props.gasState === "Offline" ? 0 : props.gasPercent} tone="emerald" />
             <ReadingRow 
               label="Gerakan (PIR)" 
-              value={!props.deviceStatuses.esp32 ? "Tidak Terhubung" : (props.pirDetected ? "Gerakan Terdeteksi" : "Tidak Ada Gerakan")} 
-              status={!props.deviceStatuses.esp32 ? "Offline" : (props.pirDetected ? "Gerakan Terdeteksi" : "Tidak Ada Gerakan")} 
-              percent={!props.deviceStatuses.esp32 ? 0 : (props.pirDetected ? 100 : 0)} 
-              tone="orange" 
+              value={!props.deviceStatuses.esp32 ? "Tidak Terhubung" : (props.pirDetected === null ? "Menunggu data PIR..." : (props.pirDetected ? "Gerakan Terdeteksi" : "Tidak Ada Gerakan"))}
+              status={!props.deviceStatuses.esp32 ? "Offline" : (props.pirDetected === null ? "Menunggu data PIR..." : (props.pirDetected ? "Gerakan Terdeteksi" : "Tidak Ada Gerakan"))}
+              percent={!props.deviceStatuses.esp32 ? 0 : (props.pirDetected ? 100 : 0)}
+              tone="orange"
             />
           </div>
           <div className="mt-4 grid gap-4 md:grid-cols-2">
@@ -1308,6 +1443,56 @@ function MonitoringPage(props: PageProps) {
               active={props.gasWarning}
               message={props.gasWarning ? `Peringatan gas terdeteksi, estimasi ${props.visibleGasEstimate} raw melewati ambang ${GAS_WARNING_RAW} raw.` : "Gas/asap masih di bawah ambang peringatan."}
             />
+          </div>
+        </Panel>
+        <Panel title="Kontrol Cepat Real-time" subtitle="Kontrol aktuator utama dari halaman monitoring.">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+            <QuickControlRow
+              label="Stop Kontak 1 (Kipas)"
+              detail={props.relayState.socket1 ? "Kipas menyala" : "Kipas mati"}
+              enabled={props.relayState.socket1}
+              onToggle={() => props.toggleRelay("socket1")}
+              disabled={isSending}
+            />
+            <QuickControlRow
+              label="Stop Kontak 2 (Charger)"
+              detail={props.relayState.socket2 ? "Charger aktif" : "Charger mati"}
+              enabled={props.relayState.socket2}
+              onToggle={() => props.toggleRelay("socket2")}
+              disabled={isSending}
+            />
+            <QuickControlRow
+              label="Relay Bluetooth"
+              detail={props.relayState.ampli ? "Bluetooth aktif" : "Bluetooth mati"}
+              enabled={props.relayState.ampli}
+              onToggle={() => props.toggleRelay("ampli")}
+              disabled={isSending}
+            />
+            <QuickControlRow
+              label="Buzzer"
+              detail={props.buzzerEnabled ? "Buzzer ON" : "Buzzer OFF"}
+              enabled={props.buzzerEnabled}
+              onToggle={() => {
+                const next = !props.buzzerEnabled;
+                props.setBuzzerEnabled(next);
+                props.sendDeviceCommand("buzzer.set", { state: next }, `Buzzer ${next ? "aktif" : "mati"}`);
+              }}
+              disabled={isSending}
+            />
+            <div className="relative flex min-h-[110px] flex-col justify-between rounded-2xl border border-slate-200 bg-white p-4">
+              <div>
+                <p className="text-sm font-bold text-slate-900">Test DFPlayer</p>
+                <p className="mt-1 text-xs text-slate-500">Putar track 0001 untuk pengujian cepat.</p>
+              </div>
+              <button
+                className="mt-3 h-9 rounded-xl bg-blue-600 px-3 text-xs font-bold text-white transition hover:bg-blue-700 disabled:opacity-50"
+                disabled={isSending}
+                onClick={() => props.sendDeviceCommand("voice.play", { track: 1 }, "Test DFPlayer")}
+                type="button"
+              >
+                {isSending ? "Mengirim..." : "Putar 0001.mp3"}
+              </button>
+            </div>
           </div>
         </Panel>
         <Panel title="Grafik Suhu Ruangan" subtitle="Visual monitoring khusus sensor.">
@@ -1347,6 +1532,7 @@ function DevicesPage(props: PageProps) {
   
   const [isPlayingTest, setIsPlayingTest] = useState(false);
   const [testTrack, setTestTrack] = useState(1);
+  const isSending = props.status === "sending";
 
   const daysOfWeek = [
     { id: "monday", label: "Sn" },
@@ -1385,7 +1571,7 @@ function DevicesPage(props: PageProps) {
     setEditingId(null);
   };
 
-  const handleEdit = (sch: any) => {
+  const handleEdit = (sch: PageProps["relaySchedules"][number]) => {
     setEditingId(sch.id);
     setName(sch.name);
     setRelayNumber(sch.relayNumber);
@@ -1461,7 +1647,7 @@ function DevicesPage(props: PageProps) {
                 <p className="text-sm font-bold text-slate-900">Stop Kontak 1 (Kipas)</p>
                 <p className="text-xs text-slate-500">{boardPins.relaySocket1}</p>
               </div>
-              <Switch checked={props.relayState.socket1} onChange={() => props.toggleRelay("socket1")} />
+              <Switch checked={props.relayState.socket1} disabled={isSending} onChange={() => props.toggleRelay("socket1")} />
             </div>
             
             {/* Stop Kontak 2 */}
@@ -1470,7 +1656,7 @@ function DevicesPage(props: PageProps) {
                 <p className="text-sm font-bold text-slate-900">Stop Kontak 2 (Charger)</p>
                 <p className="text-xs text-slate-500">{boardPins.relaySocket2}</p>
               </div>
-              <Switch checked={props.relayState.socket2} onChange={() => props.toggleRelay("socket2")} />
+              <Switch checked={props.relayState.socket2} disabled={isSending} onChange={() => props.toggleRelay("socket2")} />
             </div>
 
             {/* Relay Bluetooth */}
@@ -1482,7 +1668,7 @@ function DevicesPage(props: PageProps) {
                     {props.relayState.ampli ? "Bluetooth Aktif" : "Bluetooth Mati"}
                   </p>
                 </div>
-                <Switch checked={props.relayState.ampli} onChange={() => props.toggleRelay("ampli")} />
+                <Switch checked={props.relayState.ampli} disabled={isSending} onChange={() => props.toggleRelay("ampli")} />
               </div>
               {props.relayState.ampli && (
                 <div className="border-t border-slate-100 pt-2 mt-1">
@@ -1499,13 +1685,13 @@ function DevicesPage(props: PageProps) {
         {/* Buzzer and DFPlayer Card */}
         <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm shadow-slate-100/50 flex flex-col justify-between">
           <div>
-            <h3 className="text-base font-black text-slate-900 border-b border-slate-100 pb-3 mb-4">Aktuator Tambahan</h3>
+            <h3 className="text-base font-black text-slate-900 border-b border-slate-100 pb-3 mb-4">Buzzer & Test Suara</h3>
             <div className="flex items-center justify-between rounded-2xl border border-slate-100 bg-slate-50/50 p-3 mb-4">
               <div>
                 <p className="text-sm font-bold text-slate-900">Buzzer Alarm</p>
                 <p className="text-xs text-slate-500">Bunyi Peringatan</p>
               </div>
-              <Switch checked={props.buzzerEnabled} onChange={() => {
+              <Switch checked={props.buzzerEnabled} disabled={isSending} onChange={() => {
                 const next = !props.buzzerEnabled;
                 props.setBuzzerEnabled(next);
                 props.sendDeviceCommand("buzzer.set", { state: next }, `Buzzer ${next ? "aktif" : "mati"}`);
@@ -1520,6 +1706,7 @@ function DevicesPage(props: PageProps) {
                   className="h-9 rounded-xl border border-slate-200 bg-white px-2 text-xs font-semibold outline-none flex-1 focus:ring-2 focus:ring-blue-500/20"
                   value={testTrack}
                   onChange={(e) => setTestTrack(Number(e.target.value))}
+                  disabled={isPlayingTest || isSending}
                 >
                   {audioTracks.map((track) => (
                     <option key={track.id} value={track.id}>
@@ -1530,14 +1717,14 @@ function DevicesPage(props: PageProps) {
                 <button
                   onClick={async () => {
                     setIsPlayingTest(true);
-                    const ok = await props.sendDeviceCommand("voice.play", { track: testTrack }, "Play Suara", "Perintah suara dikirim", "Gagal mengirim perintah");
+                    await props.sendDeviceCommand("voice.play", { track: testTrack }, "Play Suara", "Perintah suara dikirim", "Gagal mengirim perintah");
                     setIsPlayingTest(false);
                   }}
-                  disabled={isPlayingTest}
+                  disabled={isPlayingTest || isSending}
                   className="h-9 rounded-xl bg-blue-600 px-3 text-xs font-bold text-white transition hover:bg-blue-700 active:scale-95 disabled:bg-slate-400"
                   type="button"
                 >
-                  Play
+                  {isPlayingTest || isSending ? "Mengirim..." : "Play"}
                 </button>
               </div>
             </div>
@@ -1573,8 +1760,8 @@ function DevicesPage(props: PageProps) {
                   onChange={(e) => setRelayNumber(Number(e.target.value))}
                   className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold outline-none focus:border-blue-500"
                 >
-                  <option value={1}>Stop Kontak 1</option>
-                  <option value={2}>Stop Kontak 2</option>
+                  <option value={1}>Stop Kontak 1 (Kipas)</option>
+                  <option value={2}>Stop Kontak 2 (Charger)</option>
                 </select>
               </label>
 
@@ -1768,41 +1955,48 @@ function AiPage(props: PageProps) {
 
 function AlarmsPage(props: PageProps) {
   const [sendingAlarmId, setSendingAlarmId] = useState<string | null>(null);
-
-  // Local states for PIR Greeting configuration
-  const [localPirGreetingTrack, setLocalPirGreetingTrack] = useState(props.pirGreetingTrack || 1);
+  const [savingPirGreeting, setSavingPirGreeting] = useState(false);
+  const [localPirGreetingTrack, setLocalPirGreetingTrack] = useState(props.pirGreetingTrack || 10);
   const [localPirGreetingStart, setLocalPirGreetingStart] = useState(props.pirGreetingStart || "07:00");
   const [localPirGreetingEnd, setLocalPirGreetingEnd] = useState(props.pirGreetingEnd || "22:00");
+  const [localPirGreetingCooldown, setLocalPirGreetingCooldown] = useState(props.pirGreetingCooldown || 10);
+  const [localPirGreetingPlayMode, setLocalPirGreetingPlayMode] = useState(props.pirGreetingPlayMode || "cooldown");
+  const [localPirGreetingDays, setLocalPirGreetingDays] = useState<string[]>(props.pirGreetingDays);
+
+  const daysOfWeek = [
+    { id: "monday", label: "Sen" },
+    { id: "tuesday", label: "Sel" },
+    { id: "wednesday", label: "Rab" },
+    { id: "thursday", label: "Kam" },
+    { id: "friday", label: "Jum" },
+    { id: "saturday", label: "Sab" },
+    { id: "sunday", label: "Min" },
+  ];
 
   useEffect(() => {
     const timer = setTimeout(() => {
-      setLocalPirGreetingTrack(props.pirGreetingTrack || 1);
+      setLocalPirGreetingTrack(props.pirGreetingTrack || 10);
       setLocalPirGreetingStart(props.pirGreetingStart || "07:00");
       setLocalPirGreetingEnd(props.pirGreetingEnd || "22:00");
+      setLocalPirGreetingCooldown(props.pirGreetingCooldown || 10);
+      setLocalPirGreetingPlayMode(props.pirGreetingPlayMode || "cooldown");
+      setLocalPirGreetingDays(props.pirGreetingDays);
     }, 0);
     return () => clearTimeout(timer);
-  }, [props.pirGreetingTrack, props.pirGreetingStart, props.pirGreetingEnd]);
-
-  const dynamicTracks = useMemo(() => {
-    const list = [...audioTracks];
-    const maxTrack = props.dfTrackCount || 12;
-    for (let i = 13; i <= maxTrack; i++) {
-      list.push({
-        id: i,
-        name: `Track ${i.toString().padStart(4, "0")}.mp3`,
-        label: `Track ${i.toString().padStart(4, "0")}`,
-        use: "Custom Audio SD Card"
-      });
-    }
-    return list;
-  }, [props.dfTrackCount]);
+  }, [
+    props.pirGreetingCooldown,
+    props.pirGreetingDays,
+    props.pirGreetingEnd,
+    props.pirGreetingPlayMode,
+    props.pirGreetingStart,
+    props.pirGreetingTrack,
+  ]);
 
   async function sendAlarm(alarm: Alarm) {
     setSendingAlarmId(alarm.id);
     
-    // Save updated alarm configurations to Neon DB
     try {
-      await fetch("/api/alarms", {
+      const response = await fetch("/api/alarms", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1814,31 +2008,26 @@ function AlarmsPage(props: PageProps) {
           enabled: alarm.enabled,
         }),
       });
+      if (!response.ok) throw new Error("Alarm ditolak API");
+
+      await props.sendDeviceCommand(
+        "alarm.set",
+        {
+          id: alarm.id,
+          time: alarm.time,
+          track: alarm.track,
+          enabled: alarm.enabled,
+        },
+        `Alarm ${alarm.label} ${alarm.time}`,
+        "Alarm tersimpan dan tersinkron ke ESP32",
+        "Alarm tersimpan, tetapi sinkronisasi MQTT gagal"
+      );
     } catch (err) {
       console.error("Gagal menyimpan alarm ke database:", err);
+      props.notify("Gagal menyimpan alarm jadwal.", "error");
+    } finally {
+      setSendingAlarmId(null);
     }
-
-    await props.publish(
-      "smartbox/alarm/set",
-      {
-        ...alarm,
-        timezone: "Asia/Indonesia",
-        boardLedTimer: {
-          enabled: props.boardLedScheduleEnabled,
-          pin: BOARD_LED_PIN,
-          durationMs: BOARD_LED_DURATION_SECONDS * 1000,
-          turnOffAfterMs: BOARD_LED_DURATION_SECONDS * 1000,
-        },
-      },
-      `Alarm ${alarm.label} ${alarm.time}`,
-    );
-    setSendingAlarmId(null);
-  }
-
-  function toggleBoardLedSchedule() {
-    const next = !props.boardLedScheduleEnabled;
-    props.setBoardLedScheduleEnabled(next);
-    props.notify(`Timer LED papan ESP32 ${next ? "aktif" : "mati"}`, "info");
   }
 
   async function toggleAlarmEnabled(alarm: Alarm) {
@@ -1846,9 +2035,8 @@ function AlarmsPage(props: PageProps) {
     props.updateAlarm(alarm.id, "enabled", next);
     props.notify(`Alarm ${alarm.label} ${next ? "aktif" : "mati"}`, "info");
 
-    // Save toggle state to Neon DB
     try {
-      await fetch("/api/alarms", {
+      const response = await fetch("/api/alarms", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1860,46 +2048,36 @@ function AlarmsPage(props: PageProps) {
           enabled: next,
         }),
       });
+      if (!response.ok) throw new Error("Alarm ditolak API");
+      await props.sendDeviceCommand(
+        "alarm.set",
+        { id: alarm.id, time: alarm.time, track: alarm.track, enabled: next },
+        `Alarm ${alarm.label} ${next ? "aktif" : "mati"}`
+      );
     } catch (err) {
       console.error("Gagal memperbarui status alarm di database:", err);
+      props.updateAlarm(alarm.id, "enabled", !next);
+      props.notify("Gagal memperbarui status alarm.", "error");
     }
+  }
 
-    props.publish(
-      "smartbox/alarm/set",
-      {
-        ...alarm,
-        enabled: next,
-        timezone: "Asia/Indonesia",
-        boardLedTimer: {
-          enabled: props.boardLedScheduleEnabled,
-          pin: BOARD_LED_PIN,
-          durationMs: BOARD_LED_DURATION_SECONDS * 1000,
-          turnOffAfterMs: BOARD_LED_DURATION_SECONDS * 1000,
-        },
-      },
-      `Alarm ${alarm.label} ${next ? "aktif" : "mati"}`,
+  async function savePirGreeting(enabled = props.pirGreetingEnabled) {
+    setSavingPirGreeting(true);
+    await props.updatePirGreetingConfig(
+      enabled,
+      localPirGreetingTrack,
+      localPirGreetingStart,
+      localPirGreetingEnd,
+      localPirGreetingCooldown,
+      localPirGreetingPlayMode,
+      localPirGreetingDays
     );
+    setSavingPirGreeting(false);
   }
 
   return (
     <div className="grid gap-5">
-      <Panel title="Timer LED Papan ESP32" subtitle="Lampu papan menyala saat jadwal alarm aktif, lalu mati otomatis setelah 10 detik.">
-        <div className="grid gap-4 rounded-2xl border border-blue-100 bg-blue-50 p-4 md:grid-cols-[1fr_auto] md:items-center">
-          <div>
-            <p className="text-base font-black text-slate-950">LED timer mengikuti alarm jadwal</p>
-            <p className="mt-1 text-sm leading-6 text-slate-600">
-              Saat alarm dikirim ke ESP32, payload membawa perintah LED {BOARD_LED_PIN} menyala selama {BOARD_LED_DURATION_SECONDS} detik, lalu mati otomatis.
-            </p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <span className="rounded-full bg-white px-3 py-1 text-xs font-black text-blue-600">Pin: {BOARD_LED_PIN}</span>
-              <span className="rounded-full bg-white px-3 py-1 text-xs font-black text-blue-600">Durasi: {BOARD_LED_DURATION_SECONDS} detik</span>
-            </div>
-          </div>
-          <Switch checked={props.boardLedScheduleEnabled} onChange={toggleBoardLedSchedule} />
-        </div>
-      </Panel>
-
-      <Panel title="Alarm Jadwal" subtitle="Semua pengaturan alarm dipusatkan di halaman ini.">
+      <Panel title="Alarm Jadwal DFPlayer" subtitle="Alarm suara berjalan dengan timezone Asia/Jakarta dan tidak memuat jadwal stop kontak.">
         <div className="grid gap-3">
           {props.alarms.map((alarm) => (
             <div key={alarm.id} className="grid gap-4 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm shadow-slate-100 xl:grid-cols-[auto_110px_minmax(180px,1fr)_260px_auto_auto] xl:items-center">
@@ -1934,27 +2112,26 @@ function AlarmsPage(props: PageProps) {
       </Panel>
 
 
-      <Panel title="Greeting Wakeup (PIR)" subtitle="Atur pemutaran greeting suara otomatis di DFPlayer saat mendeteksi gerakan.">
-        <div className="grid gap-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-          <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4 lg:items-center">
-            
+      <Panel title="Greeting Wakeup PIR" subtitle="PIR hanya mendeteksi gerakan; track 0010-0012 dipilih oleh pengguna, bukan klasifikasi gesture otomatis.">
+        <div className="grid gap-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
             <div className="grid gap-1">
               <span className="text-xs font-bold text-slate-500">Aktifkan Greeting PIR</span>
               <div className="flex h-11 items-center">
-                <Switch checked={props.pirGreetingEnabled} onChange={() => props.updatePirGreetingConfig(!props.pirGreetingEnabled, localPirGreetingTrack, localPirGreetingStart, localPirGreetingEnd)} />
+                <Switch checked={props.pirGreetingEnabled} disabled={savingPirGreeting} onChange={() => savePirGreeting(!props.pirGreetingEnabled)} />
               </div>
             </div>
 
             <div className="grid gap-1">
-              <span className="text-xs font-bold text-slate-500">Jalur Suara (Track DFPlayer)</span>
+              <span className="text-xs font-bold text-slate-500">Track DFPlayer</span>
               <select 
                 className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold outline-none focus:border-blue-400"
                 value={localPirGreetingTrack} 
                 onChange={(event) => setLocalPirGreetingTrack(Number(event.target.value))}
               >
-                {dynamicTracks.map((track) => (
+                {audioTracks.filter((track) => track.id >= 10 && track.id <= 12).map((track) => (
                   <option key={track.id} value={track.id}>
-                    {track.id.toString().padStart(3, "0")} - {track.name}
+                    {track.name} - {track.label}
                   </option>
                 ))}
               </select>
@@ -1980,18 +2157,63 @@ function AlarmsPage(props: PageProps) {
               />
             </div>
 
+            <div className="grid gap-1">
+              <span className="text-xs font-bold text-slate-500">Cooldown (detik)</span>
+              <input
+                className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400"
+                min={10}
+                onChange={(event) => setLocalPirGreetingCooldown(Math.max(10, Number(event.target.value)))}
+                type="number"
+                value={localPirGreetingCooldown}
+              />
+            </div>
+
+            <div className="grid gap-1">
+              <span className="text-xs font-bold text-slate-500">Mode Putar</span>
+              <select
+                className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold outline-none focus:border-blue-400"
+                onChange={(event) => setLocalPirGreetingPlayMode(event.target.value)}
+                value={localPirGreetingPlayMode}
+              >
+                <option value="cooldown">Cooldown</option>
+                <option value="once_schedule">Sekali per jadwal</option>
+                <option value="once_motion">Sekali per gerakan</option>
+              </select>
+            </div>
           </div>
 
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between border-t border-slate-200 pt-3">
-            <span className="text-xs font-semibold text-slate-500">
-              * Cooldown otomatis 1 menit diterapkan setelah greeting diputar.
-            </span>
+          <div className="grid gap-2 border-t border-slate-200 pt-4">
+            <span className="text-xs font-bold text-slate-500">Hari Aktif</span>
+            <div className="flex flex-wrap gap-2">
+              {daysOfWeek.map((day) => {
+                const active = localPirGreetingDays.includes(day.id);
+                return (
+                  <button
+                    className={`h-9 rounded-xl px-3 text-xs font-bold transition ${
+                      active ? "bg-blue-600 text-white" : "bg-white text-slate-600 ring-1 ring-slate-200"
+                    }`}
+                    key={day.id}
+                    onClick={() => setLocalPirGreetingDays((current) =>
+                      current.includes(day.id) ? current.filter((item) => item !== day.id) : [...current, day.id]
+                    )}
+                    type="button"
+                  >
+                    {day.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-3 border-t border-slate-200 pt-4 sm:flex-row sm:items-center sm:justify-between">
+            <span className="text-xs font-semibold text-slate-500">Trigger berhenti setelah jam selesai; audio yang sedang berjalan tidak dihentikan paksa.</span>
             <button
-              className="h-11 rounded-xl bg-blue-600 px-6 text-sm font-black text-white transition hover:bg-blue-700"
-              onClick={() => props.updatePirGreetingConfig(props.pirGreetingEnabled, localPirGreetingTrack, localPirGreetingStart, localPirGreetingEnd)}
+              className="h-11 rounded-xl bg-blue-600 px-6 text-sm font-black text-white transition hover:bg-blue-700 disabled:bg-slate-400"
+              disabled={savingPirGreeting || localPirGreetingDays.length === 0}
+              onClick={() => savePirGreeting()}
               type="button"
             >
-              Simpan Pengaturan PIR Greeting
+              {savingPirGreeting ? "Menyimpan..." : "Simpan Pengaturan"}
             </button>
           </div>
         </div>
@@ -2133,7 +2355,7 @@ function parseTelemetry(message: string): TelemetryPayload {
       tempEnabled: readBoolean(payload.rtcReady) ?? readBoolean(payload.tempEnabled),
       temperatureC: readFirstNumber(payload, ["temperature", "temperatureC", "tempC", "temp", "suhuC", "suhu"]),
       flameDetected: readBoolean(payload.flameDetected),
-      pirDetected: readBoolean(payload.pirDetected) ?? readBoolean(payload.motion),
+      pirDetected: readBoolean(payload.pirDetected) ?? readBoolean(payload.motionDetected) ?? readBoolean(payload.motion),
       obstacleNear: readBoolean(payload.obstacleNear),
       rtcReady: readBoolean(payload.rtcReady),
       lcdReady: readBoolean(payload.lcdReady),
@@ -2326,8 +2548,8 @@ function TemperatureChart({ value, series = temperatureSeries }: { value: number
 
 function ReadingRow({ label, value, status, percent, tone }: { label: string; value: string; status: string; percent: number; tone: "blue" | "emerald" | "orange" }) {
   const color = { blue: "bg-blue-600", emerald: "bg-emerald-500", orange: "bg-orange-500" };
-  const warning = status === "Peringatan" || status === "Waspada" || status === "Panas" || status === "Bahaya" || status === "Terdeteksi" || status === "Ada Gerakan" || status === "Dekat";
-  const offline = status === "Offline" || status === "Tidak Terhubung";
+  const warning = status === "Peringatan" || status === "Waspada" || status === "Panas" || status === "Bahaya" || status === "Terdeteksi" || status === "Ada Gerakan" || status === "Gerakan Terdeteksi" || status === "Dekat";
+  const offline = status === "Offline" || status === "Tidak Terhubung" || status.includes("Menunggu");
   const badgeClass = offline
     ? "bg-slate-100 text-slate-500"
     : (warning ? "bg-red-50 text-red-600 border border-red-200" : "bg-emerald-50 text-emerald-600 border border-emerald-200");
@@ -2397,68 +2619,18 @@ function ControlRow({ label, detail, enabled, onToggle }: { label: string; detai
   );
 }
 
-function RelayCard({ label, detail, pin, enabled, onToggle }: { label: string; detail: string; pin: string; enabled: boolean; onToggle: () => void }) {
+function Switch({ checked, onChange, disabled }: { checked: boolean; onChange: () => void; disabled?: boolean }) {
   return (
-    <article className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="text-base font-black text-slate-950">{label}</p>
-          <p className="mt-1 text-sm text-slate-500">{detail}</p>
-        </div>
-        <span className={`h-3 w-3 rounded-full ${enabled ? "bg-emerald-500" : "bg-slate-300"}`} />
-      </div>
-      <p className="mt-4 font-mono text-xs font-bold text-blue-600">{pin}</p>
-      <button className={`mt-4 h-11 w-full rounded-xl text-sm font-black text-white shadow-sm transition ${enabled ? "bg-blue-600 hover:bg-blue-700" : "bg-slate-400 hover:bg-slate-500"}`} onClick={onToggle} type="button">
-        {enabled ? "Relay ON" : "Relay OFF"}
-      </button>
-    </article>
-  );
-}
-
-function Switch({ checked, onChange }: { checked: boolean; onChange: () => void }) {
-  return (
-    <button aria-pressed={checked} className={`relative h-8 w-16 rounded-full p-1 transition ${checked ? "bg-blue-600" : "bg-slate-300"}`} onClick={onChange} type="button">
+    <button
+      aria-pressed={checked}
+      className={`relative h-8 w-16 rounded-full p-1 transition ${checked ? "bg-blue-600" : "bg-slate-300"} ${disabled ? "opacity-50 cursor-not-allowed" : ""}`}
+      onClick={disabled ? undefined : onChange}
+      disabled={disabled}
+      type="button"
+    >
       <span className={`block h-6 w-6 rounded-full bg-white shadow transition ${checked ? "translate-x-8" : "translate-x-0"}`} />
       <span className={`absolute top-1/2 -translate-y-1/2 text-[10px] font-black text-white ${checked ? "left-3" : "right-2"}`}>{checked ? "ON" : "OFF"}</span>
     </button>
-  );
-}
-
-function DeviceList({ statuses = { esp32: false, rtc: false, lcd: false, dfPlayer: false } }: { statuses?: { esp32: boolean; rtc: boolean; lcd: boolean; dfPlayer: boolean } }) {
-  const devices = [
-    { name: "ESP32 Controller", detail: "Mikrokontroler utama", online: statuses.esp32 },
-    { name: "RTC DS3231 (I2C)", detail: "Real-time clock jam", online: statuses.rtc },
-    { name: "LCD 16x2 (I2C)", detail: "Karakter display", online: statuses.lcd },
-    { name: "DFPlayer Mini", detail: "Modul MP3 player", online: statuses.dfPlayer },
-    { name: "Mosquitto Broker", detail: "MQTT TCP & WebSocket", online: true },
-  ];
-  return (
-    <div className="grid gap-2">
-      {devices.map((device) => (
-        <div key={device.name} className="flex items-center justify-between gap-4 border-b border-slate-100 py-3 last:border-b-0">
-          <div>
-            <p className="text-sm font-bold text-slate-900">{device.name}</p>
-            <p className="text-xs text-slate-500">{device.detail}</p>
-          </div>
-          <span className={`text-sm font-bold ${device.online ? "text-emerald-600" : "text-red-500"}`}>
-            {device.online ? "Online" : "Offline"}
-          </span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function PinoutList() {
-  return (
-    <div className="grid gap-2">
-      {pinGroups.map(([name, pin]) => (
-        <div key={name} className="grid grid-cols-[1fr_auto] items-center gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm">
-          <span className="min-w-0 truncate font-medium text-slate-700">{name}</span>
-          <span className="font-mono text-xs font-bold text-blue-600">{pin}</span>
-        </div>
-      ))}
-    </div>
   );
 }
 

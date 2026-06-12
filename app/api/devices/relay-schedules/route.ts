@@ -3,7 +3,21 @@ import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 
-export async function GET(request: Request) {
+const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
+const VALID_DAYS = new Set(["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]);
+
+function parseDays(days: unknown): string[] | null {
+  try {
+    const parsed = typeof days === "string" ? JSON.parse(days) : days;
+    if (!Array.isArray(parsed) || parsed.length === 0) return null;
+    const normalized = parsed.map(String).map((day) => day.toLowerCase());
+    return normalized.every((day) => VALID_DAYS.has(day)) ? normalized : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function GET() {
   try {
     const schedules = await prisma.relaySchedule.findMany({
       orderBy: { createdAt: "asc" },
@@ -25,20 +39,28 @@ export async function POST(request: Request) {
     const body = await request.json();
     const { name, relayNumber, startTime, endTime, days, enabled } = body;
 
-    if (!name || typeof relayNumber !== "number" || !startTime || !endTime || !days) {
+    const activeDays = parseDays(days);
+    if (
+      typeof name !== "string" ||
+      !name.trim() ||
+      ![1, 2].includes(Number(relayNumber)) ||
+      !TIME_PATTERN.test(startTime) ||
+      !TIME_PATTERN.test(endTime) ||
+      !activeDays
+    ) {
       return NextResponse.json(
-        { error: "Field name, relayNumber, startTime, endTime, dan days wajib diisi" },
+        { error: "Jadwal tidak valid. Gunakan relay 1/2, waktu HH:MM, dan minimal satu hari aktif." },
         { status: 400 }
       );
     }
 
     const newSchedule = await prisma.relaySchedule.create({
       data: {
-        name,
+        name: name.trim(),
         relayNumber: Number(relayNumber),
         startTime,
         endTime,
-        days: typeof days === "string" ? days : JSON.stringify(days),
+        days: JSON.stringify(activeDays),
         enabled: enabled !== undefined ? Boolean(enabled) : true,
       },
     });

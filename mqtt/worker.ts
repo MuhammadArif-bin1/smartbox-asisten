@@ -112,6 +112,7 @@ client.on("message", async (topic, message) => {
         temperatureHigh = false,
         pirDetected,
         motion,
+        motionDetected,
         obstacleNear = false,
         relay1 = false,
         relay2 = false,
@@ -133,9 +134,18 @@ client.on("message", async (topic, message) => {
           ? ampRelay 
           : (typeof bluetoothAudio === "boolean" ? bluetoothAudio : false));
       // Extract PIR detected value (support fallback keys)
-      const finalPir = typeof pirDetected === "boolean" 
-        ? pirDetected 
-        : (typeof motion === "boolean" ? motion : false);
+      const previousStatus = typeof pirDetected === "boolean" || typeof motionDetected === "boolean" || typeof motion === "boolean"
+        ? null
+        : await retryQuery(() => prisma.smartboxStatus.findUnique({
+            where: { deviceId },
+            select: { pirDetected: true },
+          })).catch(() => null);
+      const finalPir = typeof pirDetected === "boolean"
+        ? pirDetected
+        : (typeof motionDetected === "boolean"
+          ? motionDetected
+          : (typeof motion === "boolean" ? motion : (previousStatus?.pirDetected ?? false)));
+      const finalGasDetected = Boolean(gasDetected) || gasLevel === "gas" || gasLevel === "smoke";
 
       await ensureDevice(deviceId, true);
 
@@ -145,7 +155,7 @@ client.on("message", async (topic, message) => {
           deviceId,
           temperature: finalTemperature,
           gasRaw: typeof gasRaw === "number" ? Math.round(gasRaw) : 0,
-          gasDetected: Boolean(gasDetected),
+          gasDetected: finalGasDetected,
           gasLevel: gasLevel || "normal",
           temperatureHigh: Boolean(temperatureHigh),
           pirDetected: finalPir,
@@ -339,7 +349,8 @@ setInterval(async () => {
 // ------------------------------------------------------------------
 // BACKGROUND SCHEDULER UNTUK RELAY SCHEDULE
 // ------------------------------------------------------------------
-const lastTriggered = new Map<string, { time: string; state: boolean }>();
+const lastRelayTrigger = new Map<string, string>();
+const lastAlarmTrigger = new Map<string, string>();
 
 function getJakartaDateTime() {
   const options: Intl.DateTimeFormatOptions = {
@@ -351,7 +362,7 @@ function getJakartaDateTime() {
     minute: "2-digit",
     second: "2-digit",
     weekday: "long",
-    hour12: false,
+    hourCycle: "h23",
   };
   const formatter = new Intl.DateTimeFormat("en-US", options);
   const parts = formatter.formatToParts(new Date());
@@ -364,13 +375,14 @@ function getJakartaDateTime() {
   const weekday = map.weekday ? map.weekday.toLowerCase() : "";
   const hour = map.hour || "00";
   const minute = map.minute || "00";
+  const date = `${map.year || "0000"}-${map.month || "00"}-${map.day || "00"}`;
   
-  return { weekday, hour, minute };
+  return { weekday, hour, minute, date };
 }
 
 async function checkRelaySchedules() {
   try {
-    const { weekday, hour, minute } = getJakartaDateTime();
+    const { weekday, hour, minute, date } = getJakartaDateTime();
     const timeStr = `${hour}:${minute}`;
     
     // Fetch all enabled relay schedules
@@ -383,6 +395,7 @@ async function checkRelaySchedules() {
 
     const targetDeviceId = process.env.NEXT_PUBLIC_DEVICE_ID || "smartbox-001";
     const topic = `smartbox/${targetDeviceId}/cmd`;
+    await ensureDevice(targetDeviceId, true);
 
     for (const schedule of schedules) {
       let activeDays: string[] = [];
@@ -401,62 +414,78 @@ async function checkRelaySchedules() {
       if (activeDays.includes(weekday)) {
         // Check ON trigger
         if (schedule.startTime === timeStr) {
-          const last = lastTriggered.get(schedule.id);
-          if (last?.time !== timeStr || last?.state !== true) {
-            lastTriggered.set(schedule.id, { time: timeStr, state: true });
+          const triggerKey = `${date}:${timeStr}:on`;
+          const stateKey = `${schedule.id}:on`;
+          if (lastRelayTrigger.get(stateKey) !== triggerKey) {
+            lastRelayTrigger.set(stateKey, triggerKey);
             
             const payload = {
-              id: `schedule_${schedule.id}_on_${timeStr.replace(":", "")}`,
+              id: `schedule_relay${schedule.relayNumber}_on`,
               type: "relay.set",
               payload: {
                 relay: schedule.relayNumber,
                 state: true,
                 source: "schedule",
+                scheduleId: schedule.id,
               },
             };
 
             client.publish(topic, JSON.stringify(payload), { qos: 1 });
             console.log(`[Worker Schedule] Triggered Relay ${schedule.relayNumber} ON for schedule: ${schedule.name}`);
 
-            // Log event to DB
+            // Log event to DB with exact fields requested
             await retryQuery(() => prisma.eventLog.create({
               data: {
                 deviceId: targetDeviceId,
                 level: "INFO",
                 type: "relay.scheduled_on",
                 message: `Jadwal '${schedule.name}' menyalakan Relay ${schedule.relayNumber}`,
-                payload: payload,
+                payload: {
+                  relayNumber: schedule.relayNumber,
+                  state: true,
+                  source: "schedule",
+                  time: timeStr,
+                  scheduleId: schedule.id,
+                },
               },
             })).catch(err => console.error("[Worker Schedule] Error writing EventLog:", err));
           }
         }
         // Check OFF trigger
-        else if (schedule.endTime === timeStr) {
-          const last = lastTriggered.get(schedule.id);
-          if (last?.time !== timeStr || last?.state !== false) {
-            lastTriggered.set(schedule.id, { time: timeStr, state: false });
+        if (schedule.endTime === timeStr) {
+          const triggerKey = `${date}:${timeStr}:off`;
+          const stateKey = `${schedule.id}:off`;
+          if (lastRelayTrigger.get(stateKey) !== triggerKey) {
+            lastRelayTrigger.set(stateKey, triggerKey);
 
             const payload = {
-              id: `schedule_${schedule.id}_off_${timeStr.replace(":", "")}`,
+              id: `schedule_relay${schedule.relayNumber}_off`,
               type: "relay.set",
               payload: {
                 relay: schedule.relayNumber,
                 state: false,
                 source: "schedule",
+                scheduleId: schedule.id,
               },
             };
 
             client.publish(topic, JSON.stringify(payload), { qos: 1 });
             console.log(`[Worker Schedule] Triggered Relay ${schedule.relayNumber} OFF for schedule: ${schedule.name}`);
 
-            // Log event to DB
+            // Log event to DB with exact fields requested
             await retryQuery(() => prisma.eventLog.create({
               data: {
                 deviceId: targetDeviceId,
                 level: "INFO",
                 type: "relay.scheduled_off",
                 message: `Jadwal '${schedule.name}' mematikan Relay ${schedule.relayNumber}`,
-                payload: payload,
+                payload: {
+                  relayNumber: schedule.relayNumber,
+                  state: false,
+                  source: "schedule",
+                  time: timeStr,
+                  scheduleId: schedule.id,
+                },
               },
             })).catch(err => console.error("[Worker Schedule] Error writing EventLog:", err));
           }
@@ -468,6 +497,74 @@ async function checkRelaySchedules() {
   }
 }
 
-// Run the scheduler every 30 seconds
-setInterval(checkRelaySchedules, 30 * 1000);
+async function checkAlarmSchedules() {
+  try {
+    const { weekday, hour, minute, date } = getJakartaDateTime();
+    const timeStr = `${hour}:${minute}`;
+    const weekdayCode = weekday.slice(0, 3).toUpperCase();
+    const alarms = await retryQuery(() => prisma.alarm.findMany({
+      where: { enabled: true },
+    })).catch((err) => {
+      console.error("[Worker Alarm] Error fetching alarms:", err);
+      return [];
+    });
 
+    const targetDeviceId = process.env.NEXT_PUBLIC_DEVICE_ID || "smartbox-001";
+    const topic = `smartbox/${targetDeviceId}/cmd`;
+    await ensureDevice(targetDeviceId, true);
+
+    for (const alarm of alarms) {
+      const repeatDays = alarm.repeatDays.map((day) => day.toUpperCase());
+      if (alarm.time !== timeStr || !repeatDays.includes(weekdayCode)) {
+        continue;
+      }
+
+      const triggerKey = `${date}:${timeStr}`;
+      if (lastAlarmTrigger.get(alarm.id) === triggerKey) {
+        continue;
+      }
+      lastAlarmTrigger.set(alarm.id, triggerKey);
+
+      const command = {
+        id: `schedule_alarm_${alarm.id}_${date.replaceAll("-", "")}_${timeStr.replace(":", "")}`,
+        type: "alarm.trigger",
+        payload: {
+          track: alarm.dfTrack,
+          time: timeStr,
+          scheduleId: alarm.id,
+          name: alarm.label,
+          source: "schedule",
+        },
+      };
+
+      client.publish(topic, JSON.stringify(command), { qos: 1 });
+      console.log(`[Worker Alarm] Triggered track ${alarm.dfTrack} for alarm: ${alarm.label}`);
+
+      await retryQuery(() => prisma.eventLog.create({
+        data: {
+          deviceId: targetDeviceId,
+          level: "INFO",
+          type: "alarm.schedule_triggered",
+          message: `Alarm '${alarm.label}' memicu track ${alarm.dfTrack}`,
+          payload: {
+            track: alarm.dfTrack,
+            time: timeStr,
+            scheduleId: alarm.id,
+            source: "schedule",
+          },
+        },
+      })).catch((err) => console.error("[Worker Alarm] Error writing EventLog:", err));
+    }
+  } catch (err) {
+    console.error("[Worker Alarm] Unhandled error in checkAlarmSchedules:", err);
+  }
+}
+
+async function runSchedulers() {
+  await Promise.all([checkRelaySchedules(), checkAlarmSchedules()]);
+}
+
+// Run schedules every 30 seconds. Date is included in each trigger key so
+// schedules can run again on the next active day without repeating per minute.
+setInterval(runSchedulers, 30 * 1000);
+setTimeout(runSchedulers, 3000);

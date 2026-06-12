@@ -260,6 +260,34 @@ Buka Prisma Studio: `npx prisma studio`
 
 ---
 
+## 9. Checklist Akhir Monitoring, Control, Jadwal, dan Greeting
+
+- [ ] PIR HIGH terbaca di Serial Monitor ESP32
+- [ ] Telemetry `pirDetected` dan `motionDetected` terkirim ke `smartbox/smartbox-001/telemetry`
+- [ ] Worker menyimpan `pirDetected` ke `SensorReading` dan `SmartboxStatus`
+- [ ] Monitoring menampilkan `Gerakan Terdeteksi`, `Tidak Ada Gerakan`, atau `Menunggu data PIR...`
+- [ ] Kontrol cepat tersusun 1 kolom mobile, 2 kolom tablet, dan 3 kolom desktop
+- [ ] Stop Kontak 1 ON/OFF menyalakan dan mematikan kipas
+- [ ] Stop Kontak 2 ON/OFF mengaktifkan dan mematikan charger
+- [ ] Jadwal relay ON/OFF berjalan dengan timezone `Asia/Jakarta`
+- [ ] Jadwal tidak terpicu berulang dalam menit yang sama dan dapat berjalan lagi pada hari berikutnya
+- [ ] Bagian `Aktuator Tambahan` tidak tampil di Devices Control
+- [ ] Alarm jam 21:00 dengan track 6 memutar `0006.mp3`
+- [ ] LCD alarm menampilkan `ALARM JADWAL` dan `TRACK 0006`
+- [ ] Greeting PIR hanya memakai track `0010.mp3`, `0011.mp3`, atau `0012.mp3`
+- [ ] Greeting PIR tidak terpicu sebelum jam mulai atau setelah jam selesai
+- [ ] Rentang lintas tengah malam, misalnya 23:00-01:00, berfungsi
+- [ ] Mode cooldown, sekali per jadwal, dan sekali per gerakan berfungsi
+- [ ] LCD menampilkan `GERAKAN` / `TERDETEKSI` selama 4 detik
+- [ ] Bluetooth ON menampilkan `BLUETOOTH` / `DIAKTIFKAN` dan memutar `0003.mp3` sekali
+- [ ] Bluetooth OFF menampilkan `BLUETOOTH` / `DIMATIKAN`
+- [ ] Boot memutar `0001.mp3` satu kali setelah DFPlayer siap
+- [ ] Suara bahaya tidak ditimpa greeting PIR
+- [ ] Semua pemutaran DFPlayer melewati `playVoice()`
+- [ ] Pengaturan greeting tetap tersimpan setelah ESP32 restart
+
+---
+
 ## 9. Verifikasi Generate Audio Script
 
 > Wajib isi `GEMINI_API_KEY` di `.env` terlebih dahulu!

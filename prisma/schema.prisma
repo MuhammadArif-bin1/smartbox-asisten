@@ -37,7 +37,7 @@ model Alarm {
   deviceId    String
   label       String
   time        String
-  timezone    String   @default("Asia/Bangkok")
+  timezone    String   @default("Asia/Jakarta")
   greeting    String
   dfTrack     Int
   enabled     Boolean  @default(true)
@@ -245,5 +245,28 @@ model RelaySchedule {
   enabled     Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+}
+
+model AlarmSchedule {
+  id        String   @id @default(cuid())
+  name      String
+  time      String
+  track     Int
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model PirGreetingSetting {
+  id              String   @id @default(cuid())
+  enabled         Boolean  @default(false)
+  track           Int      @default(10)
+  startTime       String   @default("07:00")
+  endTime         String   @default("22:00")
+  cooldownSeconds Int      @default(10)
+  playMode        String   @default("cooldown")
+  days            String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 }
 

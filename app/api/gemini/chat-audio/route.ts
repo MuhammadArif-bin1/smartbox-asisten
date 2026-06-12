@@ -131,7 +131,7 @@ export async function POST(req: NextRequest) {
       let parsedResult;
       try {
         parsedResult = JSON.parse(resultText);
-      } catch (e) {
+      } catch {
         parsedResult = {
           transcript: "Suara terdeteksi",
           reply: resultText
@@ -190,7 +190,11 @@ export async function POST(req: NextRequest) {
 
     // Parse voice commands / intents
     const normalizedQuery = userQuery.toLowerCase().trim();
-    let mqttCmd: any = null;
+    let mqttCmd: {
+      id: string;
+      type: string;
+      payload: Record<string, string | number | boolean>;
+    } | null = null;
 
     if (normalizedQuery.includes("nyalakan stop kontak satu") || normalizedQuery.includes("hidupkan stop kontak satu") || normalizedQuery.includes("nyalakan stop kontak 1")) {
       mqttCmd = {

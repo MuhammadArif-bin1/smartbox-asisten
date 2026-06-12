@@ -163,12 +163,18 @@ float gasRawFiltered = -1.0;
 // ==========================================================
 // 6. VOICE COOLDOWN
 // ==========================================================
-const unsigned long VOICE_COOLDOWN_MS = 1000;
+const unsigned long VOICE_MIN_GAP_MS = 2500;
 unsigned long lastVoiceMillis = 0;
+bool dfplayerBusy = false;
+unsigned long dfplayerBusyUntil = 0;
+uint8_t currentVoicePriority = 0;
+uint8_t pendingVoiceTrack = 0;
+uint8_t pendingVoicePriority = 0;
+String pendingVoiceReason = "";
 
 const unsigned long GAS_VOICE_COOLDOWN_MS  = 10000;
 const unsigned long TEMP_VOICE_COOLDOWN_MS = 10000;
-const unsigned long PIR_GREETING_COOLDOWN  = 60000;
+unsigned long PIR_GREETING_COOLDOWN = 10000;
 
 unsigned long lastGasAudioTime  = 0;
 unsigned long lastTempAudioTime = 0;
@@ -256,6 +262,7 @@ bool buzzerManual = false;
 bool relay1State = false;
 bool relay2State = false;
 bool bluetoothAudioState = false;
+bool relay1ForcedByGas = false;
 
 bool lastGasWarning  = false;
 bool lastSmokeWarning = false;
@@ -293,14 +300,19 @@ Preferences preferences;
 bool sleepModeEnabled = false;
 bool pirEnabled = true;
 bool pirGreetingEnabled = false;
-int pirGreetingTrack = 1;
+int pirGreetingTrack = TRACK_GESTURE_WALK;
 int pirGreetingStartHour = 7;
 int pirGreetingStartMinute = 0;
 int pirGreetingEndHour = 22;
 int pirGreetingEndMinute = 0;
+uint8_t pirGreetingDaysMask = 0x7F;
+String pirGreetingPlayMode = "cooldown";
 
 unsigned long lastMotionDetectedTime = 0;
 unsigned long lastPirGreetingTime = 0;
+bool lastPirDetectedState = false;
+bool pirGreetingPirWasHigh = false;
+bool pirGreetingPlayedThisWindow = false;
 
 bool lcdBacklightOn = true;
 unsigned long lcdOverrideUntil = 0;
@@ -342,6 +354,10 @@ struct AlarmConfig {
 AlarmConfig alarmList[3] = {{"morning", 7, 0, TRACK_ALARM_MORNING, true, -1},
                              {"noon", 12, 0, TRACK_ALARM_AFTERNOON, true, -1},
                              {"evening", 17, 0, TRACK_ALARM_EVENING, true, -1}};
+int lastScheduledAlarmDay = -1;
+int lastScheduledAlarmHour = -1;
+int lastScheduledAlarmMinute = -1;
+int lastScheduledAlarmTrack = -1;
 
 // ==========================================================
 // FORWARD DECLARATIONS
@@ -354,6 +370,7 @@ void setLcdOverride(const char *l1, const char *l2, unsigned long durationMs);
 void setBluetoothAudio(bool state);
 void playDfTrack(int track);
 void playVoice(uint8_t track, const char* reason);
+void serviceVoiceQueue();
 void stopDfTrack();
 void setRelay(uint8_t relayNumber, bool state, bool withVoice);
 void setBuzzer(bool state, bool manualMode);
@@ -380,6 +397,9 @@ void handleWhiteButtonQuickPress();
 void sendRecordedAudio();
 void updateRecording();
 void checkPirGreeting();
+int timeToMinutes(int hour, int minute);
+bool isNowInTimeRange(int nowHour, int nowMinute, int startHour, int startMinute, int endHour, int endMinute);
+bool parseTimeToHourMinute(const char* timeStr, int &hour, int &minute);
 void checkRelaySchedules();
 void checkBluetoothTimer();
 void checkBlackButton();
@@ -394,6 +414,7 @@ void led12cOn();
 void led12cOff();
 void blinkLed12c(int times, int delayMs);
 void updateLed12c(bool gasWarning, bool smokeWarning, bool pirDetected, bool wifiConnected, bool mqttConnected);
+void playScheduledAlarm(int track, const char *timeStr);
 
 // ==========================================================
 // 10. MQTT TOPICS
@@ -456,6 +477,41 @@ void publishAck(const char *id, const char *type, bool ok, const char *message) 
   publishJson(topicAck(), doc, false);
 }
 
+int timeToMinutes(int hour, int minute) {
+  return hour * 60 + minute;
+}
+
+bool isNowInTimeRange(int nowHour, int nowMinute, int startHour, int startMinute, int endHour, int endMinute) {
+  int nowValue = timeToMinutes(nowHour, nowMinute);
+  int startValue = timeToMinutes(startHour, startMinute);
+  int endValue = timeToMinutes(endHour, endMinute);
+
+  if (startValue <= endValue) {
+    return nowValue >= startValue && nowValue <= endValue;
+  }
+
+  return nowValue >= startValue || nowValue <= endValue;
+}
+
+bool parseTimeToHourMinute(const char* timeStr, int &hour, int &minute) {
+  if (timeStr == NULL || strlen(timeStr) != 5 || timeStr[2] != ':') {
+    return false;
+  }
+
+  int parsedHour = -1;
+  int parsedMinute = -1;
+  if (sscanf(timeStr, "%2d:%2d", &parsedHour, &parsedMinute) != 2) {
+    return false;
+  }
+  if (parsedHour < 0 || parsedHour > 23 || parsedMinute < 0 || parsedMinute > 59) {
+    return false;
+  }
+
+  hour = parsedHour;
+  minute = parsedMinute;
+  return true;
+}
+
 // ==========================================================
 // 12. SERIAL DEBUG MQ-2 (LENGKAP)
 // ==========================================================
@@ -487,11 +543,18 @@ void loadSettings() {
   gasEnabled = preferences.getBool("gasEnabled", true);
   tempEnabled = preferences.getBool("tempEnabled", true);
   pirGreetingEnabled = preferences.getBool("pirGreetEn", false);
-  pirGreetingTrack = preferences.getInt("pirGreetTrk", 1);
+  pirGreetingTrack = preferences.getInt("pirGreetTrk", TRACK_GESTURE_WALK);
   pirGreetingStartHour = preferences.getInt("pirGreetSH", 7);
   pirGreetingStartMinute = preferences.getInt("pirGreetSM", 0);
   pirGreetingEndHour = preferences.getInt("pirGreetEH", 22);
   pirGreetingEndMinute = preferences.getInt("pirGreetEM", 0);
+  PIR_GREETING_COOLDOWN = preferences.getULong("pirGreetCool", 10000);
+  if (PIR_GREETING_COOLDOWN < 10000) PIR_GREETING_COOLDOWN = 10000;
+  pirGreetingPlayMode = preferences.getString("pirGreetMode", "cooldown");
+  pirGreetingDaysMask = preferences.getUChar("pirGreetDays", 0x7F);
+  if (pirGreetingTrack < TRACK_GESTURE_WALK || pirGreetingTrack > TRACK_GESTURE_WAVE) {
+    pirGreetingTrack = TRACK_GESTURE_WALK;
+  }
   mq2Baseline = preferences.getInt("mq2Baseline", 1000);
   MQ2_BASELINE = mq2Baseline;
   SMOKE_THRESHOLD_OFFSET = preferences.getInt("smokeOffset", 250);
@@ -520,6 +583,9 @@ void saveSettings() {
   preferences.putInt("pirGreetSM", pirGreetingStartMinute);
   preferences.putInt("pirGreetEH", pirGreetingEndHour);
   preferences.putInt("pirGreetEM", pirGreetingEndMinute);
+  preferences.putULong("pirGreetCool", PIR_GREETING_COOLDOWN);
+  preferences.putString("pirGreetMode", pirGreetingPlayMode);
+  preferences.putUChar("pirGreetDays", pirGreetingDaysMask);
   preferences.putInt("mq2Baseline", MQ2_BASELINE);
   preferences.putInt("smokeOffset", SMOKE_THRESHOLD_OFFSET);
   preferences.putInt("gasOffset", GAS_THRESHOLD_OFFSET);
@@ -715,22 +781,19 @@ void updateLed12c(bool gasWarning, bool smokeWarning, bool pirDetected, bool wif
 // ==========================================================
 // VOICE / DFPLAYER FUNCTIONS
 // ==========================================================
-void playVoice(uint8_t track, const char* reason) {
-  if (!dfPlayerReady) {
-    Serial.println("[DFPLAYER] Tidak ready, suara batal diputar.");
-    return;
-  }
+uint8_t getVoicePriority(const char* reason) {
+  if (strstr(reason, "gas") != NULL || strstr(reason, "smoke") != NULL || strstr(reason, "temperature_warning") != NULL) return 6;
+  if (strstr(reason, "alarm") != NULL) return 5;
+  if (strstr(reason, "system_boot") != NULL) return 4;
+  if (strstr(reason, "bluetooth") != NULL) return 3;
+  if (strstr(reason, "pir") != NULL) return 2;
+  return 1;
+}
 
-  unsigned long now = millis();
-
-  if (now - lastVoiceMillis < VOICE_COOLDOWN_MS) {
-    Serial.println("[DFPLAYER] Voice cooldown aktif, skip.");
-    return;
-  }
-
+void startVoiceNow(uint8_t track, const char* reason, uint8_t priority) {
   if (!bluetoothAudioState) {
     setBluetoothAudio(true);
-    delay(400);
+    delay(300);
   }
 
   Serial.print("[DFPLAYER] Play track: ");
@@ -739,10 +802,57 @@ void playVoice(uint8_t track, const char* reason) {
   Serial.println(reason);
 
   dfPlayer.play(track);
-  lastVoiceMillis = now;
+  lastVoiceMillis = millis();
+  dfplayerBusy = true;
+  dfplayerBusyUntil = lastVoiceMillis + VOICE_MIN_GAP_MS;
+  currentVoicePriority = priority;
   dfplayerStatusStr = "playing_" + String(track);
-
   publishVoicePlayedEvent(track, reason);
+}
+
+void playVoice(uint8_t track, const char* reason) {
+  if (!dfPlayerReady) {
+    Serial.println("[DFPLAYER] Tidak ready, suara batal diputar.");
+    return;
+  }
+  if (track < 1 || track > 12) {
+    Serial.println("[DFPLAYER] Track di luar rentang 1-12.");
+    return;
+  }
+
+  unsigned long now = millis();
+  uint8_t priority = getVoicePriority(reason);
+
+  if (dfplayerBusy || now - lastVoiceMillis < VOICE_MIN_GAP_MS) {
+    if (pendingVoiceTrack == 0 || priority > pendingVoicePriority) {
+      pendingVoiceTrack = track;
+      pendingVoicePriority = priority;
+      pendingVoiceReason = reason;
+      Serial.println("[DFPLAYER] Suara masuk antrean prioritas.");
+    } else {
+      Serial.println("[DFPLAYER] Voice cooldown aktif, prioritas lebih rendah dilewati.");
+    }
+    return;
+  }
+
+  startVoiceNow(track, reason, priority);
+}
+
+void serviceVoiceQueue() {
+  if (dfplayerBusy && millis() >= dfplayerBusyUntil) {
+    dfplayerBusy = false;
+    currentVoicePriority = 0;
+  }
+
+  if (!dfplayerBusy && pendingVoiceTrack > 0 && millis() - lastVoiceMillis >= VOICE_MIN_GAP_MS) {
+    uint8_t track = pendingVoiceTrack;
+    uint8_t priority = pendingVoicePriority;
+    String reason = pendingVoiceReason;
+    pendingVoiceTrack = 0;
+    pendingVoicePriority = 0;
+    pendingVoiceReason = "";
+    startVoiceNow(track, reason.c_str(), priority);
+  }
 }
 
 void playVoiceTrack(int track) { playVoice((uint8_t)track, "manual"); }
@@ -761,8 +871,8 @@ void publishVoicePlayedEvent(int track, const char* source) {
 }
 
 void playSystemReady() {
+  setLcdOverride("SMARTBOX READY", "SIAP DIGUNAKAN", 4000);
   playVoice(TRACK_STARTUP_READY, "system_boot");
-  setLcdOverride("SMARTBOX", "ASSISTANT READY", 4000);
   publishEvent("INFO", "system.ready", "SmartBox Assistant siap digunakan");
 }
 
@@ -797,6 +907,40 @@ void playAlarmVoice(String alarmType) {
     playVoice((uint8_t)track, reason);
     publishEvent("INFO", ("alarm." + alarmType).c_str(), ("Alarm " + alarmType + " aktif.").c_str());
   }
+}
+
+void playScheduledAlarm(int track, const char *timeStr) {
+  if (track < 1 || track > 12) return;
+
+  if (rtcReady) {
+    DateTime now = rtc.now();
+    if (lastScheduledAlarmDay == now.day() &&
+        lastScheduledAlarmHour == now.hour() &&
+        lastScheduledAlarmMinute == now.minute() &&
+        lastScheduledAlarmTrack == track) {
+      Serial.println("[ALARM] Trigger duplikat dalam menit yang sama dilewati.");
+      return;
+    }
+    lastScheduledAlarmDay = now.day();
+    lastScheduledAlarmHour = now.hour();
+    lastScheduledAlarmMinute = now.minute();
+    lastScheduledAlarmTrack = track;
+  }
+
+  char line2[17];
+  snprintf(line2, sizeof(line2), "TRACK %04d", track);
+  setLcdOverride("ALARM JADWAL", line2, 4000);
+  playVoice((uint8_t)track, "alarm_schedule");
+
+  StaticJsonDocument<384> doc;
+  doc["deviceId"] = DEVICE_ID;
+  doc["level"] = "INFO";
+  doc["type"] = "alarm.triggered";
+  doc["message"] = "Alarm jadwal diputar";
+  JsonObject payload = doc.createNestedObject("payload");
+  payload["track"] = track;
+  payload["time"] = timeStr;
+  publishJson(topicEvent(), doc, false);
 }
 
 void playGasWarningVoice(String gasType) {
@@ -946,28 +1090,66 @@ void updateRecording() {
 }
 
 void checkPirGreeting() {
+  if (!pirGreetingEnabled) return;
   if (!pirEnabled) return;
+  if (!rtcReady) return;
+
+  DateTime now = rtc.now();
+  bool inTimeRange = isNowInTimeRange(
+    now.hour(),
+    now.minute(),
+    pirGreetingStartHour,
+    pirGreetingStartMinute,
+    pirGreetingEndHour,
+    pirGreetingEndMinute
+  );
+
+  bool dayActive = (pirGreetingDaysMask & (1 << now.dayOfTheWeek())) != 0;
+  if (!inTimeRange || !dayActive) {
+    pirGreetingPlayedThisWindow = false;
+    pirGreetingPirWasHigh = digitalRead(PIR_PIN) == HIGH;
+    return;
+  }
 
   bool pirDetected = digitalRead(PIR_PIN) == HIGH;
-  unsigned long now = millis();
+  bool motionEdge = pirDetected && !pirGreetingPirWasHigh;
+  pirGreetingPirWasHigh = pirDetected;
+  if (!pirDetected) return;
 
-  if (pirDetected && (now - lastPirGreetingTime >= PIR_GREETING_COOLDOWN)) {
-    lastPirGreetingTime = now;
-    lastMotionDetectedTime = now;
-    Serial.println("[PIR] Motion detected");
-
-    playPirGreeting("walk");
-    setLcdOverride("GERAKAN", "TERDETEKSI", 4000);
-
-    StaticJsonDocument<384> doc;
-    doc["deviceId"] = DEVICE_ID;
-    doc["level"] = "INFO";
-    doc["type"] = "pir.motion";
-    doc["message"] = "Gerakan terdeteksi oleh PIR";
-    JsonObject payload = doc.createNestedObject("payload");
-    payload["pirDetected"] = true;
-    publishJson(topicEvent(), doc, false);
+  unsigned long currentMillis = millis();
+  if (pirGreetingPlayMode == "once_schedule") {
+    if (pirGreetingPlayedThisWindow) return;
+  } else if (pirGreetingPlayMode == "once_motion") {
+    if (!motionEdge) return;
+  } else if (lastPirGreetingTime > 0 && currentMillis - lastPirGreetingTime < PIR_GREETING_COOLDOWN) {
+    return;
   }
+
+  if (dfplayerBusy && currentVoicePriority >= 6) {
+    Serial.println("[PIR] Greeting ditunda karena suara bahaya aktif.");
+    return;
+  }
+
+  lastPirGreetingTime = currentMillis;
+  lastMotionDetectedTime = currentMillis;
+  pirGreetingPlayedThisWindow = true;
+
+  if (pirGreetingTrack < TRACK_GESTURE_WALK || pirGreetingTrack > TRACK_GESTURE_WAVE) {
+    pirGreetingTrack = TRACK_GESTURE_WALK;
+  }
+
+  playVoice((uint8_t)pirGreetingTrack, "pir_greeting");
+  setLcdOverride("GERAKAN", "TERDETEKSI", 4000);
+
+  StaticJsonDocument<384> doc;
+  doc["deviceId"] = DEVICE_ID;
+  doc["level"] = "INFO";
+  doc["type"] = "pir.greeting.played";
+  doc["message"] = "Greeting Wakeup PIR diputar karena gerakan terdeteksi.";
+  JsonObject payload = doc.createNestedObject("payload");
+  payload["track"] = pirGreetingTrack;
+  payload["playMode"] = pirGreetingPlayMode;
+  publishJson(topicEvent(), doc, false);
 }
 
 void handleRelayScheduleCommand(JsonObject data, const char *cmdId, const char *type) {
@@ -1075,6 +1257,12 @@ void checkRelaySchedules() {
 }
 
 void nyalakanBluetooth() {
+  if (bluetoothAktif) {
+    waktuBluetoothMulai = millis();
+    Serial.println("[BLE] Bluetooth sudah aktif, sapaan tidak diputar ulang.");
+    return;
+  }
+
   setupBluetooth();
 
   bluetoothAktif = true;
@@ -1083,12 +1271,8 @@ void nyalakanBluetooth() {
   setBluetoothAudio(true);
   delay(300);
 
+  setLcdOverride("BLUETOOTH", "DIAKTIFKAN", 4000);
   playVoice(TRACK_BLUETOOTH_ACTIVE, "bluetooth_active");
-
-  char line2[17];
-  snprintf(line2, sizeof(line2), "%-16.16s", BLUETOOTH_DEVICE_NAME);
-
-  setLcdOverride("BT DIAKTIFKAN", line2, 4000);
 
   waktuBluetoothMulai = millis();
 
@@ -1124,7 +1308,7 @@ void matikanBluetooth() {
 
   setRgb(255, 0, 0);
 
-  setLcdOverride("BT DIMATIKAN", "OFFLINE", 3000);
+  setLcdOverride("BLUETOOTH", "DIMATIKAN", 3000);
 
   Serial.println("[BLE] Bluetooth dimatikan.");
 
@@ -1249,17 +1433,30 @@ void setBluetoothAudio(bool state) {
 }
 
 void playDfTrack(int track) {
-  if (!dfPlayerReady) return;
-  if (!bluetoothAudioState) { setBluetoothAudio(true); delay(400); }
-  dfPlayer.play(track);
-  dfplayerStatusStr = "playing_" + String(track);
+  playVoice((uint8_t)track, "manual");
 }
 
-void stopDfTrack() { if (dfPlayerReady) { dfPlayer.stop(); dfplayerStatusStr = "stopped"; } }
+void stopDfTrack() {
+  if (dfPlayerReady) {
+    dfPlayer.stop();
+    dfplayerBusy = false;
+    currentVoicePriority = 0;
+    pendingVoiceTrack = 0;
+    pendingVoicePriority = 0;
+    pendingVoiceReason = "";
+    dfplayerStatusStr = "stopped";
+  }
+}
 
 void setRelay(uint8_t relayNumber, bool state, bool withVoice = false) {
   if (relayNumber == 1) { relay1State = state; digitalWrite(RELAY_1_PIN, state ? RELAY_ON : RELAY_OFF); }
   if (relayNumber == 2) { relay2State = state; digitalWrite(RELAY_2_PIN, state ? RELAY_ON : RELAY_OFF); }
+
+  if (relayNumber == 1) {
+    setLcdOverride("STOP KONTAK 1", state ? "KIPAS ON" : "KIPAS OFF", 3000);
+  } else if (relayNumber == 2) {
+    setLcdOverride("STOP KONTAK 2", state ? "CHARGER ON" : "CHARGER OFF", 3000);
+  }
 
   // Publish event: relay.updated
   StaticJsonDocument<384> doc;
@@ -1421,12 +1618,29 @@ void handleAlarmCommand(JsonObject data, const char *cmdId, const char *type) {
   int track = data["track"] | TRACK_ALARM_MORNING;
   int hour = data["hour"] | 7;
   int minute = data["minute"] | 0;
+  const char *timeStr = data["time"] | "";
+  if (strlen(timeStr) > 0 && !parseTimeToHourMinute(timeStr, hour, minute)) {
+    publishAck(cmdId, type, false, "Format waktu alarm harus HH:MM.");
+    return;
+  }
   bool enabled = data["enabled"] | true;
-  int slot = data["slot"] | 0;
+  int slot = data["slot"] | -1;
+  if (slot < 0) {
+    for (int i = 0; i < 3; i++) {
+      if (strcmp(alarmList[i].id, alarmId) == 0) {
+        slot = i;
+        break;
+      }
+    }
+  }
+  if (slot < 0 || slot >= 3 || track < 1 || track > 12) {
+    publishAck(cmdId, type, false, "Slot atau track alarm tidak valid.");
+    return;
+  }
   strncpy(alarmList[slot].id, alarmId, 15);
+  alarmList[slot].id[15] = '\0';
   alarmList[slot].hour = hour; alarmList[slot].minute = minute;
   alarmList[slot].track = track; alarmList[slot].enabled = enabled;
-  playVoice((uint8_t)track, "alarm_confirm");
   publishAck(cmdId, type, true, "Alarm updated.");
 }
 
@@ -1456,6 +1670,20 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
       publishAck(cmdId, type, true, "DFPlayer play command received.");
     } else {
       publishAck(cmdId, type, false, "Track tidak valid.");
+    }
+  } else if (strcmp(type, "dfplayer.stop") == 0) {
+    stopDfTrack();
+    publishAck(cmdId, type, true, "DFPlayer dihentikan.");
+  } else if (strcmp(type, "alarm.set") == 0) {
+    handleAlarmCommand(data, cmdId, type);
+  } else if (strcmp(type, "alarm.trigger") == 0) {
+    int track = data["track"] | -1;
+    const char *timeStr = data["time"] | "";
+    if (track >= 1 && track <= 12) {
+      playScheduledAlarm(track, timeStr);
+      publishAck(cmdId, type, true, "Alarm jadwal dipicu.");
+    } else {
+      publishAck(cmdId, type, false, "Track alarm tidak valid.");
     }
   } else if (strcmp(type, "relaySchedule.set") == 0) {
     handleRelayScheduleCommand(data, cmdId, type);
@@ -1493,6 +1721,64 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
     pirEnabled = data["enabled"] | true;
     saveSettings();
     publishAck(cmdId, type, true, "PIR sensor updated.");
+  } else if (strcmp(type, "pirGreeting.set") == 0) {
+    pirGreetingEnabled = data["enabled"] | false;
+    pirGreetingTrack = data["track"] | TRACK_GESTURE_WALK;
+    if (pirGreetingTrack < TRACK_GESTURE_WALK || pirGreetingTrack > TRACK_GESTURE_WAVE) {
+      pirGreetingTrack = TRACK_GESTURE_WALK;
+    }
+
+    const char* startTime = data["startTime"] | "07:00";
+    const char* endTime = data["endTime"] | "22:00";
+    int startHour = pirGreetingStartHour;
+    int startMinute = pirGreetingStartMinute;
+    int endHour = pirGreetingEndHour;
+    int endMinute = pirGreetingEndMinute;
+    if (!parseTimeToHourMinute(startTime, startHour, startMinute) ||
+        !parseTimeToHourMinute(endTime, endHour, endMinute)) {
+      publishAck(cmdId, type, false, "Format waktu PIR greeting harus HH:MM.");
+      return;
+    }
+    pirGreetingStartHour = startHour;
+    pirGreetingStartMinute = startMinute;
+    pirGreetingEndHour = endHour;
+    pirGreetingEndMinute = endMinute;
+
+    int cooldownSeconds = data["cooldownSeconds"] | 10;
+    if (cooldownSeconds < 10) cooldownSeconds = 10;
+    PIR_GREETING_COOLDOWN = (unsigned long)cooldownSeconds * 1000UL;
+
+    const char *playMode = data["playMode"] | "cooldown";
+    if (strcmp(playMode, "once_schedule") != 0 && strcmp(playMode, "once_motion") != 0) {
+      pirGreetingPlayMode = "cooldown";
+    } else {
+      pirGreetingPlayMode = playMode;
+    }
+
+    if (data["days"].is<JsonArray>()) {
+      pirGreetingDaysMask = 0;
+      JsonArray days = data["days"].as<JsonArray>();
+      for (JsonVariant dayValue : days) {
+        const char *day = dayValue.as<const char*>();
+        if (strcmp(day, "sunday") == 0) pirGreetingDaysMask |= (1 << 0);
+        else if (strcmp(day, "monday") == 0) pirGreetingDaysMask |= (1 << 1);
+        else if (strcmp(day, "tuesday") == 0) pirGreetingDaysMask |= (1 << 2);
+        else if (strcmp(day, "wednesday") == 0) pirGreetingDaysMask |= (1 << 3);
+        else if (strcmp(day, "thursday") == 0) pirGreetingDaysMask |= (1 << 4);
+        else if (strcmp(day, "friday") == 0) pirGreetingDaysMask |= (1 << 5);
+        else if (strcmp(day, "saturday") == 0) pirGreetingDaysMask |= (1 << 6);
+      }
+    }
+
+    pirGreetingPlayedThisWindow = false;
+    lastPirGreetingTime = 0;
+    saveSettings();
+
+    char line2[17];
+    if (pirGreetingEnabled) snprintf(line2, sizeof(line2), "ON TRACK %04d", pirGreetingTrack);
+    else snprintf(line2, sizeof(line2), "OFF");
+    setLcdOverride("PIR GREETING", line2, 3000);
+    publishAck(cmdId, type, true, "PIR greeting updated.");
   }
 }
 
@@ -1534,12 +1820,27 @@ void publishTelemetry(int gasRaw, float tempC, bool gasWarning, bool tempWarning
   doc["smokeDetected"] = lastSmokeWarning;
   doc["temperatureHigh"] = tempWarning;
   doc["pirDetected"] = pirDetected;
+  doc["motionDetected"] = pirDetected;
   doc["obstacleNear"] = obstacleNear;
   doc["relay1"] = relay1State;
   doc["relay2"] = relay2State;
-  doc["bluetoothRelay"] = bluetoothAudioState;
+  doc["bluetoothRelay"] = bluetoothAktif;
+  doc["bluetoothAudio"] = bluetoothAudioState;
   doc["buzzer"] = digitalRead(BUZZER_PIN) == HIGH;
-  doc["createdAt"] = getIsoTimestamp();
+  doc["rtcReady"] = rtcReady;
+  doc["lcdReady"] = lcdReady;
+  doc["dfPlayerReady"] = dfPlayerReady;
+  doc["pirEnabled"] = pirEnabled;
+  doc["pirGreetingEnabled"] = pirGreetingEnabled;
+  doc["pirGreetingTrack"] = pirGreetingTrack;
+  char pirStart[6];
+  char pirEnd[6];
+  snprintf(pirStart, sizeof(pirStart), "%02d:%02d", pirGreetingStartHour, pirGreetingStartMinute);
+  snprintf(pirEnd, sizeof(pirEnd), "%02d:%02d", pirGreetingEndHour, pirGreetingEndMinute);
+  doc["pirGreetingStart"] = pirStart;
+  doc["pirGreetingEnd"] = pirEnd;
+  if (rtcReady) doc["createdAt"] = getIsoTimestamp();
+  else doc["createdAt"] = nullptr;
   publishJson(topicTelemetry(), doc, false);
 }
 
@@ -1551,7 +1852,7 @@ void sendTelemetryNow() {
   String gasLevel = "normal";
   if (isGas) gasLevel = "gas";
   else if (isSmoke) gasLevel = "smoke";
-  bool pir = (digitalRead(PIR_PIN) == HIGH);
+  bool pir = pirEnabled && (digitalRead(PIR_PIN) == HIGH);
   bool obstacle = (digitalRead(IR_PIN) == HIGH);
   publishTelemetry(gas, temp, isGas || isSmoke, false, pir, gasLevel, obstacle);
 }
@@ -1576,7 +1877,8 @@ void checkWarnings(int gasRaw, float tempC, bool anyGasWarning, bool tempWarning
     setBuzzer(true, false);
     setBluetoothAudio(true);
     setRgb(255, 0, 0);
-    setRelay(1, true, false);
+    if (!relay1State) setRelay(1, true, false);
+    relay1ForcedByGas = true;
 
     if (!lastGasWarning) {
       lastGasWarning = true;
@@ -1609,7 +1911,10 @@ void checkWarnings(int gasRaw, float tempC, bool anyGasWarning, bool tempWarning
       lastSmokeWarning = false;
       gasStatusStr = "normal";
       smokeStatusStr = "normal";
-      setRelay(1, false, false);
+      if (relay1ForcedByGas) {
+        setRelay(1, false, false);
+        relay1ForcedByGas = false;
+      }
 
       if (!buzzerManual) {
         setBuzzer(false, false);
@@ -1635,7 +1940,9 @@ void checkAlarms() {
   for (int i = 0; i < 3; i++) {
     if (alarmList[i].enabled && now.hour() == alarmList[i].hour && now.minute() == alarmList[i].minute && alarmList[i].lastTriggeredDay != now.day()) {
       alarmList[i].lastTriggeredDay = now.day();
-      playAlarmVoice(alarmList[i].id);
+      char timeStr[6];
+      snprintf(timeStr, sizeof(timeStr), "%02d:%02d", alarmList[i].hour, alarmList[i].minute);
+      playScheduledAlarm(alarmList[i].track, timeStr);
     }
   }
 }
@@ -2052,10 +2359,13 @@ void setup() {
 
   calibrateMQ2(100);
 
-  printLcdLine(0, "SMARTBOX");
-  printLcdLine(1, "ASSISTANT READY");
-  delay(1000);
-  playSystemReady();
+  if (dfPlayerReady) {
+    setLcdOverride("SMARTBOX", "ASSISTANT READY", 3000);
+    playSystemReady();
+  } else {
+    Serial.println("[DFPLAYER] Startup voice dilewati karena DFPlayer error.");
+    setLcdOverride("DFPLAYER ERROR", "SMARTBOX READY", 4000);
+  }
 
   Serial.println("========== SMARTBOX READY ==========");
 }
@@ -2075,6 +2385,7 @@ void loop() {
   checkAlarms();
   checkRelaySchedules();
   checkBluetoothTimer();
+  serviceVoiceQueue();
 
   int gasRaw = getFilteredGas();
   float tempC = rtcReady ? rtc.getTemperature() + tempOffset : 0.0;
@@ -2084,6 +2395,21 @@ void loop() {
   bool gasWarning = isGas || isSmoke;
   bool tempWarning = tempEnabled && tempC >= tempThreshold;
   bool pirDetected = pirEnabled && digitalRead(PIR_PIN) == HIGH;
+
+  if (pirDetected && !lastPirDetectedState) {
+    lastMotionDetectedTime = millis();
+    Serial.println("[PIR] HIGH - gerakan terdeteksi.");
+
+    StaticJsonDocument<384> doc;
+    doc["deviceId"] = DEVICE_ID;
+    doc["level"] = "INFO";
+    doc["type"] = "pir.motion";
+    doc["message"] = "Gerakan terdeteksi oleh PIR";
+    JsonObject payload = doc.createNestedObject("payload");
+    payload["pirDetected"] = true;
+    publishJson(topicEvent(), doc, false);
+  }
+  lastPirDetectedState = pirDetected;
 
   checkWarnings(gasRaw, tempC, gasWarning, tempWarning);
   checkPirGreeting();
