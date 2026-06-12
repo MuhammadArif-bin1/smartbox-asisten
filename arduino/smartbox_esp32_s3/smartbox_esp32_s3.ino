@@ -268,7 +268,7 @@ bool bluetoothAktif = false;
 bool bleSudahDibuat = false;
 String dataBluetooth = "";
 unsigned long waktuBluetoothMulai = 0;
-const unsigned long durasiBluetooth = 60000;
+unsigned long durasiBluetooth = 60000;
 bool pendingBluetoothSongPlay = false;
 unsigned long bluetoothSongPlayTime = 0;
 
@@ -365,6 +365,7 @@ void sendRecordedAudio();
 void updateRecording();
 void checkPirGreeting();
 void checkRelaySchedules();
+void checkBluetoothTimer();
 
 void initLed12c();
 void led12cOn();
@@ -462,6 +463,7 @@ void loadSettings() {
   sleepModeEnabled = preferences.getBool("sleepMode", false);
   pirEnabled = preferences.getBool("pirEnabled", true);
   gasEnabled = preferences.getBool("gasEnabled", true);
+  tempEnabled = preferences.getBool("tempEnabled", true);
   pirGreetingEnabled = preferences.getBool("pirGreetEn", false);
   pirGreetingTrack = preferences.getInt("pirGreetTrk", 1);
   pirGreetingStartHour = preferences.getInt("pirGreetSH", 7);
@@ -489,6 +491,7 @@ void saveSettings() {
   preferences.putBool("sleepMode", sleepModeEnabled);
   preferences.putBool("pirEnabled", pirEnabled);
   preferences.putBool("gasEnabled", gasEnabled);
+  preferences.putBool("tempEnabled", tempEnabled);
   preferences.putBool("pirGreetEn", pirGreetingEnabled);
   preferences.putInt("pirGreetTrk", pirGreetingTrack);
   preferences.putInt("pirGreetSH", pirGreetingStartHour);
@@ -915,7 +918,15 @@ void checkPirGreeting() {
 
     playPirGreeting("walk");
     setLcdOverride("GERAKAN", "TERDETEKSI", 4000);
-    publishEvent("INFO", "pir.motion", "Gerakan terdeteksi oleh PIR.");
+
+    StaticJsonDocument<384> doc;
+    doc["deviceId"] = DEVICE_ID;
+    doc["level"] = "INFO";
+    doc["type"] = "pir.motion";
+    doc["message"] = "Gerakan terdeteksi oleh PIR";
+    JsonObject payload = doc.createNestedObject("payload");
+    payload["pirDetected"] = true;
+    publishJson(topicEvent(), doc, false);
   }
 }
 
@@ -1053,7 +1064,14 @@ void matikanBluetooth() {
   publishEvent("INFO", "bluetooth.off", "Bluetooth/audio dimatikan.");
 }
 
-void cekTimerBluetooth() { return; }
+void checkBluetoothTimer() {
+  if (bluetoothAktif && millis() - waktuBluetoothMulai >= durasiBluetooth) {
+    setBluetoothAudio(false);
+    bluetoothAktif = false;
+    setLcdOverride("BT OFF", "TIMER HABIS", 3000);
+    publishEvent("INFO", "bluetooth.auto_off", "Bluetooth mati otomatis setelah timer selesai.");
+  }
+}
 
 void prosesDataBluetooth() {
   if (dataBluetooth.length() == 0) return;
@@ -1170,7 +1188,22 @@ void stopDfTrack() { if (dfPlayerReady) { dfPlayer.stop(); dfplayerStatusStr = "
 void setRelay(uint8_t relayNumber, bool state, bool withVoice = false) {
   if (relayNumber == 1) { relay1State = state; digitalWrite(RELAY_1_PIN, state ? RELAY_ON : RELAY_OFF); }
   if (relayNumber == 2) { relay2State = state; digitalWrite(RELAY_2_PIN, state ? RELAY_ON : RELAY_OFF); }
-  // Skip playDfTrack for relay ON/OFF to prevent playing conflicting alarm tracks (e.g. smoke alarm)
+
+  // Publish event: relay.updated
+  StaticJsonDocument<384> doc;
+  doc["deviceId"] = DEVICE_ID;
+  doc["level"] = "INFO";
+  doc["type"] = "relay.updated";
+  char msg[32];
+  snprintf(msg, sizeof(msg), "Relay %d %s", relayNumber, state ? "ON" : "OFF");
+  doc["message"] = msg;
+  JsonObject payload = doc.createNestedObject("payload");
+  payload["relay"] = relayNumber;
+  payload["state"] = state;
+  publishJson(topicEvent(), doc, false);
+
+  // Also send telemetry now to update status instantly
+  sendTelemetryNow();
 }
 
 void setBuzzer(bool state, bool manualMode = false) {
@@ -1346,24 +1379,11 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
     publishAck(cmdId, type, true, "Sensor updated.");
   } else if (strcmp(type, "voice.play") == 0) {
     int track = data["track"] | -1;
-    if (track == -1 && data.containsKey("voice")) {
-      const char* voiceStr = data["voice"];
-      if (strcmp(voiceStr, "walk") == 0 || strcmp(voiceStr, "pirWalk") == 0) track = TRACK_GESTURE_WALK;
-      else if (strcmp(voiceStr, "jump") == 0 || strcmp(voiceStr, "pirJump") == 0) track = TRACK_GESTURE_JUMP;
-      else if (strcmp(voiceStr, "wave") == 0 || strcmp(voiceStr, "pirWave") == 0) track = TRACK_GESTURE_WAVE;
-      else if (strcmp(voiceStr, "smokeDetected") == 0) track = TRACK_SMOKE_DETECTED;
-      else if (strcmp(voiceStr, "gasDetected") == 0) track = TRACK_GAS_DETECTED;
-      else if (strcmp(voiceStr, "temperatureDetected") == 0) track = TRACK_TEMP_DETECTED;
-      else if (strcmp(voiceStr, "btGreeting") == 0) track = TRACK_BLUETOOTH_ACTIVE;
-      else if (strcmp(voiceStr, "alarmMorning") == 0) track = TRACK_ALARM_MORNING;
-      else if (strcmp(voiceStr, "alarmNoon") == 0) track = TRACK_ALARM_AFTERNOON;
-      else if (strcmp(voiceStr, "alarmEvening") == 0) track = TRACK_ALARM_EVENING;
-    }
-    if (track != -1) { 
-      playVoice((uint8_t)track, "voice_play_cmd"); 
-      publishAck(cmdId, type, true, "DFPlayer play."); 
+    if (track >= 1 && track <= 12) {
+      playVoice((uint8_t)track, "dashboard_voice_test");
+      publishAck(cmdId, type, true, "DFPlayer play command received.");
     } else {
-      publishAck(cmdId, type, false, "Invalid voice key or track.");
+      publishAck(cmdId, type, false, "Track tidak valid.");
     }
   } else if (strcmp(type, "relaySchedule.set") == 0) {
     handleRelayScheduleCommand(data, cmdId, type);
@@ -1376,14 +1396,36 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
       publishAck(cmdId, type, false, "Missing schedule ID.");
     }
   } else if (strcmp(type, "buzzer.set") == 0) {
-    bool state = false;
-    if (data.containsKey("state")) {
-      state = data["state"] | false;
-    } else if (data.containsKey("enabled")) {
-      state = data["enabled"] | false;
-    }
-    setBuzzer(state, true); // true = manualMode
+    bool state = data["state"] | false;
+    setBuzzer(state, true);
     publishAck(cmdId, type, true, state ? "Buzzer ON" : "Buzzer OFF");
+    publishEvent("INFO", "buzzer.updated", state ? "Buzzer dinyalakan" : "Buzzer dimatikan");
+  } else if (strcmp(type, "bluetooth.set") == 0) {
+    bool state = data["state"] | false;
+    int durationSeconds = data["durationSeconds"] | 60;
+
+    if (state) {
+      setBluetoothAudio(true);
+      bluetoothAktif = true;
+      waktuBluetoothMulai = millis();
+      durasiBluetooth = durationSeconds * 1000UL;
+      setLcdOverride("BT AKTIF", "TIMER 1 MENIT", 3000);
+      publishAck(cmdId, type, true, "Bluetooth relay ON.");
+    } else {
+      setBluetoothAudio(false);
+      bluetoothAktif = false;
+      setLcdOverride("BT OFF", "DIMATIKAN", 3000);
+      publishAck(cmdId, type, true, "Bluetooth relay OFF.");
+    }
+  } else if (strcmp(type, "temperatureSensor.set") == 0 || strcmp(type, "tempSensor.set") == 0) {
+    tempEnabled = data["enabled"] | true;
+    lastTempWarning = false;
+    saveSettings();
+    publishAck(cmdId, type, true, "Temperature sensor updated.");
+  } else if (strcmp(type, "pirSensor.set") == 0) {
+    pirEnabled = data["enabled"] | true;
+    saveSettings();
+    publishAck(cmdId, type, true, "PIR sensor updated.");
   }
 }
 
@@ -1424,6 +1466,12 @@ void publishTelemetry(int gasRaw, float tempC, bool gasWarning, bool tempWarning
   doc["gasLevel"] = gasLevel;
   doc["smokeDetected"] = lastSmokeWarning;
   doc["temperatureHigh"] = tempWarning;
+  doc["pirDetected"] = pirDetected;
+  doc["obstacleNear"] = obstacleNear;
+  doc["relay1"] = relay1State;
+  doc["relay2"] = relay2State;
+  doc["bluetoothRelay"] = bluetoothAudioState;
+  doc["buzzer"] = digitalRead(BUZZER_PIN) == HIGH;
   doc["createdAt"] = getIsoTimestamp();
   publishJson(topicTelemetry(), doc, false);
 }
@@ -1433,7 +1481,12 @@ void sendTelemetryNow() {
   float temp = rtcReady ? (rtc.getTemperature() + tempOffset) : 0.0;
   bool isGas = (gas >= gasThreshold);
   bool isSmoke = (gas >= smokeThreshold);
-  publishTelemetry(gas, temp, isGas || isSmoke, false, false, "normal", false);
+  String gasLevel = "normal";
+  if (isGas) gasLevel = "gas";
+  else if (isSmoke) gasLevel = "smoke";
+  bool pir = (digitalRead(PIR_PIN) == HIGH);
+  bool obstacle = (digitalRead(IR_PIN) == HIGH);
+  publishTelemetry(gas, temp, isGas || isSmoke, false, pir, gasLevel, obstacle);
 }
 
 void sendTelemetryHttp(int gasRaw, float tempC, bool gasWarning, bool tempWarning, bool pirDetected, bool obstacleNear) {
@@ -1783,6 +1836,7 @@ void loop() {
   checkButtons();
   checkAlarms();
   checkRelaySchedules();
+  checkBluetoothTimer();
 
   int gasRaw = getFilteredGas();
   float tempC = rtcReady ? rtc.getTemperature() + tempOffset : 0.0;

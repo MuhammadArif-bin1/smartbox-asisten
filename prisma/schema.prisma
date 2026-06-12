@@ -232,3 +232,16 @@ model VoiceInteraction {
   status     String   @default("success")
   createdAt  DateTime @default(now())
 }
+
+model RelaySchedule {
+  id          String   @id @default(cuid())
+  name        String
+  relayNumber Int
+  startTime   String
+  endTime     String
+  days        String   // JSON stringified array of days, e.g. ["monday","tuesday"]
+  enabled     Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+

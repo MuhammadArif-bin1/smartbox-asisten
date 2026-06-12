@@ -276,3 +276,139 @@ setInterval(async () => {
     console.warn("[Worker] Database keep-alive ping gagal:", err);
   }
 }, DB_KEEP_ALIVE_INTERVAL_MS);
+
+// ------------------------------------------------------------------
+// BACKGROUND SCHEDULER UNTUK RELAY SCHEDULE
+// ------------------------------------------------------------------
+const lastTriggered = new Map<string, { time: string; state: boolean }>();
+
+function getJakartaDateTime() {
+  const options: Intl.DateTimeFormatOptions = {
+    timeZone: "Asia/Jakarta",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    weekday: "long",
+    hour12: false,
+  };
+  const formatter = new Intl.DateTimeFormat("en-US", options);
+  const parts = formatter.formatToParts(new Date());
+  
+  const map: Record<string, string> = {};
+  for (const part of parts) {
+    map[part.type] = part.value;
+  }
+  
+  const weekday = map.weekday ? map.weekday.toLowerCase() : "";
+  const hour = map.hour || "00";
+  const minute = map.minute || "00";
+  
+  return { weekday, hour, minute };
+}
+
+async function checkRelaySchedules() {
+  try {
+    const { weekday, hour, minute } = getJakartaDateTime();
+    const timeStr = `${hour}:${minute}`;
+    
+    // Fetch all enabled relay schedules
+    const schedules = await retryQuery(() => prisma.relaySchedule.findMany({
+      where: { enabled: true },
+    })).catch((err) => {
+      console.error("[Worker Schedule] Error fetching schedules:", err);
+      return [];
+    });
+
+    const targetDeviceId = process.env.NEXT_PUBLIC_DEVICE_ID || "smartbox-001";
+    const topic = `smartbox/${targetDeviceId}/cmd`;
+
+    for (const schedule of schedules) {
+      let activeDays: string[] = [];
+      try {
+        activeDays = typeof schedule.days === "string" 
+          ? JSON.parse(schedule.days) 
+          : (Array.isArray(schedule.days) ? schedule.days : []);
+      } catch (e) {
+        console.error(`[Worker Schedule] Error parsing days for schedule ${schedule.id}:`, e);
+        continue;
+      }
+
+      // Convert days array to lowercase to be safe
+      activeDays = activeDays.map(d => d.toLowerCase());
+
+      if (activeDays.includes(weekday)) {
+        // Check ON trigger
+        if (schedule.startTime === timeStr) {
+          const last = lastTriggered.get(schedule.id);
+          if (last?.time !== timeStr || last?.state !== true) {
+            lastTriggered.set(schedule.id, { time: timeStr, state: true });
+            
+            const payload = {
+              id: `schedule_${schedule.id}_on_${timeStr.replace(":", "")}`,
+              type: "relay.set",
+              payload: {
+                relay: schedule.relayNumber,
+                state: true,
+                source: "schedule",
+              },
+            };
+
+            client.publish(topic, JSON.stringify(payload), { qos: 1 });
+            console.log(`[Worker Schedule] Triggered Relay ${schedule.relayNumber} ON for schedule: ${schedule.name}`);
+
+            // Log event to DB
+            await retryQuery(() => prisma.eventLog.create({
+              data: {
+                deviceId: targetDeviceId,
+                level: "INFO",
+                type: "relay.scheduled_on",
+                message: `Jadwal '${schedule.name}' menyalakan Relay ${schedule.relayNumber}`,
+                payload: payload,
+              },
+            })).catch(err => console.error("[Worker Schedule] Error writing EventLog:", err));
+          }
+        }
+        // Check OFF trigger
+        else if (schedule.endTime === timeStr) {
+          const last = lastTriggered.get(schedule.id);
+          if (last?.time !== timeStr || last?.state !== false) {
+            lastTriggered.set(schedule.id, { time: timeStr, state: false });
+
+            const payload = {
+              id: `schedule_${schedule.id}_off_${timeStr.replace(":", "")}`,
+              type: "relay.set",
+              payload: {
+                relay: schedule.relayNumber,
+                state: false,
+                source: "schedule",
+              },
+            };
+
+            client.publish(topic, JSON.stringify(payload), { qos: 1 });
+            console.log(`[Worker Schedule] Triggered Relay ${schedule.relayNumber} OFF for schedule: ${schedule.name}`);
+
+            // Log event to DB
+            await retryQuery(() => prisma.eventLog.create({
+              data: {
+                deviceId: targetDeviceId,
+                level: "INFO",
+                type: "relay.scheduled_off",
+                message: `Jadwal '${schedule.name}' mematikan Relay ${schedule.relayNumber}`,
+                payload: payload,
+              },
+            })).catch(err => console.error("[Worker Schedule] Error writing EventLog:", err));
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error("[Worker Schedule] Unhandled error in checkRelaySchedules:", err);
+  }
+}
+
+// Run the scheduler every 30 seconds
+setInterval(checkRelaySchedules, 30 * 1000);
+
