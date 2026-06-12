@@ -145,3 +145,80 @@ model DeviceCommand {
   device    Device   @relation(fields: [deviceId], references: [deviceId], onDelete: Cascade)
 }
 
+// ==========================================================
+// MODEL BARU: SmartboxEvent & SmartboxStatus
+// Standalone (tidak ada relasi ke Device) agar mudah
+// digunakan tanpa perlu Device seed.
+// ==========================================================
+
+/// Log event suara, sensor, tombol dari ESP32 maupun browser.
+model SmartboxEvent {
+  id        String   @id @default(cuid())
+  deviceId  String
+  level     String   @default("INFO")   // INFO | WARNING | ERROR
+  type      String                       // voice.played | gas.detected | assistant_intro | dll
+  message   String
+  source    String   @default("esp32")  // esp32 | browser | api
+  payload   Json?
+
+  // Untuk voice events
+  track     Int?
+  trackName String?
+
+  // Untuk sensor events
+  sensorValue Float?
+  sensorType  String?  // gas | smoke | temperature | pir | obstacle
+
+  createdAt DateTime @default(now())
+
+  @@index([deviceId])
+  @@index([type])
+  @@index([createdAt])
+}
+
+/// Status singleton terkini dari Smartbox.
+/// Di-update oleh MQTT worker atau API setiap kali ada telemetry masuk.
+model SmartboxStatus {
+  id              String   @id @default(cuid())
+  deviceId        String   @unique
+
+  // Konektivitas
+  online          Boolean  @default(false)
+  lastSeenAt      DateTime @default(now())
+
+  // Sensor status
+  gasRaw          Int?
+  gasLevel        String   @default("normal")  // normal | waspada | bahaya
+  smokeDetected   Boolean  @default(false)
+  gasDetected     Boolean  @default(false)
+  temperatureC    Float?
+  temperatureHigh Boolean  @default(false)
+  pirDetected     Boolean  @default(false)
+  obstacleNear    Boolean  @default(false)
+
+  // Aktuator status
+  relay1          Boolean  @default(false)
+  relay2          Boolean  @default(false)
+  bluetoothAudio  Boolean  @default(false)
+  buzzer          Boolean  @default(false)
+
+  // Kalibrasi MQ-2
+  mq2Baseline     Int?
+  smokeThreshold  Int?
+  gasThreshold    Int?
+
+  // DFPlayer status
+  dfPlayerReady   Boolean  @default(false)
+  lastTrackPlayed Int?
+  lastVoiceAt     DateTime?
+
+  // AI Assistant
+  lastAiQuery     String?
+  lastAiResponse  String?
+  lastAiAt        DateTime?
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([deviceId])
+}
