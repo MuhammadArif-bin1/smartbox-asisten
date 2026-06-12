@@ -198,6 +198,20 @@ size_t recordBufferIdx = 0;
 bool isRecording = false;
 unsigned long recordingStartMillis = 0;
 
+// AI Backend URL (Sesuaikan IP dengan IP laptop/PC Anda, contoh: http://192.168.1.10:3000)
+// PENTING: Jangan gunakan localhost di ESP32
+const char* AI_BACKEND_URL = "http://192.168.1.10:3000/api/gemini/chat-audio";
+
+// Black Button Debounce & State Variables
+const unsigned long BLACK_BUTTON_DEBOUNCE_MS = 50;
+const unsigned long BLACK_BUTTON_LONG_PRESS_MS = 1500;
+
+bool blackBtnLastReading = HIGH;
+bool blackBtnStableState = HIGH;
+unsigned long blackBtnLastChangeAt = 0;
+unsigned long blackBtnPressedAt = 0;
+bool blackLongPressHandled = false;
+
 // ==========================================================
 // 7. TIMER & INTERVAL
 // ==========================================================
@@ -260,6 +274,8 @@ unsigned long lastHttpTelemetryAt = 0;
 #define SERVICE_UUID "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
 #define CHARACTERISTIC_UUID_RX "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
 #define CHARACTERISTIC_UUID_TX "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
+
+const char* BLUETOOTH_DEVICE_NAME = "Smartbox Assistant";
 
 BLEServer *pServer = NULL;
 BLECharacteristic *txCharacteristic = NULL;
@@ -366,6 +382,12 @@ void updateRecording();
 void checkPirGreeting();
 void checkRelaySchedules();
 void checkBluetoothTimer();
+void checkBlackButton();
+void handleBlackButtonQuickPress();
+void handleBlackButtonLongPress();
+bool recordAudioWavToBuffer(uint8_t** wavData, size_t* wavSize, int seconds);
+bool sendVoiceToAIBackend(uint8_t* wavData, size_t wavSize);
+bool recordAndSendVoiceToAI();
 
 void initLed12c();
 void led12cOn();
@@ -573,22 +595,40 @@ class RxCallbacks : public BLECharacteristicCallbacks {
 
 void setupBluetooth() {
   if (bleSudahDibuat) return;
-  BLEDevice::init("Smartbox Assistant");
+
+  BLEDevice::init(BLUETOOTH_DEVICE_NAME);
+
   pServer = BLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
+
   BLEService *pService = pServer->createService(SERVICE_UUID);
-  txCharacteristic = pService->createCharacteristic(CHARACTERISTIC_UUID_TX, BLECharacteristic::PROPERTY_NOTIFY);
+
+  txCharacteristic = pService->createCharacteristic(
+    CHARACTERISTIC_UUID_TX,
+    BLECharacteristic::PROPERTY_NOTIFY
+  );
+
   txCharacteristic->addDescriptor(new BLE2902());
-  BLECharacteristic *rxCharacteristic = pService->createCharacteristic(CHARACTERISTIC_UUID_RX, BLECharacteristic::PROPERTY_WRITE);
+
+  BLECharacteristic *rxCharacteristic = pService->createCharacteristic(
+    CHARACTERISTIC_UUID_RX,
+    BLECharacteristic::PROPERTY_WRITE
+  );
+
   rxCharacteristic->setCallbacks(new RxCallbacks());
+
   pService->start();
+
   BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
   pAdvertising->addServiceUUID(SERVICE_UUID);
   pAdvertising->setScanResponse(true);
   pAdvertising->setMinPreferred(0x06);
   pAdvertising->setMinPreferred(0x12);
+
   bleSudahDibuat = true;
-  Serial.println("[BLE] Server dibuat. Nama: Smartbox Assistant");
+
+  Serial.print("[BLE] Server dibuat. Nama: ");
+  Serial.println(BLUETOOTH_DEVICE_NAME);
 }
 
 // ==========================================================
@@ -695,7 +735,7 @@ void playVoice(uint8_t track, const char* reason) {
 
   Serial.print("[DFPLAYER] Play track: ");
   Serial.print(track);
-  Serial.print(" | reason: ");
+  Serial.print(" reason: ");
   Serial.println(reason);
 
   dfPlayer.play(track);
@@ -1036,39 +1076,68 @@ void checkRelaySchedules() {
 
 void nyalakanBluetooth() {
   setupBluetooth();
+
   bluetoothAktif = true;
   deviceConnected = false;
-  playBluetoothGreeting();
-  setLcdOverride("BT AKTIF", "MENUNGGU HP", 3000);
+
+  setBluetoothAudio(true);
+  delay(300);
+
+  playVoice(TRACK_BLUETOOTH_ACTIVE, "bluetooth_active");
+
+  char line2[17];
+  snprintf(line2, sizeof(line2), "%-16.16s", BLUETOOTH_DEVICE_NAME);
+
+  setLcdOverride("BT DIAKTIFKAN", line2, 4000);
+
   waktuBluetoothMulai = millis();
+
   setRgb(0, 255, 0);
-  Serial.println("[BLE] Bluetooth/audio aktif. Nama: Smartbox Assistant");
+
+  Serial.print("[BLE] Bluetooth aktif. Nama perangkat: ");
+  Serial.println(BLUETOOTH_DEVICE_NAME);
+
+  Serial.print("[LCD] BT DIAKTIFKAN - ");
+  Serial.println(BLUETOOTH_DEVICE_NAME);
+
   StaticJsonDocument<256> doc;
   doc["deviceId"] = DEVICE_ID;
   doc["level"] = "INFO";
   doc["type"] = "bluetooth_active";
   doc["status"] = "active";
-  doc["message"] = "Bluetooth Smartbox Assistant diaktifkan";
+  doc["message"] = "Bluetooth diaktifkan";
+  doc["bluetoothName"] = BLUETOOTH_DEVICE_NAME;
   doc["millis"] = millis();
+
   publishJson(topicEvent(), doc, false);
 }
 
 void matikanBluetooth() {
   bluetoothAktif = false;
   deviceConnected = false;
-  if (bleSudahDibuat) BLEDevice::getAdvertising()->stop();
+
+  if (bleSudahDibuat) {
+    BLEDevice::getAdvertising()->stop();
+  }
+
   setBluetoothAudio(false);
+
   setRgb(255, 0, 0);
-  Serial.println("[BLE] Bluetooth/audio dimatikan.");
+
   setLcdOverride("BT DIMATIKAN", "OFFLINE", 3000);
-  publishEvent("INFO", "bluetooth.off", "Bluetooth/audio dimatikan.");
+
+  Serial.println("[BLE] Bluetooth dimatikan.");
+
+  publishEvent("INFO", "bluetooth.off", "Bluetooth dimatikan.");
 }
 
 void checkBluetoothTimer() {
-  if (bluetoothAktif && millis() - waktuBluetoothMulai >= durasiBluetooth) {
-    setBluetoothAudio(false);
-    bluetoothAktif = false;
+  if (!bluetoothAktif) return;
+
+  if (millis() - waktuBluetoothMulai >= durasiBluetooth) {
+    matikanBluetooth();
     setLcdOverride("BT OFF", "TIMER HABIS", 3000);
+    Serial.println("[BLE] Bluetooth mati otomatis setelah timer selesai.");
     publishEvent("INFO", "bluetooth.auto_off", "Bluetooth mati otomatis setelah timer selesai.");
   }
 }
@@ -1174,6 +1243,9 @@ void setBluetoothAudio(bool state) {
   bluetoothAudioState = state;
   digitalWrite(BT_BASE_PIN, state ? HIGH : LOW);
   if (state) setRgb(0, 80, 0); else setRgb(80, 0, 0);
+  
+  // Also send telemetry now to update status instantly
+  sendTelemetryNow();
 }
 
 void playDfTrack(int track) {
@@ -1405,17 +1477,12 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
     int durationSeconds = data["durationSeconds"] | 60;
 
     if (state) {
-      setBluetoothAudio(true);
-      bluetoothAktif = true;
-      waktuBluetoothMulai = millis();
       durasiBluetooth = durationSeconds * 1000UL;
-      setLcdOverride("BT AKTIF", "TIMER 1 MENIT", 3000);
-      publishAck(cmdId, type, true, "Bluetooth relay ON.");
+      nyalakanBluetooth();
+      publishAck(cmdId, type, true, "Bluetooth diaktifkan.");
     } else {
-      setBluetoothAudio(false);
-      bluetoothAktif = false;
-      setLcdOverride("BT OFF", "DIMATIKAN", 3000);
-      publishAck(cmdId, type, true, "Bluetooth relay OFF.");
+      matikanBluetooth();
+      publishAck(cmdId, type, true, "Bluetooth dimatikan.");
     }
   } else if (strcmp(type, "temperatureSensor.set") == 0 || strcmp(type, "tempSensor.set") == 0) {
     tempEnabled = data["enabled"] | true;
@@ -1622,67 +1689,237 @@ void checkClaps() {
   }
 }
 
-void checkButtons() {
+void checkBlackButton() {
+  bool reading = digitalRead(BLACK_BTN_PIN);
   unsigned long now = millis();
-  const unsigned long DEBOUNCE_DELAY_MS = 50;
 
-  // 1. Black Button Logic (Short: Time/Temp; Hold: Recording)
-  static unsigned long blackBtnPressTime = 0;
-  static bool blackBtnWasPressed = false;
-  static bool isHoldingBlackBtn = false;
-  bool blackBtnState = (digitalRead(BLACK_BTN_PIN) == LOW);
+  // Debounce logic
+  if (reading != blackBtnLastReading) {
+    blackBtnLastChangeAt = now;
+  }
+  blackBtnLastReading = reading;
 
-  if (blackBtnState) {
-    if (!blackBtnWasPressed) {
-      blackBtnWasPressed = true;
-      blackBtnPressTime = now;
-      isHoldingBlackBtn = false;
-    } else {
-      if (!isHoldingBlackBtn && (now - blackBtnPressTime >= 1000)) {
-        isHoldingBlackBtn = true;
-        Serial.println("[BUTTON] Black Button Long Press - start recording");
-        playVoice(TRACK_STARTUP_READY, "black_button_hold_start");
-        publishEvent("INFO", "voice.record.start", "Mulai merekam suara.");
-        setLcdOverride("REKAM SUARA...", "SIAP BICARA", 5000);
-        
-        // Start recording
-        if (recordBuffer != NULL) {
-          free(recordBuffer);
-          recordBuffer = NULL;
-        }
-        recordBuffer = (uint8_t*)malloc(RECORD_BUFFER_SIZE);
-        if (recordBuffer != NULL) {
-          isRecording = true;
-          recordBufferIdx = 0;
-          recordingStartMillis = now;
-        } else {
-          Serial.println("[BUTTON] Error: Gagal alokasi buffer audio!");
-        }
-      }
-    }
-  } else {
-    if (blackBtnWasPressed) {
-      unsigned long pressDuration = now - blackBtnPressTime;
-      blackBtnWasPressed = false;
-      
-      if (isHoldingBlackBtn) {
-        isHoldingBlackBtn = false;
-        Serial.println("[BUTTON] Black Button RELEASE - stop recording");
-        publishEvent("INFO", "voice.record.stop", "Selesai merekam suara.");
-        
-        if (isRecording) {
-          isRecording = false;
-          sendRecordedAudio();
-        }
+  if (now - blackBtnLastChangeAt >= BLACK_BUTTON_DEBOUNCE_MS) {
+    if (reading != blackBtnStableState) {
+      blackBtnStableState = reading;
+
+      if (blackBtnStableState == LOW) {
+        blackBtnPressedAt = now;
+        blackLongPressHandled = false;
+        Serial.println("[BUTTON] Black button pressed down");
       } else {
-        if (pressDuration >= DEBOUNCE_DELAY_MS) {
-          Serial.println("[BUTTON] Black quick press time/temp");
-          playTimeTemperatureVoice();
-          publishEvent("INFO", "time_temperature_display", "Menampilkan waktu dan suhu.");
+        Serial.println("[BUTTON] Black button released");
+        if (!blackLongPressHandled) {
+          unsigned long pressDuration = now - blackBtnPressedAt;
+          if (pressDuration < 800) {
+            handleBlackButtonQuickPress();
+          } else {
+            Serial.printf("[BUTTON] Pressed for %d ms (not quick, not long enough, or already handled)\n", (int)pressDuration);
+          }
         }
       }
     }
   }
+
+  // Handle long press while button is still pressed down
+  if (blackBtnStableState == LOW && !blackLongPressHandled) {
+    if (now - blackBtnPressedAt >= BLACK_BUTTON_LONG_PRESS_MS) {
+      blackLongPressHandled = true;
+      handleBlackButtonLongPress();
+    }
+  }
+}
+
+void handleBlackButtonQuickPress() {
+  Serial.println("[BUTTON] Black quick press - time/temp");
+
+  playVoice(TRACK_TIME_TEMP_REALTIME, "black_button_time_temp");
+
+  if (rtcReady) {
+    DateTime now = rtc.now();
+    float tempC = rtc.getTemperature() + tempOffset;
+
+    char line1[17];
+    char line2[17];
+
+    snprintf(line1, sizeof(line1), "WAKTU %02d:%02d:%02d", now.hour(), now.minute(), now.second());
+    snprintf(line2, sizeof(line2), "SUHU %4.1f C", tempC);
+
+    setLcdOverride(line1, line2, 4000);
+  } else {
+    setLcdOverride("RTC ERROR", "CEK DS3231", 3000);
+  }
+
+  publishEvent("INFO", "button.black.quick", "Tombol hitam tekan cepat: tampil jam dan suhu.");
+}
+
+void handleBlackButtonLongPress() {
+  Serial.println("[BUTTON] Black long press - AI voice question");
+
+  setLcdOverride("AI MENDENGAR", "SILAKAN BICARA", 3000);
+  publishEvent("INFO", "button.black.long", "Tombol hitam tahan: mode tanya AI.");
+
+  bool ok = recordAndSendVoiceToAI();
+
+  if (ok) {
+    setLcdOverride("AI MENJAWAB", "CEK WEBSITE", 4000);
+  } else {
+    setLcdOverride("AI ERROR", "CEK KONEKSI", 4000);
+  }
+}
+
+bool recordAudioWavToBuffer(uint8_t** wavData, size_t* wavSize, int seconds) {
+  Serial.printf("[AI] Starting recording: %d seconds\n", seconds);
+  
+  size_t rawSize = 16000 * 2 * seconds;
+  size_t totalSize = 44 + rawSize;
+  
+  uint8_t* buffer = NULL;
+  if (psramFound()) {
+    buffer = (uint8_t*)ps_malloc(totalSize);
+    if (buffer == NULL) {
+      Serial.println("[AI] Failed allocating with ps_malloc, trying malloc");
+      buffer = (uint8_t*)malloc(totalSize);
+    }
+  } else {
+    Serial.println("[AI] PSRAM tidak tersedia / buffer tidak cukup");
+    buffer = (uint8_t*)malloc(totalSize);
+  }
+  
+  if (buffer == NULL) {
+    Serial.printf("[AI] Memory allocation failed for size %d\n", (int)totalSize);
+    return false;
+  }
+  
+  WavHeader header;
+  header.chunkSize = 36 + rawSize;
+  header.subchunk2Size = rawSize;
+  memcpy(buffer, &header, 44);
+  
+  size_t bytesRecorded = 0;
+  unsigned long startMillis = millis();
+  unsigned long durationMs = seconds * 1000;
+  
+  int32_t i2sSamples[64];
+  
+  while (millis() - startMillis < durationMs) {
+    size_t bytesRead = 0;
+    esp_err_t err = i2s_read(MIC_I2S_PORT, i2sSamples, sizeof(i2sSamples), &bytesRead, 0);
+    if (err == ESP_OK && bytesRead > 0) {
+      size_t numSamples = bytesRead / 4;
+      for (size_t i = 0; i < numSamples; i++) {
+        if (bytesRecorded + 2 <= rawSize) {
+          int16_t sample16 = (int16_t)(i2sSamples[i] >> 14);
+          buffer[44 + bytesRecorded] = sample16 & 0xFF;
+          buffer[44 + bytesRecorded + 1] = (sample16 >> 8) & 0xFF;
+          bytesRecorded += 2;
+        }
+      }
+    }
+    yield();
+  }
+  
+  Serial.printf("[AI] Recorded %d bytes of raw PCM audio (%d bytes total with WAV header)\n", (int)bytesRecorded, (int)(44 + bytesRecorded));
+  
+  *wavData = buffer;
+  *wavSize = 44 + bytesRecorded;
+  return true;
+}
+
+bool sendVoiceToAIBackend(uint8_t* wavData, size_t wavSize) {
+  if (wavData == NULL || wavSize <= 44) {
+    Serial.println("[AI] Invalid audio data to send.");
+    return false;
+  }
+
+  Serial.println("[AI] Preparing WAV buffer...");
+  Serial.printf("[AI] WAV size: %d bytes\n", (int)wavSize);
+  Serial.printf("[AI] Sending to backend: %s\n", AI_BACKEND_URL);
+
+  WiFiClientSecure clientSecure;
+  WiFiClient clientHttp;
+  HTTPClient http;
+  
+  bool isHttps = String(AI_BACKEND_URL).startsWith("https://");
+  bool beginSuccess = false;
+  
+  if (isHttps) {
+    clientSecure.setInsecure();
+    beginSuccess = http.begin(clientSecure, AI_BACKEND_URL);
+  } else {
+    beginSuccess = http.begin(clientHttp, AI_BACKEND_URL);
+  }
+
+  if (!beginSuccess) {
+    Serial.println("[AI] HTTP begin failed.");
+    return false;
+  }
+
+  http.setTimeout(20000);
+  http.addHeader("Content-Type", "audio/wav");
+  http.addHeader("x-device-id", DEVICE_ID);
+  http.addHeader("x-source", "black_button_long_press");
+
+  int httpCode = http.POST(wavData, wavSize);
+  Serial.printf("[AI] HTTP code: %d\n", httpCode);
+
+  bool success = false;
+  if (httpCode == 200) {
+    String response = http.getString();
+    Serial.printf("[AI] Response: %s\n", response.c_str());
+    
+    StaticJsonDocument<512> doc;
+    DeserializationError error = deserializeJson(doc, response);
+    if (!error && doc["success"]) {
+      success = true;
+    } else {
+      Serial.println("[AI] Response parse failed or success is false.");
+    }
+  } else {
+    Serial.println("[AI] Connection failed");
+    Serial.println("[AI] Backend URL salah / WiFi putus / HTTPS gagal");
+    if (httpCode > 0) {
+      String response = http.getString();
+      Serial.println(response);
+    }
+  }
+
+  http.end();
+  return success;
+}
+
+bool recordAndSendVoiceToAI() {
+  uint8_t* wavData = NULL;
+  size_t wavSize = 0;
+  int seconds = 4;
+  
+  bool success = recordAudioWavToBuffer(&wavData, &wavSize, seconds);
+  
+  if (!success) {
+    seconds = 3;
+    success = recordAudioWavToBuffer(&wavData, &wavSize, seconds);
+  }
+  
+  if (!success) {
+    Serial.println("[AI] Gagal merekam audio.");
+    return false;
+  }
+  
+  setLcdOverride("AI MEMPROSES", "MOHON TUNGGU", 3000);
+  setLcdOverride("MENGIRIM AI", "KE SERVER", 3000);
+  
+  bool sent = sendVoiceToAIBackend(wavData, wavSize);
+  
+  if (wavData != NULL) {
+    free(wavData);
+  }
+  
+  return sent;
+}
+
+void checkButtons() {
+  unsigned long now = millis();
+  const unsigned long DEBOUNCE_DELAY_MS = 50;
 
   // 2. White Button Logic (Short: Assistant Intro)
   static unsigned long whiteBtnPressTime = 0;
@@ -1834,6 +2071,7 @@ void loop() {
   }
 
   checkButtons();
+  checkBlackButton();
   checkAlarms();
   checkRelaySchedules();
   checkBluetoothTimer();
@@ -1849,7 +2087,6 @@ void loop() {
 
   checkWarnings(gasRaw, tempC, gasWarning, tempWarning);
   checkPirGreeting();
-  updateRecording();
 
   updateLed12c(gasWarning, isSmoke, pirDetected, WiFi.status() == WL_CONNECTED, mqttClient.connected());
   updateLcd(gasRaw, tempC, gasWarning, tempWarning, pirDetected);

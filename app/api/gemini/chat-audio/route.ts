@@ -14,6 +14,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { writeFile, mkdir } from "fs/promises";
 import { existsSync } from "fs";
 import path from "path";
+import { PrismaClient } from "@prisma/client";
+
+export const runtime = "nodejs";
 
 // Context sistem untuk Smartbox Assistant
 const SYSTEM_PROMPT = `Kamu adalah Smartbox Assistant, asisten rumah pintar berbahasa Indonesia yang ramah, singkat, dan profesional.
@@ -34,24 +37,37 @@ Aturan menjawab:
 - Jika ditanya tentang status sensor, jawab berdasarkan konteks yang diberikan`;
 
 export async function POST(req: NextRequest) {
+  const prisma = new PrismaClient();
+  let interactionId = "";
   try {
     const contentType = req.headers.get("content-type") || "";
+    const headerDeviceId = req.headers.get("x-device-id") || req.headers.get("deviceid");
+    const deviceId = headerDeviceId || "smartbox-001";
+    const source = req.headers.get("x-source") || "black_button_long_press";
+    
+    // 1. Simpan log request awal ke database dengan status "processing"
+    try {
+      const log = await prisma.voiceInteraction.create({
+        data: {
+          deviceId,
+          source,
+          status: "processing",
+        },
+      });
+      interactionId = log.id;
+      console.log(`[CHAT-AUDIO] Created DB log with ID: ${interactionId} (status: processing)`);
+    } catch (dbErr) {
+      console.warn("[CHAT-AUDIO] Database log creation failed:", dbErr);
+    }
     
     let userQuery = "";
     let aiText = "";
-    let deviceId = "smartbox-001";
     let context = "";
     let voice = "Charon";
 
     const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
     if (!GEMINI_API_KEY || GEMINI_API_KEY === "YOUR_GEMINI_API_KEY_HERE") {
-      return NextResponse.json(
-        {
-          error: "GEMINI_API_KEY belum dikonfigurasi di .env",
-          text: "Maaf, fitur AI belum dikonfigurasi. Silakan hubungi administrator.",
-        },
-        { status: 500 }
-      );
+      throw new Error("GEMINI_API_KEY belum dikonfigurasi di .env");
     }
 
     const isAudioUpload = contentType.includes("audio/") || contentType.includes("application/octet-stream");
@@ -106,11 +122,7 @@ export async function POST(req: NextRequest) {
 
       if (!geminiResponse.ok) {
         const errText = await geminiResponse.text();
-        console.error("[CHAT-AUDIO] Gemini audio error:", errText);
-        return NextResponse.json(
-          { error: "Gemini audio API gagal", detail: errText },
-          { status: 502 }
-        );
+        throw new Error(`Gemini audio API gagal: ${errText}`);
       }
 
       const geminiData = await geminiResponse.json();
@@ -132,7 +144,6 @@ export async function POST(req: NextRequest) {
       // Input JSON biasa (seperti dari dashboard browser)
       const body = await req.json();
       const msg = body.message;
-      deviceId = body.deviceId || "smartbox-001";
       context = body.context || "";
       voice = body.voice || "Charon";
 
@@ -165,11 +176,7 @@ export async function POST(req: NextRequest) {
 
       if (!textResponse.ok) {
         const errText = await textResponse.text();
-        console.error("[CHAT-AUDIO] Gemini text error:", errText);
-        return NextResponse.json(
-          { error: "Gemini text API gagal", detail: errText },
-          { status: 502 }
-        );
+        throw new Error(`Gemini text API gagal: ${errText}`);
       }
 
       const textData = await textResponse.json();
@@ -180,6 +187,97 @@ export async function POST(req: NextRequest) {
 
     console.log(`[CHAT-AUDIO] Pertanyaan: "${userQuery}"`);
     console.log(`[CHAT-AUDIO] Jawaban AI: "${aiText}"`);
+
+    // Parse voice commands / intents
+    const normalizedQuery = userQuery.toLowerCase().trim();
+    let mqttCmd: any = null;
+
+    if (normalizedQuery.includes("nyalakan stop kontak satu") || normalizedQuery.includes("hidupkan stop kontak satu") || normalizedQuery.includes("nyalakan stop kontak 1")) {
+      mqttCmd = {
+        id: `ai_cmd_relay1_on_${Date.now()}`,
+        type: "relay.set",
+        payload: {
+          relay: 1,
+          state: true,
+          source: "ai_voice"
+        }
+      };
+      aiText = "Baik tuan, stop kontak satu saya nyalakan.";
+    } else if (normalizedQuery.includes("matikan stop kontak satu") || normalizedQuery.includes("matikan stop kontak 1")) {
+      mqttCmd = {
+        id: `ai_cmd_relay1_off_${Date.now()}`,
+        type: "relay.set",
+        payload: {
+          relay: 1,
+          state: false,
+          source: "ai_voice"
+        }
+      };
+      aiText = "Baik tuan, stop kontak satu saya matikan.";
+    } else if (normalizedQuery.includes("nyalakan stop kontak dua") || normalizedQuery.includes("hidupkan stop kontak dua") || normalizedQuery.includes("nyalakan stop kontak 2")) {
+      mqttCmd = {
+        id: `ai_cmd_relay2_on_${Date.now()}`,
+        type: "relay.set",
+        payload: {
+          relay: 2,
+          state: true,
+          source: "ai_voice"
+        }
+      };
+      aiText = "Baik tuan, stop kontak dua saya nyalakan.";
+    } else if (normalizedQuery.includes("matikan stop kontak dua") || normalizedQuery.includes("matikan stop kontak 2")) {
+      mqttCmd = {
+        id: `ai_cmd_relay2_off_${Date.now()}`,
+        type: "relay.set",
+        payload: {
+          relay: 2,
+          state: false,
+          source: "ai_voice"
+        }
+      };
+      aiText = "Baik tuan, stop kontak dua saya matikan.";
+    } else if (normalizedQuery.includes("nyalakan bluetooth") || normalizedQuery.includes("aktifkan bluetooth") || normalizedQuery.includes("hidupkan bluetooth")) {
+      mqttCmd = {
+        id: `ai_cmd_bt_on_${Date.now()}`,
+        type: "bluetooth.set",
+        payload: {
+          state: true,
+          durationSeconds: 60,
+          source: "ai_voice"
+        }
+      };
+      aiText = "Baik tuan, bluetooth saya nyalakan selama satu menit.";
+    } else if (normalizedQuery.includes("matikan bluetooth") || normalizedQuery.includes("nonaktifkan bluetooth")) {
+      mqttCmd = {
+        id: `ai_cmd_bt_off_${Date.now()}`,
+        type: "bluetooth.set",
+        payload: {
+          state: false,
+          source: "ai_voice"
+        }
+      };
+      aiText = "Baik tuan, bluetooth saya matikan.";
+    } else if (normalizedQuery.includes("putar suara smartbox") || normalizedQuery.includes("bunyikan alarm") || normalizedQuery.includes("putar suara")) {
+      mqttCmd = {
+        id: `ai_cmd_dfplay_${Date.now()}`,
+        type: "voice.play",
+        payload: {
+          track: 1,
+          source: "ai_voice"
+        }
+      };
+      aiText = "Baik tuan, saya putar suara smartbox.";
+    }
+
+    if (mqttCmd) {
+      try {
+        const { publishMessage } = await import("../../../../lib/mqtt-server");
+        await publishMessage(`smartbox/${deviceId}/cmd`, mqttCmd);
+        console.log(`[CHAT-AUDIO] Sent MQTT Command to smartbox/${deviceId}/cmd:`, mqttCmd);
+      } catch (mqttCmdErr) {
+        console.warn("[CHAT-AUDIO] Failed to publish MQTT command:", mqttCmdErr);
+      }
+    }
 
     // Step 2: Convert jawaban ke audio via Gemini TTS
     let audioUrl: string | null = null;
@@ -247,22 +345,22 @@ export async function POST(req: NextRequest) {
       console.warn("[CHAT-AUDIO] TTS error (non-fatal):", ttsErr);
     }
 
-    // Simpan interaksi ke Neon DB
-    try {
-      const { PrismaClient } = await import("@prisma/client");
-      const prisma = new PrismaClient();
-      await prisma.voiceInteraction.create({
-        data: {
-          deviceId,
-          transcript: userQuery,
-          replyText: aiText,
-          audioUrl: audioUrl || null,
-          status: "success",
-        },
-      });
-      await prisma.$disconnect();
-    } catch (dbErr) {
-      console.warn("[CHAT-AUDIO] DB log gagal (non-fatal):", dbErr);
+    // Update log sukses ke Neon DB
+    if (interactionId) {
+      try {
+        await prisma.voiceInteraction.update({
+          where: { id: interactionId },
+          data: {
+            transcript: userQuery,
+            replyText: aiText,
+            audioUrl: audioUrl || null,
+            status: "success",
+          },
+        });
+        console.log(`[CHAT-AUDIO] Updated DB log ID: ${interactionId} to success`);
+      } catch (dbErr) {
+        console.warn("[CHAT-AUDIO] DB log update success failed:", dbErr);
+      }
     }
 
     // Kirim event ke MQTT broker
@@ -283,8 +381,11 @@ export async function POST(req: NextRequest) {
       console.warn("[CHAT-AUDIO] MQTT publish failed:", mqttErr);
     }
 
+    // Return format response lengkap untuk mendukung ESP32 lama & spesifikasi JSON baru
     return NextResponse.json({
       success: true,
+      transcript: userQuery,
+      replyText: aiText,
       text: aiText,
       audioUrl,
       audioSize,
@@ -294,12 +395,32 @@ export async function POST(req: NextRequest) {
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("[CHAT-AUDIO] Error:", message);
+    
+    // Update log ke error di Neon DB
+    if (interactionId) {
+      try {
+        await prisma.voiceInteraction.update({
+          where: { id: interactionId },
+          data: {
+            status: "error",
+            error: message,
+          },
+        });
+        console.log(`[CHAT-AUDIO] Updated DB log ID: ${interactionId} to error`);
+      } catch (dbErr) {
+        console.warn("[CHAT-AUDIO] DB log update error failed:", dbErr);
+      }
+    }
+
     return NextResponse.json(
-      { error: "Internal server error", detail: message },
+      { success: false, message: "Gagal memproses audio AI", error: message },
       { status: 500 }
     );
+  } finally {
+    await prisma.$disconnect();
   }
 }
+
 
 export async function GET() {
   return NextResponse.json({

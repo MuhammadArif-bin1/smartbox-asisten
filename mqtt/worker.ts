@@ -104,18 +104,18 @@ client.on("message", async (topic, message) => {
     
     else if (messageType === "telemetry") {
       const {
-        temperature = 0,
+        temperature,
         temperatureC,
         gasRaw = 0,
         gasDetected = false,
         gasLevel = "normal",
         temperatureHigh = false,
-        pirDetected = false,
+        pirDetected,
         motion,
         obstacleNear = false,
         relay1 = false,
         relay2 = false,
-        bluetoothRelay = false,
+        bluetoothRelay,
         ampRelay,
         bluetoothAudio,
         buzzer = false,
@@ -123,7 +123,9 @@ client.on("message", async (topic, message) => {
       } = data;
 
       // Extract temperature value (support fallback keys)
-      const finalTemperature = typeof temperature === "number" ? temperature : (typeof temperatureC === "number" ? temperatureC : 0);
+      const finalTemperature = typeof temperatureC === "number" 
+        ? temperatureC 
+        : (typeof temperature === "number" ? temperature : 0);
       // Extract bluetoothRelay value (support fallback keys)
       const finalBluetooth = typeof bluetoothRelay === "boolean" 
         ? bluetoothRelay 
@@ -131,7 +133,9 @@ client.on("message", async (topic, message) => {
           ? ampRelay 
           : (typeof bluetoothAudio === "boolean" ? bluetoothAudio : false));
       // Extract PIR detected value (support fallback keys)
-      const finalPir = typeof pirDetected === "boolean" ? pirDetected : (typeof motion === "boolean" ? motion : false);
+      const finalPir = typeof pirDetected === "boolean" 
+        ? pirDetected 
+        : (typeof motion === "boolean" ? motion : false);
 
       await ensureDevice(deviceId, true);
 
@@ -206,6 +210,61 @@ client.on("message", async (topic, message) => {
       const { level = "INFO", type = "generic", message = "" } = data;
       
       await ensureDevice(deviceId, true);
+
+      // Handle PIR motion event for fast real-time status update in database
+      if (type === "pir.motion") {
+        const payloadObj = data.payload || {};
+        const pirDetectedVal = typeof payloadObj.pirDetected === "boolean" 
+          ? payloadObj.pirDetected 
+          : (typeof data.pirDetected === "boolean" ? data.pirDetected : true);
+        
+        console.log(`[Worker] Direct PIR injection: device ${deviceId} pirDetected=${pirDetectedVal}`);
+        
+        // 1. Update singleton SmartboxStatus
+        await retryQuery(() => prisma.smartboxStatus.upsert({
+          where: { deviceId },
+          create: {
+            deviceId,
+            online: true,
+            lastSeenAt: new Date(),
+            pirDetected: pirDetectedVal,
+          },
+          update: {
+            online: true,
+            lastSeenAt: new Date(),
+            pirDetected: pirDetectedVal,
+          }
+        })).catch((err) => {
+          console.error(`[Worker] Error updating SmartboxStatus for PIR event:`, err);
+        });
+
+        // 2. Insert SensorReading to immediately sync frontend readings poll
+        const lastReading = await prisma.sensorReading.findFirst({
+          where: { deviceId },
+          orderBy: { createdAt: "desc" },
+        });
+
+        await retryQuery(() => prisma.sensorReading.create({
+          data: {
+            deviceId,
+            temperature: lastReading?.temperature ?? 28.0,
+            gasRaw: lastReading?.gasRaw ?? 0,
+            gasDetected: lastReading?.gasDetected ?? false,
+            gasLevel: lastReading?.gasLevel ?? "normal",
+            temperatureHigh: lastReading?.temperatureHigh ?? false,
+            pirDetected: pirDetectedVal,
+            obstacleNear: lastReading?.obstacleNear ?? false,
+            relay1: lastReading?.relay1 ?? false,
+            relay2: lastReading?.relay2 ?? false,
+            bluetoothRelay: lastReading?.bluetoothRelay ?? false,
+            buzzer: lastReading?.buzzer ?? false,
+            gasSensorEnabled: lastReading?.gasSensorEnabled ?? true,
+            createdAt: new Date(),
+          },
+        })).catch((err) => {
+          console.error(`[Worker] Error saving SensorReading for PIR event:`, err);
+        });
+      }
 
       await retryQuery(() => prisma.eventLog.create({
         data: {

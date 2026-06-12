@@ -1,6 +1,6 @@
 "use client";
 
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 type ViewId = "dashboard" | "monitoring" | "devices" | "ai" | "alarms" | "history" | "settings";
 type CommandStatus = "idle" | "sending" | "sent" | "error";
@@ -192,6 +192,7 @@ export default function Home() {
   const [buzzerEnabled, setBuzzerEnabled] = useState(false);
   const [boardLedScheduleEnabled, setBoardLedScheduleEnabled] = useState(true);
   const [relayState, setRelayState] = useState<Record<RelayId, boolean>>({ socket1: true, socket2: false, ampli: true });
+  const relayPendingRef = useRef<Record<RelayId, number>>({ socket1: 0, socket2: 0, ampli: 0 });
   const [status, setStatus] = useState<CommandStatus>("idle");
   const [lastCommand, setLastCommand] = useState("Belum ada command dikirim");
   const [toast, setToast] = useState<Toast | null>(null);
@@ -349,10 +350,19 @@ export default function Home() {
             }
 
             // Update relay states and buzzer from telemetry
-            setRelayState({
-              socket1: telemetry.relay1 === true,
-              socket2: telemetry.relay2 === true,
-              ampli: telemetry.bluetoothRelay === true,
+            setRelayState((current) => {
+              const now = Date.now();
+              const updated = { ...current };
+              if (now - relayPendingRef.current.socket1 > 5000) {
+                updated.socket1 = telemetry.relay1 === true;
+              }
+              if (now - relayPendingRef.current.socket2 > 5000) {
+                updated.socket2 = telemetry.relay2 === true;
+              }
+              if (now - relayPendingRef.current.ampli > 5000) {
+                updated.ampli = telemetry.bluetoothRelay === true;
+              }
+              return updated;
             });
             setBuzzerEnabled(telemetry.buzzer === true);
           }
@@ -366,6 +376,12 @@ export default function Home() {
               level: data.level || "INFO",
             };
             setEvents((prev) => [newEvent, ...prev.slice(0, 19)]);
+
+            // Autoplay AI voice response
+            if (data.type === "ai.chat" && data.payload?.audioUrl) {
+              const audio = new Audio(data.payload.audioUrl);
+              audio.play().catch(e => console.warn("Failed to auto-play audio:", e));
+            }
           }
           
           else if (topicStr.endsWith("/ack")) {
@@ -534,10 +550,19 @@ export default function Home() {
               setTemperatureEnabled(true);
               if (typeof latest.pirDetected === "boolean") setPirDetected(latest.pirDetected);
               
-              setRelayState({
-                socket1: latest.relay1 === true,
-                socket2: latest.relay2 === true,
-                ampli: latest.bluetoothRelay === true,
+              setRelayState((current) => {
+                const now = Date.now();
+                const updated = { ...current };
+                if (now - relayPendingRef.current.socket1 > 5000) {
+                  updated.socket1 = latest.relay1 === true;
+                }
+                if (now - relayPendingRef.current.socket2 > 5000) {
+                  updated.socket2 = latest.relay2 === true;
+                }
+                if (now - relayPendingRef.current.ampli > 5000) {
+                  updated.ampli = latest.bluetoothRelay === true;
+                }
+                return updated;
               });
               setBuzzerEnabled(latest.buzzer === true);
 
@@ -749,9 +774,10 @@ export default function Home() {
   function toggleRelay(relayId: RelayId) {
     const next = !relayState[relayId];
     setRelayState((current) => ({ ...current, [relayId]: next }));
+    relayPendingRef.current[relayId] = Date.now();
     
     if (relayId === "ampli") {
-      sendDeviceCommand("bluetooth.set", { state: next }, `Relay Bluetooth ${next ? "aktif" : "mati"}`);
+      sendDeviceCommand("bluetooth.set", { state: next, durationSeconds: 60 }, `Relay Bluetooth ${next ? "aktif" : "mati"}`);
     } else {
       const relayNum = relayId === "socket2" ? 2 : 1;
       sendDeviceCommand("relay.set", { relay: relayNum, state: next }, `Stop Kontak ${relayNum} ${next ? "aktif" : "mati"}`);
@@ -1166,8 +1192,8 @@ function DashboardPage(props: PageProps) {
               }} 
             />
             <QuickControlRow 
-              label="Relay Bluetooth" 
-              detail={props.relayState.ampli ? "Relay ON" : "Relay OFF"} 
+              label="Relay Bluetooth (Smartbox Assistant)" 
+              detail={props.relayState.ampli ? "Bluetooth Aktif (Timer 1 m)" : "Bluetooth Mati"} 
               enabled={props.relayState.ampli} 
               onToggle={() => props.toggleRelay("ampli")} 
             />
@@ -1250,7 +1276,7 @@ function MonitoringPage(props: PageProps) {
     <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_420px]">
       <div className="grid gap-5">
         <Panel title="Monitoring Sensor Real-time" subtitle={`Sumber data: ${props.telemetrySource}`}>
-          <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5">
+          <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
             <ReadingRow 
               label="Suhu Ruangan" 
               value={isTempDataWaiting ? "Menunggu data..." : `${props.visibleTempEstimate.toFixed(1)}°C`} 
@@ -1259,8 +1285,6 @@ function MonitoringPage(props: PageProps) {
               tone="blue" 
             />
             <ReadingRow label="Gas / Asap" value={props.gasState === "Tidak Terhubung" || props.gasState === "Offline" ? "-" : `${props.gasPpm} PPM (${props.visibleGasEstimate} RAW)`} status={props.gasState} percent={props.gasState === "Tidak Terhubung" || props.gasState === "Offline" ? 0 : props.gasPercent} tone="emerald" />
-            <ReadingRow label="Api" value={props.gasState === "Tidak Terhubung" || props.gasState === "Offline" ? "-" : (props.flameDetected ? "Terdeteksi" : "Tidak Ada")} status={props.gasState === "Tidak Terhubung" ? "Tidak Terhubung" : (props.gasState === "Offline" ? "Offline" : (props.flameDetected ? "Bahaya" : "Normal"))} percent={props.gasState === "Tidak Terhubung" || props.gasState === "Offline" ? 0 : (props.flameDetected ? 100 : 0)} tone="orange" />
-            
             <ReadingRow 
               label="Gerakan (PIR)" 
               value={!props.deviceStatuses.esp32 ? "Tidak Terhubung" : (props.pirDetected ? "Gerakan Terdeteksi" : "Tidak Ada Gerakan")} 
@@ -1268,8 +1292,6 @@ function MonitoringPage(props: PageProps) {
               percent={!props.deviceStatuses.esp32 ? 0 : (props.pirDetected ? 100 : 0)} 
               tone="orange" 
             />
-            
-            <ReadingRow label="Halangan (IR)" value={props.gasState === "Tidak Terhubung" || props.gasState === "Offline" ? "-" : (props.obstacleNear ? "Terdeteksi" : "Tidak Ada")} status={props.gasState === "Tidak Terhubung" ? "Tidak Terhubung" : (props.gasState === "Offline" ? "Offline" : (props.obstacleNear ? "Dekat" : "Jauh"))} percent={props.gasState === "Tidak Terhubung" || props.gasState === "Offline" ? 0 : (props.obstacleNear ? 100 : 0)} tone="blue" />
           </div>
           <div className="mt-4 grid gap-4 md:grid-cols-2">
             <WarningCard
@@ -1452,12 +1474,24 @@ function DevicesPage(props: PageProps) {
             </div>
 
             {/* Relay Bluetooth */}
-            <div className="flex items-center justify-between rounded-2xl border border-slate-100 bg-slate-50/50 p-3">
-              <div>
-                <p className="text-sm font-bold text-slate-900">Relay Bluetooth</p>
-                <p className="text-xs text-slate-500">Auto-off 1 Menit</p>
+            <div className="flex flex-col gap-2 rounded-2xl border border-slate-100 bg-slate-50/50 p-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-bold text-slate-900">Relay Bluetooth (Smartbox Assistant)</p>
+                  <p className="text-xs text-slate-500">
+                    {props.relayState.ampli ? "Bluetooth Aktif" : "Bluetooth Mati"}
+                  </p>
+                </div>
+                <Switch checked={props.relayState.ampli} onChange={() => props.toggleRelay("ampli")} />
               </div>
-              <Switch checked={props.relayState.ampli} onChange={() => props.toggleRelay("ampli")} />
+              {props.relayState.ampli && (
+                <div className="border-t border-slate-100 pt-2 mt-1">
+                  <p className="text-[11px] font-semibold text-blue-600 flex items-center gap-1.5">
+                    <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-ping" />
+                    Timer 1 menit aktif (Mati otomatis setelah timer habis)
+                  </p>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -2036,7 +2070,7 @@ function StatsGrid(props: PageProps) {
         : "emerald"));
 
   return (
-    <section className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
+    <section className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
       <StatCard 
         label="Suhu Ruangan" 
         value={hasTemp ? `${props.visibleTempEstimate.toFixed(1)}°C` : "Menunggu data..."} 
@@ -2050,22 +2084,10 @@ function StatsGrid(props: PageProps) {
         accent={gasAccent} 
       />
       <StatCard 
-        label="Status Api" 
-        value={hasGas ? (props.flameDetected ? "Terdeteksi" : "Tidak Ada") : "Tidak Terhubung"} 
-        detail={hasGas ? (props.flameDetected ? "Bahaya Kebakaran!" : "Sensor normal") : "ESP32 Offline"} 
-        accent="orange" 
-      />
-      <StatCard 
         label="Gerakan (PIR)" 
         value={hasGas ? (props.pirDetected ? "Gerakan Terdeteksi" : "Tidak Ada Gerakan") : "Tidak Terhubung"} 
         detail={hasGas ? (props.pirDetected ? "Terdeteksi gerakan" : "Kondisi aman") : "ESP32 Offline"} 
         accent={props.pirDetected ? "red" : "emerald"} 
-      />
-      <StatCard 
-        label="Halangan (IR)" 
-        value={hasGas ? (props.obstacleNear ? "Terdeteksi" : "Tidak Ada") : "Tidak Terhubung"} 
-        detail={hasGas ? (props.obstacleNear ? "Objek mendekat" : "Jalur bersih") : "ESP32 Offline"} 
-        accent="indigo" 
       />
       <StatCard label="Koneksi Perangkat" value={props.deviceStatuses.esp32 ? "Terhubung" : "Tidak Terhubung"} detail={props.deviceStatuses.esp32 ? `Relay aktif: ${props.relayActiveCount} / 3` : "Perangkat offline"} accent="indigo" />
     </section>
