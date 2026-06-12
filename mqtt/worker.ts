@@ -16,9 +16,24 @@ const client = mqtt.connect(brokerUrl, {
   reconnectPeriod: 5000,
 });
 
+/**
+ * Helper function to retry Prisma queries if the database connection drops
+ * (Useful for Neon DB auto-suspend wakeups)
+ */
+async function retryQuery<T>(fn: () => Promise<T>, retries = 3, delay = 1000): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (retries <= 0) throw err;
+    console.warn(`[Worker] Database query failed (connection dropped), retrying in ${delay}ms... (Remaining retries: ${retries})`);
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    return retryQuery(fn, retries - 1, delay * 2);
+  }
+}
+
 async function ensureDevice(deviceId: string, isOnline: boolean = true) {
   try {
-    return await prisma.device.upsert({
+    return await retryQuery(() => prisma.device.upsert({
       where: { deviceId },
       update: {
         status: isOnline ? "online" : "offline",
@@ -32,7 +47,7 @@ async function ensureDevice(deviceId: string, isOnline: boolean = true) {
         status: isOnline ? "online" : "offline",
         lastSeenAt: new Date(),
       },
-    });
+    }));
   } catch (err) {
     console.error(`[Worker] Error upserting device ${deviceId}:`, err);
   }
@@ -69,6 +84,22 @@ client.on("message", async (topic, message) => {
       const isOnline = data.online === true;
       console.log(`[Worker] Device ${deviceId} status changed to: ${isOnline ? "ONLINE" : "OFFLINE"}`);
       await ensureDevice(deviceId, isOnline);
+
+      // Sync to SmartboxStatus
+      await retryQuery(() => prisma.smartboxStatus.upsert({
+        where: { deviceId },
+        create: {
+          deviceId,
+          online: isOnline,
+          lastSeenAt: new Date(),
+        },
+        update: {
+          online: isOnline,
+          lastSeenAt: new Date(),
+        }
+      })).catch((err) => {
+        console.error(`[Worker] Error syncing SmartboxStatus status:`, err);
+      });
     }
     
     else if (messageType === "telemetry") {
@@ -105,7 +136,7 @@ client.on("message", async (topic, message) => {
       await ensureDevice(deviceId, true);
 
       // Create new SensorReading record
-      await prisma.sensorReading.create({
+      await retryQuery(() => prisma.sensorReading.create({
         data: {
           deviceId,
           temperature: finalTemperature,
@@ -122,9 +153,53 @@ client.on("message", async (topic, message) => {
           gasSensorEnabled: Boolean(gasSensorEnabled),
           createdAt: data.createdAt ? new Date(data.createdAt) : new Date(),
         },
+      })).catch((err) => {
+        console.error(`[Worker] Error saving SensorReading:`, err);
       });
 
-      console.log(`[Worker] Saved SensorReading for ${deviceId}: Temp=${finalTemperature}°C, GasRaw=${gasRaw}, Level=${gasLevel}`);
+      // Update/Sync SmartboxStatus singleton
+      await retryQuery(() => prisma.smartboxStatus.upsert({
+        where: { deviceId },
+        create: {
+          deviceId,
+          online: true,
+          lastSeenAt: new Date(),
+          gasRaw: typeof gasRaw === "number" ? Math.round(gasRaw) : 0,
+          gasLevel: gasLevel || "normal",
+          smokeDetected: gasLevel === "smoke",
+          gasDetected: gasLevel === "gas",
+          temperatureC: finalTemperature,
+          temperatureHigh: Boolean(temperatureHigh),
+          pirDetected: finalPir,
+          obstacleNear: Boolean(obstacleNear),
+          relay1: Boolean(relay1),
+          relay2: Boolean(relay2),
+          bluetoothAudio: finalBluetooth,
+          buzzer: Boolean(buzzer),
+          dfPlayerReady: data.dfPlayerReady ?? false,
+        },
+        update: {
+          online: true,
+          lastSeenAt: new Date(),
+          gasRaw: typeof gasRaw === "number" ? Math.round(gasRaw) : 0,
+          gasLevel: gasLevel || "normal",
+          smokeDetected: gasLevel === "smoke",
+          gasDetected: gasLevel === "gas",
+          temperatureC: finalTemperature,
+          temperatureHigh: Boolean(temperatureHigh),
+          pirDetected: finalPir,
+          obstacleNear: Boolean(obstacleNear),
+          relay1: Boolean(relay1),
+          relay2: Boolean(relay2),
+          bluetoothAudio: finalBluetooth,
+          buzzer: Boolean(buzzer),
+          dfPlayerReady: data.dfPlayerReady ?? false,
+        }
+      })).catch((err) => {
+        console.error(`[Worker] Error updating SmartboxStatus telemetry:`, err);
+      });
+
+      console.log(`[Worker] Saved SensorReading & updated SmartboxStatus for ${deviceId}: Temp=${finalTemperature}°C, GasRaw=${gasRaw}, Level=${gasLevel}`);
     }
     
     else if (messageType === "event") {
@@ -132,7 +207,7 @@ client.on("message", async (topic, message) => {
       
       await ensureDevice(deviceId, true);
 
-      await prisma.eventLog.create({
+      await retryQuery(() => prisma.eventLog.create({
         data: {
           deviceId,
           level,
@@ -141,6 +216,8 @@ client.on("message", async (topic, message) => {
           payload: data,
           createdAt: data.createdAt ? new Date(data.createdAt) : new Date(),
         },
+      })).catch((err) => {
+        console.error(`[Worker] Error logging EventLog:`, err);
       });
 
       console.log(`[Worker] Logged EventLog for ${deviceId}: [${level}] ${type} - ${message}`);
@@ -152,7 +229,7 @@ client.on("message", async (topic, message) => {
       await ensureDevice(deviceId, true);
 
       if (commandId) {
-        const result = await prisma.deviceCommand.updateMany({
+        const result = await retryQuery(() => prisma.deviceCommand.updateMany({
           where: {
             id: commandId,
             deviceId: deviceId,
@@ -162,9 +239,12 @@ client.on("message", async (topic, message) => {
             ack: data,
             updatedAt: new Date(),
           },
+        })).catch((err) => {
+          console.error(`[Worker] Error updating DeviceCommand:`, err);
+          return { count: 0 };
         });
 
-        if (result.count > 0) {
+        if (result && result.count > 0) {
           console.log(`[Worker] Updated DeviceCommand ${commandId} to ACK. Message: ${message}`);
         } else {
           console.warn(`[Worker] ACK received for command ${commandId} but command was not found in DB`);
@@ -185,3 +265,14 @@ client.on("error", (err) => {
 client.on("close", () => {
   console.log("[Worker] MQTT connection closed.");
 });
+
+// Keep-Alive / Heartbeat untuk menjaga database Neon tetap aktif (tidak tertidur/suspend)
+const DB_KEEP_ALIVE_INTERVAL_MS = 4 * 60 * 1000; // 4 menit
+setInterval(async () => {
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    console.log("[Worker] Database keep-alive ping berhasil (Neon DB tetap aktif).");
+  } catch (err) {
+    console.warn("[Worker] Database keep-alive ping gagal:", err);
+  }
+}, DB_KEEP_ALIVE_INTERVAL_MS);

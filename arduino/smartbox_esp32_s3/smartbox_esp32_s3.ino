@@ -76,8 +76,7 @@ const char *WIFI_PASS = "s4nsan15675";
 const char *MQTT_HOST = "6559400ba6c741398aa7048b471d5a31.s1.eu.hivemq.cloud";
 const int MQTT_PORT = 8883;
 const char *MQTT_USER = "smartbox001";
-const char *MQTT_PASS = "smartbox123!";
-
+const char *MQTT_PASS = "Smartbox123!";
 const char *DEVICE_ID = "smartbox-001";
 
 // ==========================================================
@@ -365,6 +364,7 @@ void handleWhiteButtonQuickPress();
 void sendRecordedAudio();
 void updateRecording();
 void checkPirGreeting();
+void checkRelaySchedules();
 
 void initLed12c();
 void led12cOn();
@@ -391,10 +391,25 @@ void setRgb(uint8_t r, uint8_t g, uint8_t b) {
 }
 
 void publishJson(const String &topic, JsonDocument &doc, bool retained = false) {
-  if (!mqttClient.connected()) return;
+  if (!mqttClient.connected()) {
+    Serial.print("[MQTT] Publish gagal, belum connected. Topic: ");
+    Serial.println(topic);
+    return;
+  }
+
   String payload;
   serializeJson(doc, payload);
-  mqttClient.publish(topic.c_str(), payload.c_str(), retained);
+
+  bool ok = mqttClient.publish(topic.c_str(), payload.c_str(), retained);
+
+  Serial.print("[MQTT] Publish topic: ");
+  Serial.println(topic);
+  Serial.print("[MQTT] Payload: ");
+  Serial.println(payload);
+  Serial.print("[MQTT] Retained: ");
+  Serial.println(retained ? "true" : "false");
+  Serial.print("[MQTT] Publish result: ");
+  Serial.println(ok ? "OK" : "FAILED");
 }
 
 void publishEvent(const char *level, const char *type, const char *message) {
@@ -904,6 +919,110 @@ void checkPirGreeting() {
   }
 }
 
+void handleRelayScheduleCommand(JsonObject data, const char *cmdId, const char *type) {
+  const char *schId = data["id"] | "";
+  if (strlen(schId) == 0) {
+    publishAck(cmdId, type, false, "Missing schedule ID.");
+    return;
+  }
+
+  int relayNum = data["relay"] | 1;
+  const char *startStr = data["start"] | "00:00";
+  const char *endStr = data["end"] | "00:00";
+  bool enabled = data["enabled"] | true;
+
+  int startHour = 0, startMinute = 0;
+  int endHour = 0, endMinute = 0;
+  sscanf(startStr, "%d:%d", &startHour, &startMinute);
+  sscanf(endStr, "%d:%d", &endHour, &endMinute);
+
+  int idx = -1;
+  for (int i = 0; i < relayScheduleCount; i++) {
+    if (strcmp(relaySchedules[i].id, schId) == 0) {
+      idx = i;
+      break;
+    }
+  }
+
+  if (idx == -1) {
+    if (relayScheduleCount >= MAX_RELAY_SCHEDULES) {
+      publishAck(cmdId, type, false, "Schedules list full.");
+      return;
+    }
+    idx = relayScheduleCount++;
+  }
+
+  strncpy(relaySchedules[idx].id, schId, 15);
+  relaySchedules[idx].id[15] = '\0';
+  relaySchedules[idx].startHour = startHour;
+  relaySchedules[idx].startMinute = startMinute;
+  relaySchedules[idx].endHour = endHour;
+  relaySchedules[idx].endMinute = endMinute;
+  relaySchedules[idx].relayNum = relayNum;
+  relaySchedules[idx].enabled = enabled;
+  relaySchedules[idx].lastTriggeredStartDay = -1;
+  relaySchedules[idx].lastTriggeredEndDay = -1;
+
+  saveSchedules();
+  Serial.printf("[SCHEDULE] Set schedule %s: %02d:%02d to %02d:%02d for Relay %d (enabled=%d)\n",
+                schId, startHour, startMinute, endHour, endMinute, relayNum, enabled);
+
+  publishAck(cmdId, type, true, "Schedule saved.");
+}
+
+void deleteRelaySchedule(const char *schId) {
+  int idx = -1;
+  for (int i = 0; i < relayScheduleCount; i++) {
+    if (strcmp(relaySchedules[i].id, schId) == 0) {
+      idx = i;
+      break;
+    }
+  }
+
+  if (idx == -1) {
+    Serial.printf("[SCHEDULE] Schedule %s not found for deletion.\n", schId);
+    return;
+  }
+
+  for (int i = idx; i < relayScheduleCount - 1; i++) {
+    relaySchedules[i] = relaySchedules[i + 1];
+  }
+  relayScheduleCount--;
+  saveSchedules();
+  Serial.printf("[SCHEDULE] Deleted schedule %s.\n", schId);
+}
+
+void checkRelaySchedules() {
+  if (!rtcReady) return;
+  DateTime now = rtc.now();
+
+  for (int i = 0; i < relayScheduleCount; i++) {
+    if (!relaySchedules[i].enabled) continue;
+
+    // Check Start Time (Turn ON)
+    if (now.hour() == relaySchedules[i].startHour && 
+        now.minute() == relaySchedules[i].startMinute && 
+        relaySchedules[i].lastTriggeredStartDay != now.day()) {
+      
+      relaySchedules[i].lastTriggeredStartDay = now.day();
+      Serial.printf("[SCHEDULE] Trigger START for Relay %d (Schedule: %s)\n", 
+                    relaySchedules[i].relayNum, relaySchedules[i].id);
+      setRelay(relaySchedules[i].relayNum, true, false); // false = silent
+    }
+
+    // Check End Time (Turn OFF)
+    if (now.hour() == relaySchedules[i].endHour && 
+        now.minute() == relaySchedules[i].endMinute && 
+        relaySchedules[i].lastTriggeredEndDay != now.day()) {
+      
+      relaySchedules[i].lastTriggeredEndDay = now.day();
+      Serial.printf("[SCHEDULE] Trigger END for Relay %d (Schedule: %s)\n", 
+                    relaySchedules[i].relayNum, relaySchedules[i].id);
+      setRelay(relaySchedules[i].relayNum, false, false); // false = silent
+    }
+  }
+}
+
 void nyalakanBluetooth() {
   setupBluetooth();
   bluetoothAktif = true;
@@ -1048,10 +1167,10 @@ void playDfTrack(int track) {
 
 void stopDfTrack() { if (dfPlayerReady) { dfPlayer.stop(); dfplayerStatusStr = "stopped"; } }
 
-void setRelay(uint8_t relayNumber, bool state, bool withVoice = true) {
+void setRelay(uint8_t relayNumber, bool state, bool withVoice = false) {
   if (relayNumber == 1) { relay1State = state; digitalWrite(RELAY_1_PIN, state ? RELAY_ON : RELAY_OFF); }
   if (relayNumber == 2) { relay2State = state; digitalWrite(RELAY_2_PIN, state ? RELAY_ON : RELAY_OFF); }
-  if (withVoice) playDfTrack(state ? 6 : 7);
+  // Skip playDfTrack for relay ON/OFF to prevent playing conflicting alarm tracks (e.g. smoke alarm)
 }
 
 void setBuzzer(bool state, bool manualMode = false) {
@@ -1101,32 +1220,63 @@ void connectWiFi() {
 }
 
 void publishOnlineStatus(bool online) {
-  StaticJsonDocument<192> doc;
+  StaticJsonDocument<256> doc;
+
   doc["deviceId"] = DEVICE_ID;
   doc["online"] = online;
   doc["ip"] = WiFi.localIP().toString();
   doc["rssi"] = WiFi.RSSI();
+  doc["millis"] = millis();
+
   publishJson(topicStatus(), doc, true);
-  publishJson("smartbox/status", doc, true);
+
+  Serial.print("[MQTT] Publish status retained: ");
+  Serial.println(online ? "ONLINE" : "OFFLINE");
 }
 
 void connectMqtt() {
-  if (WiFi.status() != WL_CONNECTED) return;
-  if (mqttClient.connected()) return;
-  if (millis() - lastMqttReconnectAt < MQTT_RETRY_GAP_MS) return;
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[MQTT] WiFi belum connected, MQTT batal.");
+    return;
+  }
+
+  if (mqttClient.connected()) {
+    return;
+  }
+
+  if (millis() - lastMqttReconnectAt < MQTT_RETRY_GAP_MS) {
+    return;
+  }
+
   lastMqttReconnectAt = millis();
 
-  Serial.println("[MQTT] Connecting...");
-  String clientId = String("SmartBox-") + DEVICE_ID + "-" + String(random(0xffff), HEX);
+  Serial.println("[MQTT] Connecting to HiveMQ Cloud...");
+  Serial.print("[MQTT] Host: ");
+  Serial.println(MQTT_HOST);
+  Serial.print("[MQTT] Port: ");
+  Serial.println(MQTT_PORT);
+  Serial.print("[MQTT] User: ");
+  Serial.println(MQTT_USER);
+  Serial.print("[MQTT] Status topic: ");
+  Serial.println(topicStatus());
+
+  String clientId = String("SmartBox-") + DEVICE_ID + "-" + String((uint32_t)ESP.getEfuseMac(), HEX);
+
   String willPayload = String("{\"deviceId\":\"") + DEVICE_ID + "\",\"online\":false}";
 
   bool ok = mqttClient.connect(
-    clientId.c_str(), MQTT_USER, MQTT_PASS,
-    topicStatus().c_str(), 1, true, willPayload.c_str()
+    clientId.c_str(),
+    MQTT_USER,
+    MQTT_PASS,
+    topicStatus().c_str(),
+    1,
+    true,
+    willPayload.c_str()
   );
 
   if (ok) {
     Serial.println("[MQTT] Connected.");
+
     mqttClient.subscribe(topicCommand().c_str());
     mqttClient.subscribe("smartbox/relay/set");
     mqttClient.subscribe("smartbox/buzzer/set");
@@ -1134,13 +1284,23 @@ void connectMqtt() {
     mqttClient.subscribe("smartbox/voice/mode");
     mqttClient.subscribe("smartbox/sensor/gas");
     mqttClient.subscribe("smartbox/sensor/temperature");
+
     publishOnlineStatus(true);
+
     publishEvent("INFO", "mqtt.connected", "ESP32 tersambung ke MQTT Cloud.");
-    setRgb(0, 0, 80);
-    blinkLed12c(2, 150);
+
+    Serial.println("[MQTT] Device status sekarang ONLINE.");
   } else {
-    Serial.printf("[MQTT] Gagal, state=%d\n", mqttClient.state());
-    setRgb(80, 0, 0);
+    Serial.print("[MQTT] Gagal connect. State = ");
+    Serial.println(mqttClient.state());
+
+    if (mqttClient.state() == -2) {
+      Serial.println("[MQTT] State -2: gagal koneksi network/TLS/server.");
+    } else if (mqttClient.state() == 5) {
+      Serial.println("[MQTT] State 5: username/password MQTT salah.");
+    } else if (mqttClient.state() == -4) {
+      Serial.println("[MQTT] State -4: timeout koneksi MQTT.");
+    }
   }
 }
 
@@ -1171,6 +1331,13 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
   JsonObject data = doc["payload"].as<JsonObject>();
   if (data.isNull()) data = doc.as<JsonObject>();
 
+  // Detect type from topic if empty (for direct MQTT publishes)
+  if (strlen(type) == 0) {
+    if (topic.endsWith("/buzzer/set")) type = "buzzer.set";
+    else if (topic.endsWith("/relay/set")) type = "relay.set";
+    else if (topic.endsWith("/alarm/set")) type = "alarm.set";
+  }
+
   if (strcmp(type, "relay.set") == 0) handleRelayCommand(data, cmdId, type);
   else if (strcmp(type, "gasSensor.set") == 0) {
     gasEnabled = data["enabled"] | true;
@@ -1179,7 +1346,44 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
     publishAck(cmdId, type, true, "Sensor updated.");
   } else if (strcmp(type, "voice.play") == 0) {
     int track = data["track"] | -1;
-    if (track != -1) { playVoice((uint8_t)track, "voice_play_cmd"); publishAck(cmdId, type, true, "DFPlayer play."); }
+    if (track == -1 && data.containsKey("voice")) {
+      const char* voiceStr = data["voice"];
+      if (strcmp(voiceStr, "walk") == 0 || strcmp(voiceStr, "pirWalk") == 0) track = TRACK_GESTURE_WALK;
+      else if (strcmp(voiceStr, "jump") == 0 || strcmp(voiceStr, "pirJump") == 0) track = TRACK_GESTURE_JUMP;
+      else if (strcmp(voiceStr, "wave") == 0 || strcmp(voiceStr, "pirWave") == 0) track = TRACK_GESTURE_WAVE;
+      else if (strcmp(voiceStr, "smokeDetected") == 0) track = TRACK_SMOKE_DETECTED;
+      else if (strcmp(voiceStr, "gasDetected") == 0) track = TRACK_GAS_DETECTED;
+      else if (strcmp(voiceStr, "temperatureDetected") == 0) track = TRACK_TEMP_DETECTED;
+      else if (strcmp(voiceStr, "btGreeting") == 0) track = TRACK_BLUETOOTH_ACTIVE;
+      else if (strcmp(voiceStr, "alarmMorning") == 0) track = TRACK_ALARM_MORNING;
+      else if (strcmp(voiceStr, "alarmNoon") == 0) track = TRACK_ALARM_AFTERNOON;
+      else if (strcmp(voiceStr, "alarmEvening") == 0) track = TRACK_ALARM_EVENING;
+    }
+    if (track != -1) { 
+      playVoice((uint8_t)track, "voice_play_cmd"); 
+      publishAck(cmdId, type, true, "DFPlayer play."); 
+    } else {
+      publishAck(cmdId, type, false, "Invalid voice key or track.");
+    }
+  } else if (strcmp(type, "relaySchedule.set") == 0) {
+    handleRelayScheduleCommand(data, cmdId, type);
+  } else if (strcmp(type, "relaySchedule.delete") == 0) {
+    const char *schId = data["id"] | "";
+    if (strlen(schId) > 0) {
+      deleteRelaySchedule(schId);
+      publishAck(cmdId, type, true, "Schedule deleted.");
+    } else {
+      publishAck(cmdId, type, false, "Missing schedule ID.");
+    }
+  } else if (strcmp(type, "buzzer.set") == 0) {
+    bool state = false;
+    if (data.containsKey("state")) {
+      state = data["state"] | false;
+    } else if (data.containsKey("enabled")) {
+      state = data["enabled"] | false;
+    }
+    setBuzzer(state, true); // true = manualMode
+    publishAck(cmdId, type, true, state ? "Buzzer ON" : "Buzzer OFF");
   }
 }
 
@@ -1482,6 +1686,14 @@ void setup() {
   Serial.println();
   Serial.println("========== SMARTBOX BOOT ==========");
 
+  secureClient.setInsecure();
+
+  mqttClient.setServer(MQTT_HOST, MQTT_PORT);
+  mqttClient.setCallback(mqttCallback);
+  mqttClient.setKeepAlive(30);
+  mqttClient.setSocketTimeout(15);
+  mqttClient.setBufferSize(2048);
+
   loadSettings();
   loadSchedules();
 
@@ -1570,6 +1782,7 @@ void loop() {
 
   checkButtons();
   checkAlarms();
+  checkRelaySchedules();
 
   int gasRaw = getFilteredGas();
   float tempC = rtcReady ? rtc.getTemperature() + tempOffset : 0.0;
