@@ -1,23 +1,13 @@
 /**
  * /api/gemini/chat-audio - Server-side AI Chat untuk tombol hitam
  *
- * POST body: { message: string, deviceId?: string, context?: string }
- * - message: teks pertanyaan pengguna (direkam via browser mic atau dikirim langsung)
- * - deviceId: ID perangkat ESP32 (default: smartbox-001)
- * - context: konteks tambahan (status sensor saat ini, dll)
+ * POST body:
+ * - Jika content-type application/json:
+ *   { message: string, deviceId?: string, context?: string }
+ * - Jika content-type audio/wav atau application/octet-stream:
+ *   (Raw binary audio data dari ESP32 mikrofon INMP441)
  *
- * Returns: { text: string, audioUrl?: string, track?: number }
- *
- * KEAMANAN: API key Gemini HANYA ada di server-side.
- * Browser mengirim TEKS (bukan audio raw), AI menjawab dengan teks + TTS.
- *
- * Flow:
- * 1. Browser merekam suara user via Web Speech API
- * 2. Browser mengirim teks ke /api/gemini/chat-audio
- * 3. Server mengirim ke Gemini text API
- * 4. Server mengambil jawaban, kirim ke Gemini TTS
- * 5. Simpan audio jawaban ke public/generated/ai/
- * 6. Return { text, audioUrl } ke browser untuk diputar
+ * Returns: { success: true, text: string, audioUrl?: string }
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -45,20 +35,13 @@ Aturan menjawab:
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
-    const {
-      message,
-      deviceId = "smartbox-001",
-      context = "",
-      voice = "Charon",
-    } = body;
-
-    if (!message || typeof message !== "string" || message.trim().length === 0) {
-      return NextResponse.json(
-        { error: "message tidak boleh kosong" },
-        { status: 400 }
-      );
-    }
+    const contentType = req.headers.get("content-type") || "";
+    
+    let userQuery = "";
+    let aiText = "";
+    let deviceId = "smartbox-001";
+    let context = "";
+    let voice = "Charon";
 
     const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
     if (!GEMINI_API_KEY || GEMINI_API_KEY === "YOUR_GEMINI_API_KEY_HERE") {
@@ -71,42 +54,131 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const textModel = process.env.GEMINI_TEXT_MODEL || "gemini-2.5-flash";
+    const isAudioUpload = contentType.includes("audio/") || contentType.includes("application/octet-stream");
 
-    // Step 1: Kirim ke Gemini text model untuk mendapatkan jawaban
-    const fullPrompt = context
-      ? `${SYSTEM_PROMPT}\n\nStatus sensor saat ini:\n${context}\n\nPertanyaan pengguna: ${message}`
-      : `${SYSTEM_PROMPT}\n\nPertanyaan pengguna: ${message}`;
+    if (isAudioUpload) {
+      const arrayBuffer = await req.arrayBuffer();
+      const audioBuffer = Buffer.from(arrayBuffer);
+      console.log(`[CHAT-AUDIO] Menerima audio upload sebesar ${audioBuffer.length} bytes`);
 
-    const textUrl = `https://generativelanguage.googleapis.com/v1beta/models/${textModel}:generateContent?key=${GEMINI_API_KEY}`;
+      // Deteksi format mimeType berdasarkan magic bytes audio buffer
+      let mimeType = "audio/wav";
+      if (audioBuffer.slice(0, 4).toString() === "RIFF") {
+        mimeType = "audio/wav";
+      } else if (audioBuffer.slice(0, 3).toString() === "ID3" || (audioBuffer[0] === 0xFF && (audioBuffer[1] & 0xE0) === 0xE0)) {
+        mimeType = "audio/mp3";
+      } else {
+        mimeType = contentType.includes("mp3") || contentType.includes("mpeg") ? "audio/mp3" : "audio/wav";
+      }
 
-    const textResponse = await fetch(textUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: fullPrompt }] }],
-        generationConfig: {
-          maxOutputTokens: 200,
-          temperature: 0.7,
-        },
-      }),
-    });
+      console.log(`[CHAT-AUDIO] Format audio yang terdeteksi: ${mimeType}`);
 
-    if (!textResponse.ok) {
-      const errText = await textResponse.text();
-      console.error("[CHAT-AUDIO] Gemini text error:", errText);
-      return NextResponse.json(
-        { error: "Gemini text API gagal", detail: errText },
-        { status: 502 }
-      );
+      // Kirim audio ke Gemini model untuk ditranskripsikan dan dijawab sekaligus dalam JSON
+      const base64Audio = audioBuffer.toString("base64");
+      const textModel = process.env.GEMINI_TEXT_MODEL || "gemini-2.5-flash";
+      const textUrl = `https://generativelanguage.googleapis.com/v1beta/models/${textModel}:generateContent?key=${GEMINI_API_KEY}`;
+      
+      const geminiResponse = await fetch(textUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [
+                {
+                  inlineData: {
+                    mimeType: mimeType,
+                    data: base64Audio
+                  }
+                },
+                {
+                  text: `${SYSTEM_PROMPT}\n\nAnalisis audio di atas. Pertama, transkripsikan tepat apa yang dikatakan user dalam bahasa Indonesia. Kedua, berikan respon balasan Anda yang singkat dan ramah.\n\nFormat output harus selalu berupa JSON valid seperti ini:\n{\n  "transcript": "teks transkripsi user",\n  "reply": "teks jawaban asisten"\n}`
+                }
+              ]
+            }
+          ],
+          generationConfig: {
+            responseMimeType: "application/json",
+            temperature: 0.4
+          }
+        })
+      });
+
+      if (!geminiResponse.ok) {
+        const errText = await geminiResponse.text();
+        console.error("[CHAT-AUDIO] Gemini audio error:", errText);
+        return NextResponse.json(
+          { error: "Gemini audio API gagal", detail: errText },
+          { status: 502 }
+        );
+      }
+
+      const geminiData = await geminiResponse.json();
+      const resultText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
+      
+      let parsedResult;
+      try {
+        parsedResult = JSON.parse(resultText);
+      } catch (e) {
+        parsedResult = {
+          transcript: "Suara terdeteksi",
+          reply: resultText
+        };
+      }
+      
+      userQuery = parsedResult.transcript || "Suara terdeteksi";
+      aiText = parsedResult.reply || "Maaf, saya tidak mengerti audio Anda.";
+    } else {
+      // Input JSON biasa (seperti dari dashboard browser)
+      const body = await req.json();
+      const msg = body.message;
+      deviceId = body.deviceId || "smartbox-001";
+      context = body.context || "";
+      voice = body.voice || "Charon";
+
+      if (!msg || typeof msg !== "string" || msg.trim().length === 0) {
+        return NextResponse.json(
+          { error: "message tidak boleh kosong" },
+          { status: 400 }
+        );
+      }
+      userQuery = msg;
+
+      const textModel = process.env.GEMINI_TEXT_MODEL || "gemini-2.5-flash";
+      const fullPrompt = context
+        ? `${SYSTEM_PROMPT}\n\nStatus sensor saat ini:\n${context}\n\nPertanyaan pengguna: ${userQuery}`
+        : `${SYSTEM_PROMPT}\n\nPertanyaan pengguna: ${userQuery}`;
+
+      const textUrl = `https://generativelanguage.googleapis.com/v1beta/models/${textModel}:generateContent?key=${GEMINI_API_KEY}`;
+
+      const textResponse = await fetch(textUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: fullPrompt }] }],
+          generationConfig: {
+            maxOutputTokens: 200,
+            temperature: 0.7,
+          },
+        }),
+      });
+
+      if (!textResponse.ok) {
+        const errText = await textResponse.text();
+        console.error("[CHAT-AUDIO] Gemini text error:", errText);
+        return NextResponse.json(
+          { error: "Gemini text API gagal", detail: errText },
+          { status: 502 }
+        );
+      }
+
+      const textData = await textResponse.json();
+      aiText =
+        textData.candidates?.[0]?.content?.parts?.[0]?.text ||
+        "Maaf, saya tidak dapat memproses pertanyaan Anda saat ini.";
     }
 
-    const textData = await textResponse.json();
-    const aiText =
-      textData.candidates?.[0]?.content?.parts?.[0]?.text ||
-      "Maaf, saya tidak dapat memproses pertanyaan Anda saat ini.";
-
-    console.log(`[CHAT-AUDIO] Pertanyaan: "${message}"`);
+    console.log(`[CHAT-AUDIO] Pertanyaan: "${userQuery}"`);
     console.log(`[CHAT-AUDIO] Jawaban AI: "${aiText}"`);
 
     // Step 2: Convert jawaban ke audio via Gemini TTS
@@ -114,8 +186,7 @@ export async function POST(req: NextRequest) {
     let audioSize = 0;
 
     try {
-      const ttsModel =
-        process.env.GEMINI_TTS_MODEL || "gemini-3.1-flash-tts-preview";
+      const ttsModel = process.env.GEMINI_TTS_MODEL || "gemini-2.5-flash-tts";
       const ttsUrl = `https://generativelanguage.googleapis.com/v1beta/models/${ttsModel}:generateContent?key=${GEMINI_API_KEY}`;
 
       const ttsResponse = await fetch(ttsUrl, {
@@ -152,7 +223,6 @@ export async function POST(req: NextRequest) {
 
         if (audioPart?.inlineData?.data) {
           const audioBuffer = Buffer.from(audioPart.inlineData.data, "base64");
-          const mimeType = audioPart.inlineData.mimeType || "audio/wav";
           const ext = "mp3";
 
           // Simpan audio AI ke public/generated/ai/
@@ -177,27 +247,40 @@ export async function POST(req: NextRequest) {
       console.warn("[CHAT-AUDIO] TTS error (non-fatal):", ttsErr);
     }
 
-    // Simpan event ke database (optional, tidak block response)
+    // Simpan interaksi ke Neon DB
     try {
       const { PrismaClient } = await import("@prisma/client");
       const prisma = new PrismaClient();
-      await prisma.smartboxEvent.create({
+      await prisma.voiceInteraction.create({
         data: {
           deviceId,
-          level: "INFO",
-          type: "ai.chat",
-          message: `AI Chat: ${message.substring(0, 100)}`,
-          source: "browser",
-          payload: {
-            query: message,
-            response: aiText,
-            hasAudio: !!audioUrl,
-          },
+          transcript: userQuery,
+          replyText: aiText,
+          audioUrl: audioUrl || null,
+          status: "success",
         },
       });
       await prisma.$disconnect();
     } catch (dbErr) {
       console.warn("[CHAT-AUDIO] DB log gagal (non-fatal):", dbErr);
+    }
+
+    // Kirim event ke MQTT broker
+    try {
+      const { publishMessage } = await import("../../../../lib/mqtt-server");
+      await publishMessage(`smartbox/${deviceId}/event`, {
+        deviceId,
+        level: "INFO",
+        type: "ai.chat",
+        message: `AI Chat: ${userQuery.substring(0, 50)}`,
+        payload: {
+          query: userQuery,
+          response: aiText,
+          audioUrl,
+        },
+      });
+    } catch (mqttErr) {
+      console.warn("[CHAT-AUDIO] MQTT publish failed:", mqttErr);
     }
 
     return NextResponse.json({
@@ -206,7 +289,7 @@ export async function POST(req: NextRequest) {
       audioUrl,
       audioSize,
       deviceId,
-      query: message,
+      query: userQuery,
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
@@ -223,11 +306,5 @@ export async function GET() {
     endpoint: "/api/gemini/chat-audio",
     method: "POST",
     description: "AI chat untuk tombol hitam Smartbox Assistant",
-    body: {
-      message: "string (required) - pertanyaan pengguna",
-      deviceId: "string (optional) - ID perangkat",
-      context: "string (optional) - status sensor",
-      voice: "string (optional) - nama voice Gemini",
-    },
   });
 }

@@ -222,3 +222,13 @@ model SmartboxStatus {
 
   @@index([deviceId])
 }
+
+model VoiceInteraction {
+  id         String   @id @default(cuid())
+  deviceId   String
+  transcript String?
+  replyText  String?
+  audioUrl   String?
+  status     String   @default("success")
+  createdAt  DateTime @default(now())
+}

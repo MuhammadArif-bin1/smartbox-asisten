@@ -175,6 +175,30 @@ unsigned long lastGasAudioTime  = 0;
 unsigned long lastTempAudioTime = 0;
 unsigned long lastPirEventTime  = 0;
 
+// Audio recording variables and struct
+struct __attribute__((packed)) WavHeader {
+  char chunkId[4] = {'R', 'I', 'F', 'F'};
+  uint32_t chunkSize;
+  char format[4] = {'W', 'A', 'V', 'E'};
+  char subchunk1Id[4] = {'f', 'm', 't', ' '};
+  uint32_t subchunk1Size = 16;
+  uint16_t audioFormat = 1; // PCM
+  uint16_t numChannels = 1; // Mono
+  uint32_t sampleRate = 16000;
+  uint32_t byteRate = 16000 * 2;
+  uint16_t blockAlign = 2;
+  uint16_t bitsPerSample = 16;
+  char subchunk2Id[4] = {'d', 'a', 't', 'a'};
+  uint32_t subchunk2Size;
+};
+
+const size_t MAX_RECORD_TIME_SEC = 5;
+const size_t RECORD_BUFFER_SIZE = MAX_RECORD_TIME_SEC * 16000 * 2; // 160,000 bytes
+uint8_t *recordBuffer = NULL;
+size_t recordBufferIdx = 0;
+bool isRecording = false;
+unsigned long recordingStartMillis = 0;
+
 // ==========================================================
 // 7. TIMER & INTERVAL
 // ==========================================================
@@ -337,6 +361,10 @@ void playGasWarningVoice(String gasType);
 void playTemperatureWarningVoice();
 void playPirGreeting(String motionType);
 void publishVoicePlayedEvent(int track, const char* source);
+void handleWhiteButtonQuickPress();
+void sendRecordedAudio();
+void updateRecording();
+void checkPirGreeting();
 
 void initLed12c();
 void led12cOn();
@@ -630,15 +658,33 @@ void updateLed12c(bool gasWarning, bool smokeWarning, bool pirDetected, bool wif
 // VOICE / DFPLAYER FUNCTIONS
 // ==========================================================
 void playVoice(uint8_t track, const char* reason) {
-  if (!dfPlayerReady) return;
+  if (!dfPlayerReady) {
+    Serial.println("[DFPLAYER] Tidak ready, suara batal diputar.");
+    return;
+  }
+
   unsigned long now = millis();
-  if (now - lastVoiceMillis < VOICE_COOLDOWN_MS) return;
+
+  if (now - lastVoiceMillis < VOICE_COOLDOWN_MS) {
+    Serial.println("[DFPLAYER] Voice cooldown aktif, skip.");
+    return;
+  }
+
   if (!bluetoothAudioState) {
     setBluetoothAudio(true);
     delay(400);
   }
+
+  Serial.print("[DFPLAYER] Play track: ");
+  Serial.print(track);
+  Serial.print(" | reason: ");
+  Serial.println(reason);
+
   dfPlayer.play(track);
-  lastVoiceMillis = millis();
+  lastVoiceMillis = now;
+  dfplayerStatusStr = "playing_" + String(track);
+
+  publishVoicePlayedEvent(track, reason);
 }
 
 void playVoiceTrack(int track) { playVoice((uint8_t)track, "manual"); }
@@ -658,9 +704,8 @@ void publishVoicePlayedEvent(int track, const char* source) {
 
 void playSystemReady() {
   playVoice(TRACK_STARTUP_READY, "system_boot");
-  setLcdOverride("SMARTBOX READY", "SIAP DIGUNAKAN", 4000);
+  setLcdOverride("SMARTBOX", "ASSISTANT READY", 4000);
   publishEvent("INFO", "system.ready", "SmartBox Assistant siap digunakan");
-  publishVoicePlayedEvent(TRACK_STARTUP_READY, "boot");
 }
 
 void playTimeTemperatureVoice() {
@@ -671,7 +716,7 @@ void playTimeTemperatureVoice() {
     char line1[17];
     char line2[17];
     snprintf(line1, sizeof(line1), "WAKTU: %02d:%02d:%02d", now.hour(), now.minute(), now.second());
-    snprintf(line2, sizeof(line2), "SUHU RTC: %4.1f C", tempC);
+    snprintf(line2, sizeof(line2), "SUHU: %4.1f C", tempC);
     setLcdOverride(line1, line2, 4000);
   }
 }
@@ -693,7 +738,6 @@ void playAlarmVoice(String alarmType) {
     snprintf(reason, sizeof(reason), "alarm_%s", alarmType.c_str());
     playVoice((uint8_t)track, reason);
     publishEvent("INFO", ("alarm." + alarmType).c_str(), ("Alarm " + alarmType + " aktif.").c_str());
-    publishVoicePlayedEvent(track, "alarm");
   }
 }
 
@@ -703,25 +747,15 @@ void playGasWarningVoice(String gasType) {
   lastGasAudioTime = now;
   int track = -1;
   const char* reason = "";
-  if (gasType == "smoke") {
-    track = TRACK_SMOKE_DETECTED;
-    reason = "smoke_detected";
-    smokeStatusStr = "detected";
-    publishEvent("WARNING", "smoke.detected", "Asap terdeteksi!");
-    setLcdOverride("ASAP TERDETEKSI", "SEGERA PERIKSA!", 5000);
-  } else if (gasType == "gas") {
+  if (gasType == "gas") {
     track = TRACK_GAS_DETECTED;
     reason = "gas_detected";
-    gasStatusStr = "detected";
-    publishEvent("WARNING", "gas.detected", "Gas terdeteksi!");
-    setLcdOverride("GAS TERDETEKSI", "SEGERA PERIKSA!", 5000);
+  } else if (gasType == "smoke") {
+    track = TRACK_SMOKE_DETECTED;
+    reason = "smoke_detected";
   }
   if (track != -1) {
-    if (!dfPlayerReady) return;
-    if (!bluetoothAudioState) { setBluetoothAudio(true); delay(400); }
-    dfPlayer.play(track);
-    lastVoiceMillis = millis();
-    publishVoicePlayedEvent(track, "sensor");
+    playVoice((uint8_t)track, reason);
   }
 }
 
@@ -729,20 +763,145 @@ void playTemperatureWarningVoice() {
   unsigned long now = millis();
   if (now - lastTempAudioTime < TEMP_VOICE_COOLDOWN_MS) return;
   lastTempAudioTime = now;
-  setBuzzer(true, false);
-  setBluetoothAudio(true);
-  playVoice(TRACK_TEMP_DETECTED, "temp_warning");
-  publishEvent("WARNING", "temperature.high", "Suhu terdeteksi melebihi ambang batas");
-  publishVoicePlayedEvent(TRACK_TEMP_DETECTED, "sensor");
+  playVoice(TRACK_TEMP_DETECTED, "temperature_warning");
 }
 
 void playPirGreeting(String motionType) {
   int track = TRACK_GESTURE_WALK;
-  const char* reason = "pir_motion";
-  if (motionType == "jump") { track = TRACK_GESTURE_JUMP; reason = "pir_jump"; }
-  else if (motionType == "wave") { track = TRACK_GESTURE_WAVE; reason = "pir_wave"; }
+  const char* reason = "pir_walk";
+
+  if (motionType == "jump") {
+    track = TRACK_GESTURE_JUMP;
+    reason = "pir_jump";
+  } else if (motionType == "wave") {
+    track = TRACK_GESTURE_WAVE;
+    reason = "pir_wave";
+  } else {
+    track = TRACK_GESTURE_WALK;
+    reason = "pir_walk";
+  }
+
   playVoice((uint8_t)track, reason);
-  publishVoicePlayedEvent(track, "pir");
+}
+
+void handleWhiteButtonQuickPress() {
+  Serial.println("[BUTTON] White button pressed - assistant intro");
+  playVoice(TRACK_STARTUP_READY, "white_button_intro");
+  setLcdOverride("SMARTBOX", "ASSISTANT SIAP", 3000);
+  publishEvent("INFO", "assistant_intro", "Assistant memperkenalkan diri.");
+}
+
+void sendRecordedAudio() {
+  if (recordBuffer == NULL || recordBufferIdx == 0) {
+    Serial.println("[GEMINI] Tidak ada data audio untuk dikirim.");
+    if (recordBuffer != NULL) {
+      free(recordBuffer);
+      recordBuffer = NULL;
+    }
+    return;
+  }
+
+  Serial.printf("[BUTTON] Black hold recording - sending %d bytes to Gemini backend...\n", recordBufferIdx);
+  setLcdOverride("PROSES SUARA...", "MENGIRIM KE AI", 5000);
+
+  // Setup WAV header
+  WavHeader header;
+  header.chunkSize = 36 + recordBufferIdx;
+  header.subchunk2Size = recordBufferIdx;
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  
+  HTTPClient http;
+  String serverUrl = "https://smartbox-asisten.vercel.app/api/gemini/chat-audio";
+  
+  if (http.begin(client, serverUrl)) {
+    http.addHeader("Content-Type", "audio/mp3");
+    
+    uint8_t *payload = (uint8_t*)malloc(44 + recordBufferIdx);
+    if (payload != NULL) {
+      memcpy(payload, &header, 44);
+      memcpy(payload + 44, recordBuffer, recordBufferIdx);
+      
+      Serial.println("[GEMINI] Audio request sent");
+      int httpResponseCode = http.POST(payload, 44 + recordBufferIdx);
+      
+      if (httpResponseCode > 0) {
+        String response = http.getString();
+        Serial.printf("[GEMINI] HTTP Response: %d\n", httpResponseCode);
+        Serial.println(response);
+        
+        StaticJsonDocument<512> doc;
+        DeserializationError error = deserializeJson(doc, response);
+        if (!error && doc["success"]) {
+          const char* aiText = doc["text"] | "Success";
+          setLcdOverride("AI JAWABAN:", aiText, 5000);
+        } else {
+          setLcdOverride("AI ERROR", "GAGAL PARSE", 3000);
+        }
+      } else {
+        Serial.printf("[GEMINI] HTTP Post failed, error: %s\n", http.errorToString(httpResponseCode).c_str());
+        setLcdOverride("KONEKSI ERROR", "KIRIM GAGAL", 3000);
+      }
+      free(payload);
+    } else {
+      Serial.println("[GEMINI] Gagal alokasi payload kirim.");
+      setLcdOverride("MEMORI PENUH", "KIRIM GAGAL", 3000);
+    }
+    http.end();
+  } else {
+    Serial.println("[GEMINI] Gagal memulai koneksi HTTP.");
+    setLcdOverride("HTTP ERROR", "KIRIM GAGAL", 3000);
+  }
+
+  free(recordBuffer);
+  recordBuffer = NULL;
+}
+
+void updateRecording() {
+  if (!isRecording) return;
+  
+  int32_t i2sSamples[64];
+  size_t bytesRead = 0;
+  esp_err_t err = i2s_read(MIC_I2S_PORT, i2sSamples, sizeof(i2sSamples), &bytesRead, 0);
+  if (err == ESP_OK && bytesRead > 0) {
+    size_t numSamples = bytesRead / 4;
+    for (size_t i = 0; i < numSamples; i++) {
+      if (recordBufferIdx + 2 <= RECORD_BUFFER_SIZE) {
+        int16_t sample16 = (int16_t)(i2sSamples[i] >> 14);
+        recordBuffer[recordBufferIdx++] = sample16 & 0xFF;
+        recordBuffer[recordBufferIdx++] = (sample16 >> 8) & 0xFF;
+      } else {
+        isRecording = false;
+        Serial.println("[BUTTON] Buffer recording penuh, kirim otomatis");
+        sendRecordedAudio();
+        break;
+      }
+    }
+  }
+  
+  if (isRecording && (millis() - recordingStartMillis >= MAX_RECORD_TIME_SEC * 1000)) {
+    isRecording = false;
+    Serial.println("[BUTTON] Waktu recording habis, kirim otomatis");
+    sendRecordedAudio();
+  }
+}
+
+void checkPirGreeting() {
+  if (!pirEnabled) return;
+
+  bool pirDetected = digitalRead(PIR_PIN) == HIGH;
+  unsigned long now = millis();
+
+  if (pirDetected && (now - lastPirGreetingTime >= PIR_GREETING_COOLDOWN)) {
+    lastPirGreetingTime = now;
+    lastMotionDetectedTime = now;
+    Serial.println("[PIR] Motion detected");
+
+    playPirGreeting("walk");
+    setLcdOverride("GERAKAN", "TERDETEKSI", 4000);
+    publishEvent("INFO", "pir.motion", "Gerakan terdeteksi oleh PIR.");
+  }
 }
 
 void nyalakanBluetooth() {
@@ -1086,16 +1245,63 @@ void sendTelemetryHttp(int gasRaw, float tempC, bool gasWarning, bool tempWarnin
 }
 
 void checkWarnings(int gasRaw, float tempC, bool anyGasWarning, bool tempWarning) {
-  bool isGas   = gasEnabled && (gasRaw >= gasThreshold);
-  bool isSmoke = gasEnabled && (gasRaw >= smokeThreshold) && (gasRaw < gasThreshold);
-  if (isGas || isSmoke || tempWarning) {
-    setBuzzer(true, false); setBluetoothAudio(true); setRgb(255, 80, 0);
-    if (isGas && !lastGasWarning) { lastGasWarning = true; setRelay(1, true, false); }
-    if (isSmoke && !lastSmokeWarning) { lastSmokeWarning = true; setRelay(1, true, false); }
-    playGasWarningVoice(isGas ? "gas" : "smoke");
-  } else {
-    if (gasRaw < resetThreshold) { lastGasWarning = false; lastSmokeWarning = false; setRelay(1, false, false); }
-    if (!buzzerManual) setBuzzer(false, false);
+  bool isGas = gasEnabled && gasRaw >= gasThreshold;
+  bool isSmoke = gasEnabled && gasRaw >= smokeThreshold && gasRaw < gasThreshold;
+
+  if (isGas) {
+    setBuzzer(true, false);
+    setBluetoothAudio(true);
+    setRgb(255, 0, 0);
+    setRelay(1, true, false);
+
+    if (!lastGasWarning) {
+      lastGasWarning = true;
+      lastSmokeWarning = false;
+      gasStatusStr = "detected";
+      smokeStatusStr = "normal";
+      playGasWarningVoice("gas");
+      publishEvent("WARNING", "gas.detected", "Gas terdeteksi!");
+      setLcdOverride("GAS TERDETEKSI", "SEGERA PERIKSA!", 5000);
+    }
+  } 
+  else if (isSmoke) {
+    setBuzzer(true, false);
+    setBluetoothAudio(true);
+    setRgb(255, 80, 0);
+
+    if (!lastSmokeWarning) {
+      lastSmokeWarning = true;
+      lastGasWarning = false;
+      smokeStatusStr = "detected";
+      gasStatusStr = "normal";
+      playGasWarningVoice("smoke");
+      publishEvent("WARNING", "smoke.detected", "Asap terdeteksi!");
+      setLcdOverride("ASAP TERDETEKSI", "SEGERA PERIKSA!", 5000);
+    }
+  } 
+  else {
+    if (gasRaw < resetThreshold) {
+      lastGasWarning = false;
+      lastSmokeWarning = false;
+      gasStatusStr = "normal";
+      smokeStatusStr = "normal";
+      setRelay(1, false, false);
+
+      if (!buzzerManual) {
+        setBuzzer(false, false);
+      }
+    }
+  }
+
+  if (tempWarning && !lastTempWarning) {
+    lastTempWarning = true;
+    playTemperatureWarningVoice();
+    publishEvent("WARNING", "temperature.high", "Suhu terdeteksi melebihi ambang batas");
+    setLcdOverride("SUHU TERDETEKSI", "CEK RUANGAN", 5000);
+  }
+
+  if (!tempWarning) {
+    lastTempWarning = false;
   }
 }
 
@@ -1160,9 +1366,112 @@ void checkClaps() {
 }
 
 void checkButtons() {
+  unsigned long now = millis();
+  const unsigned long DEBOUNCE_DELAY_MS = 50;
+
+  // 1. Black Button Logic (Short: Time/Temp; Hold: Recording)
+  static unsigned long blackBtnPressTime = 0;
+  static bool blackBtnWasPressed = false;
+  static bool isHoldingBlackBtn = false;
   bool blackBtnState = (digitalRead(BLACK_BTN_PIN) == LOW);
+
   if (blackBtnState) {
-    playTimeTemperatureVoice();
+    if (!blackBtnWasPressed) {
+      blackBtnWasPressed = true;
+      blackBtnPressTime = now;
+      isHoldingBlackBtn = false;
+    } else {
+      if (!isHoldingBlackBtn && (now - blackBtnPressTime >= 1000)) {
+        isHoldingBlackBtn = true;
+        Serial.println("[BUTTON] Black Button Long Press - start recording");
+        playVoice(TRACK_STARTUP_READY, "black_button_hold_start");
+        publishEvent("INFO", "voice.record.start", "Mulai merekam suara.");
+        setLcdOverride("REKAM SUARA...", "SIAP BICARA", 5000);
+        
+        // Start recording
+        if (recordBuffer != NULL) {
+          free(recordBuffer);
+          recordBuffer = NULL;
+        }
+        recordBuffer = (uint8_t*)malloc(RECORD_BUFFER_SIZE);
+        if (recordBuffer != NULL) {
+          isRecording = true;
+          recordBufferIdx = 0;
+          recordingStartMillis = now;
+        } else {
+          Serial.println("[BUTTON] Error: Gagal alokasi buffer audio!");
+        }
+      }
+    }
+  } else {
+    if (blackBtnWasPressed) {
+      unsigned long pressDuration = now - blackBtnPressTime;
+      blackBtnWasPressed = false;
+      
+      if (isHoldingBlackBtn) {
+        isHoldingBlackBtn = false;
+        Serial.println("[BUTTON] Black Button RELEASE - stop recording");
+        publishEvent("INFO", "voice.record.stop", "Selesai merekam suara.");
+        
+        if (isRecording) {
+          isRecording = false;
+          sendRecordedAudio();
+        }
+      } else {
+        if (pressDuration >= DEBOUNCE_DELAY_MS) {
+          Serial.println("[BUTTON] Black quick press time/temp");
+          playTimeTemperatureVoice();
+          publishEvent("INFO", "time_temperature_display", "Menampilkan waktu dan suhu.");
+        }
+      }
+    }
+  }
+
+  // 2. White Button Logic (Short: Assistant Intro)
+  static unsigned long whiteBtnPressTime = 0;
+  static bool whiteBtnWasPressed = false;
+  bool whiteBtnState = (digitalRead(WHITE_BTN_PIN) == LOW);
+
+  if (whiteBtnState) {
+    if (!whiteBtnWasPressed) {
+      whiteBtnWasPressed = true;
+      whiteBtnPressTime = now;
+    }
+  } else {
+    if (whiteBtnWasPressed) {
+      unsigned long pressDuration = now - whiteBtnPressTime;
+      whiteBtnWasPressed = false;
+      if (pressDuration >= DEBOUNCE_DELAY_MS) {
+        Serial.println("[BUTTON] White intro");
+        handleWhiteButtonQuickPress();
+      }
+    }
+  }
+
+  // 3. Red Button Logic (Toggle BLE Bluetooth)
+  static unsigned long redBtnPressTime = 0;
+  static bool redBtnWasPressed = false;
+  bool redBtnState = (digitalRead(RED_BTN_PIN) == LOW);
+
+  if (redBtnState) {
+    if (!redBtnWasPressed) {
+      redBtnWasPressed = true;
+      redBtnPressTime = now;
+    }
+  } else {
+    if (redBtnWasPressed) {
+      unsigned long pressDuration = now - redBtnPressTime;
+      redBtnWasPressed = false;
+      if (pressDuration >= DEBOUNCE_DELAY_MS) {
+        Serial.println("[BUTTON] Red button pressed");
+        if (bluetoothAktif) {
+          matikanBluetooth();
+        } else {
+          nyalakanBluetooth();
+        }
+        publishEvent("INFO", "button.red", "Tombol merah ditekan.");
+      }
+    }
   }
 }
 
@@ -1264,16 +1573,18 @@ void loop() {
 
   int gasRaw = getFilteredGas();
   float tempC = rtcReady ? rtc.getTemperature() + tempOffset : 0.0;
-  bool tempWarning = tempEnabled && tempC >= tempThreshold;
-  bool pirDetected = pirEnabled && digitalRead(PIR_PIN) == HIGH;
-  bool gasWarning = gasEnabled && gasRaw >= smokeThreshold;
 
   bool isGas = gasEnabled && gasRaw >= gasThreshold;
   bool isSmoke = gasEnabled && gasRaw >= smokeThreshold && gasRaw < gasThreshold;
-  updateLed12c(isGas, isSmoke, pirDetected, WiFi.status() == WL_CONNECTED, mqttClient.connected());
+  bool gasWarning = isGas || isSmoke;
+  bool tempWarning = tempEnabled && tempC >= tempThreshold;
+  bool pirDetected = pirEnabled && digitalRead(PIR_PIN) == HIGH;
 
   checkWarnings(gasRaw, tempC, gasWarning, tempWarning);
+  checkPirGreeting();
+  updateRecording();
 
+  updateLed12c(gasWarning, isSmoke, pirDetected, WiFi.status() == WL_CONNECTED, mqttClient.connected());
   updateLcd(gasRaw, tempC, gasWarning, tempWarning, pirDetected);
 
   if (millis() - lastTelemetryAt >= TELEMETRY_INTERVAL_MS) {
@@ -1290,7 +1601,7 @@ void loop() {
       tempWarning,
       pirDetected,
       gasLevel,
-      false
+      digitalRead(IR_PIN) == HIGH
     );
   }
 
