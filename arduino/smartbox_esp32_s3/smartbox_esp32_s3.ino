@@ -62,6 +62,7 @@
 #include <PubSubClient.h>
 #include <RTClib.h>
 #include <WiFi.h>
+#include <LiquidCrystal_I2C.h>
 #include <WiFiClientSecure.h>
 #include <Wire.h>
 #include <driver/i2s.h>
@@ -75,7 +76,7 @@ const char *WIFI_PASS = "s4nsan15675";
 const char *MQTT_HOST = "6559400ba6c741398aa7048b471d5a31.s1.eu.hivemq.cloud";
 const int MQTT_PORT = 8883;
 const char *MQTT_USER = "smartbox001";
-const char *MQTT_PASS = "Smartbox123!";
+const char *MQTT_PASS = "smartbox123!";
 
 const char *DEVICE_ID = "smartbox-001";
 
@@ -197,6 +198,7 @@ WiFiClientSecure secureClient;
 PubSubClient mqttClient(secureClient);
 
 RTC_DS3231 rtc;
+LiquidCrystal_I2C lcd(0x27, 16, 2); // Jika LCD tidak tampil, ganti 0x27 menjadi 0x3F
 Adafruit_NeoPixel rgbLed(NUM_PIXELS, RGB_PIN, NEO_GRB + NEO_KHZ800);
 
 HardwareSerial dfSerial(1);
@@ -272,8 +274,8 @@ unsigned long lastLedBlinkAt = 0;
 unsigned long ledBlinkInterval = 1000;
 bool ledState = false;
 
-#define LED_ON  LOW
-#define LED_OFF HIGH
+#define LED_ON  HIGH
+#define LED_OFF LOW
 
 #define MAX_RELAY_SCHEDULES 5
 struct RelaySchedule {
@@ -305,6 +307,10 @@ AlarmConfig alarmList[3] = {{"morning", 7, 0, TRACK_ALARM_MORNING, true, -1},
 // ==========================================================
 // FORWARD DECLARATIONS
 // ==========================================================
+void printLcdLine(uint8_t row, const char *text);
+void scanI2C();
+void initLCD();
+void updateLcd(int gasRaw, float tempC, bool gasWarning, bool tempWarning, bool pirDetected);
 void setLcdOverride(const char *l1, const char *l2, unsigned long durationMs);
 void setBluetoothAudio(bool state);
 void playDfTrack(int track);
@@ -787,9 +793,85 @@ void prosesDataBluetooth() {
   dataBluetooth = "";
 }
 
-void setLcdOverride(const char *l1, const char *l2, unsigned long durationMs = 3000) {
-  // LCD removed, replaced by LED 12C/12V indicators. Log to Serial instead.
-  Serial.printf("[STATUS] %s - %s\n", l1, l2);
+// ==========================================================
+// LCD I2C 16x2 FUNCTIONS
+// ==========================================================
+void printLcdLine(uint8_t row, const char *text) {
+  if (!lcdReady) return;
+
+  char buffer[17];
+  snprintf(buffer, sizeof(buffer), "%-16.16s", text);
+
+  lcd.setCursor(0, row);
+  lcd.print(buffer);
+}
+
+void scanI2C() {
+  Serial.println("[I2C] Scan alamat I2C...");
+  byte count = 0;
+  uint8_t foundAddr = 0x27; // default
+
+  for (byte address = 1; address < 127; address++) {
+    Wire.beginTransmission(address);
+    byte error = Wire.endTransmission();
+
+    if (error == 0) {
+      Serial.print("[I2C] Device ditemukan di alamat 0x");
+      if (address < 16) Serial.print("0");
+      Serial.println(address, HEX);
+      count++;
+      if (address == 0x27 || address == 0x3F) {
+        foundAddr = address;
+      }
+    }
+  }
+
+  if (count == 0) {
+    Serial.println("[I2C] Tidak ada device terdeteksi. Cek kabel SDA/SCL/VCC/GND.");
+  } else {
+    if (foundAddr == 0x3F) {
+      lcd = LiquidCrystal_I2C(0x3F, 16, 2);
+    }
+  }
+}
+
+void initLCD() {
+  Serial.println("[LCD] Init LCD...");
+
+  Wire.begin(I2C_SDA, I2C_SCL);
+  Wire.setClock(100000);
+  delay(300);
+
+  scanI2C();
+
+  lcd.init();
+  lcd.backlight();
+  lcd.clear();
+
+  lcdReady = true;
+  lcdBacklightOn = true;
+
+  printLcdLine(0, "SMARTBOX");
+  printLcdLine(1, "LCD AKTIF");
+
+  Serial.println("[LCD] LCD I2C aktif.");
+}
+
+void setLcdOverride(const char *l1, const char *l2, unsigned long durationMs) {
+  strncpy(lcdOverrideLine1, l1, 16);
+  lcdOverrideLine1[16] = '\0';
+
+  strncpy(lcdOverrideLine2, l2, 16);
+  lcdOverrideLine2[16] = '\0';
+
+  lcdOverrideUntil = millis() + durationMs;
+
+  Serial.println("[LCD] Override tampil.");
+
+  if (lcdReady) {
+    printLcdLine(0, lcdOverrideLine1);
+    printLcdLine(1, lcdOverrideLine2);
+  }
 }
 
 void setBluetoothAudio(bool state) {
@@ -1029,7 +1111,43 @@ void checkAlarms() {
 }
 
 void updateLcd(int gasRaw, float tempC, bool gasWarning, bool tempWarning, bool pirDetected) {
-  // LCD removed, replaced by LED 12C/12V indicators
+  if (!lcdReady || !lcdBacklightOn) return;
+  if (millis() - lastLcdAt < LCD_INTERVAL_MS) return;
+
+  lastLcdAt = millis();
+
+  if (lcdOverrideUntil > millis()) {
+    printLcdLine(0, lcdOverrideLine1);
+    printLcdLine(1, lcdOverrideLine2);
+    return;
+  }
+
+  char line1[17];
+  char line2[17];
+
+  if (gasWarning) {
+    snprintf(line1, sizeof(line1), "GAS/ASAP ALERT");
+    snprintf(line2, sizeof(line2), "MQ2:%d", gasRaw);
+  } else if (tempWarning) {
+    snprintf(line1, sizeof(line1), "SUHU TINGGI");
+    snprintf(line2, sizeof(line2), "TEMP:%0.1fC", tempC);
+  } else if (pirDetected) {
+    snprintf(line1, sizeof(line1), "GERAKAN");
+    snprintf(line2, sizeof(line2), "TERDETEKSI");
+  } else {
+    Serial.println("[LCD] Update status normal.");
+    if (rtcReady) {
+      DateTime now = rtc.now();
+      snprintf(line1, sizeof(line1), "SMARTBOX %02d:%02d", now.hour(), now.minute());
+      snprintf(line2, sizeof(line2), "G:%d T:%0.1fC", gasRaw, tempC);
+    } else {
+      snprintf(line1, sizeof(line1), "SMARTBOX READY");
+      snprintf(line2, sizeof(line2), "MQ2:%d", gasRaw);
+    }
+  }
+
+  printLcdLine(0, line1);
+  printLcdLine(1, line2);
 }
 
 void checkClaps() {
@@ -1050,40 +1168,131 @@ void checkButtons() {
 
 void setup() {
   Serial.begin(115200);
+  delay(1000);
+
+  Serial.println();
+  Serial.println("========== SMARTBOX BOOT ==========");
+
   loadSettings();
   loadSchedules();
-  
+
+  pinMode(RELAY_1_PIN, OUTPUT);
+  pinMode(RELAY_2_PIN, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+  pinMode(BT_BASE_PIN, OUTPUT);
+
+  pinMode(BLACK_BTN_PIN, INPUT_PULLUP);
+  pinMode(WHITE_BTN_PIN, INPUT_PULLUP);
+  pinMode(RED_BTN_PIN, INPUT_PULLUP);
+
+  pinMode(MQ2_PIN, INPUT);
+  pinMode(PIR_PIN, INPUT);
+  pinMode(IR_PIN, INPUT);
+
+  digitalWrite(RELAY_1_PIN, RELAY_OFF);
+  digitalWrite(RELAY_2_PIN, RELAY_OFF);
+  digitalWrite(BUZZER_PIN, LOW);
+  digitalWrite(BT_BASE_PIN, LOW);
+
+  rgbLed.begin();
+  rgbLed.clear();
+  rgbLed.show();
+
   initLed12c();
   blinkLed12c(2, 200);
-  
-  pinMode(RELAY_1_PIN, OUTPUT); pinMode(RELAY_2_PIN, OUTPUT); pinMode(BUZZER_PIN, OUTPUT);
-  pinMode(BLACK_BTN_PIN, INPUT_PULLUP);
-  Wire.begin(I2C_SDA, I2C_SCL);
-  if (rtc.begin()) rtcReady = true;
+
+  initLCD();
+
+  if (rtc.begin()) {
+    rtcReady = true;
+    Serial.println("[RTC] DS3231 terdeteksi.");
+    printLcdLine(0, "RTC TERDETEKSI");
+    printLcdLine(1, "DS3231 AKTIF");
+  } else {
+    rtcReady = false;
+    Serial.println("[RTC] DS3231 tidak terdeteksi.");
+    printLcdLine(0, "RTC ERROR");
+    printLcdLine(1, "CEK KABEL I2C");
+  }
+  delay(1500);
+
   dfSerial.begin(9600, SERIAL_8N1, ESP_RX_PIN, ESP_TX_PIN);
   dfPlayerReady = dfPlayer.begin(dfSerial);
-  setupMicI2S();
-  connectWiFi();
-  calibrateMQ2(100);
-  playSystemReady();
-}
 
-void loop() {
-  if (WiFi.status() != WL_CONNECTED) connectWiFi();
+  if (dfPlayerReady) {
+    dfPlayer.volume(30);
+    dfPlayer.EQ(DFPLAYER_EQ_ROCK);
+    dfplayerStatusStr = "ready";
+    Serial.println("[DFPLAYER] Siap.");
+    printLcdLine(0, "DFPLAYER");
+    printLcdLine(1, "SIAP");
+  } else {
+    dfplayerStatusStr = "not_ready";
+    Serial.println("[DFPLAYER] Gagal terdeteksi.");
+    printLcdLine(0, "DFPLAYER ERROR");
+    printLcdLine(1, "CEK RX TX SD");
+  }
+  delay(1500);
+
+  setupMicI2S();
+
+  connectWiFi();
   connectMqtt();
-  mqttClient.loop();
-  
+
+  calibrateMQ2(100);
+
+  printLcdLine(0, "SMARTBOX");
+  printLcdLine(1, "ASSISTANT READY");
+  delay(1000);
+  playSystemReady();
+
+  Serial.println("========== SMARTBOX READY ==========");
+}
+void loop() {
+  if (WiFi.status() != WL_CONNECTED) {
+    connectWiFi();
+  }
+
+  connectMqtt();
+
+  if (mqttClient.connected()) {
+    mqttClient.loop();
+  }
+
   checkButtons();
   checkAlarms();
-  
+
   int gasRaw = getFilteredGas();
-  bool gasWarning = gasEnabled && gasRaw >= gasThreshold;
-  bool smokeWarning = gasEnabled && gasRaw >= smokeThreshold;
+  float tempC = rtcReady ? rtc.getTemperature() + tempOffset : 0.0;
+  bool tempWarning = tempEnabled && tempC >= tempThreshold;
   bool pirDetected = pirEnabled && digitalRead(PIR_PIN) == HIGH;
-  
-  updateLed12c(gasWarning, smokeWarning, pirDetected, WiFi.status() == WL_CONNECTED, mqttClient.connected());
-  
-  checkWarnings(gasRaw, 0, false, false);
-  
+  bool gasWarning = gasEnabled && gasRaw >= smokeThreshold;
+
+  bool isGas = gasEnabled && gasRaw >= gasThreshold;
+  bool isSmoke = gasEnabled && gasRaw >= smokeThreshold && gasRaw < gasThreshold;
+  updateLed12c(isGas, isSmoke, pirDetected, WiFi.status() == WL_CONNECTED, mqttClient.connected());
+
+  checkWarnings(gasRaw, tempC, gasWarning, tempWarning);
+
+  updateLcd(gasRaw, tempC, gasWarning, tempWarning, pirDetected);
+
+  if (millis() - lastTelemetryAt >= TELEMETRY_INTERVAL_MS) {
+    lastTelemetryAt = millis();
+
+    String gasLevel = "normal";
+    if (isGas) gasLevel = "gas";
+    else if (isSmoke) gasLevel = "smoke";
+
+    publishTelemetry(
+      gasRaw,
+      tempC,
+      gasWarning,
+      tempWarning,
+      pirDetected,
+      gasLevel,
+      false
+    );
+  }
+
   delay(10);
 }
