@@ -8,7 +8,7 @@
 
 - [ ] ESP32-S3 DevKitC-1 terhubung ke komputer via USB
 - [ ] DFPlayer Mini terhubung ke GPIO8 (RX) dan GPIO18 (TX) via resistor 1K
-- [ ] MicroSD berisi file `0001.mp3` s/d `0012.mp3` di root, format FAT32
+- [ ] MicroSD berisi file `0001.mp3` s/d `0013.mp3` di root, format FAT32
 - [ ] DFPlayer Mini mendapat power 5V stabil
 - [ ] GND ESP32 dan GND DFPlayer disatukan
 - [ ] Amplifier/speaker terhubung ke DFPlayer ADAC/ADAB
@@ -79,7 +79,7 @@ Gas audio cooldown: 0 ms tersisa
 
 ---
 
-## 2. Verifikasi Track DFPlayer (0001-0012)
+## 2. Verifikasi Track DFPlayer (0001-0013)
 
 Setiap track wajib diuji secara langsung menggunakan MQTT command atau tombol:
 
@@ -104,6 +104,7 @@ Setiap track wajib diuji secara langsung menggunakan MQTT command atau tombol:
 | 10 | 0010.mp3 | "Gerakan terdeteksi. Selamat datang!" | [ ] ✅ |
 | 11 | 0011.mp3 | "Gerakan melompat terdeteksi." | [ ] ✅ |
 | 12 | 0012.mp3 | "Gerakan melambaikan tangan terdeteksi..." | [ ] ✅ |
+| 13 | 0013.mp3 | "Bluetooth Smartbox Assistant dimatikan." | [ ] |
 
 ---
 
@@ -280,7 +281,7 @@ Buka Prisma Studio: `npx prisma studio`
 - [ ] Mode cooldown, sekali per jadwal, dan sekali per gerakan berfungsi
 - [ ] LCD menampilkan `GERAKAN` / `TERDETEKSI` selama 4 detik
 - [ ] Bluetooth ON menampilkan `BLUETOOTH` / `DIAKTIFKAN` dan memutar `0003.mp3` sekali
-- [ ] Bluetooth OFF menampilkan `BLUETOOTH` / `DIMATIKAN`
+- [ ] Bluetooth OFF menampilkan `BLUETOOTH` / `DIMATIKAN` dan memutar `0013.mp3` sekali
 - [ ] Boot memutar `0001.mp3` satu kali setelah DFPlayer siap
 - [ ] Suara bahaya tidak ditimpa greeting PIR
 - [ ] Semua pemutaran DFPlayer melewati `playVoice()`
@@ -298,8 +299,8 @@ npx tsx scripts/generate-audio.ts
 ```
 
 - [ ] Script berjalan tanpa error
-- [ ] 12 file audio di `scripts/output/dfplayer/` (0001.mp3 - 0012.mp3)
-- [ ] 12 file audio di `public/generated/` (nama deskriptif)
+- [ ] 13 file audio di `scripts/output/dfplayer/` (0001.mp3 - 0013.mp3)
+- [ ] 13 file audio di `public/generated/` (nama deskriptif)
 - [ ] Salin file dari `dfplayer/` ke root microSD
 - [ ] Pasang microSD ke DFPlayer Mini
 - [ ] Test setiap track via MQTT command
@@ -361,5 +362,35 @@ npm run build
 
 ---
 
+## Checklist Devices Control dan Auto-Off
+
+1. [ ] ESP32 dinyalakan.
+2. [ ] LCD tampil `SMARTBOX READY` / `SIAP DIGUNAKAN`.
+3. [ ] DFPlayer memutar `0001.mp3` satu kali.
+4. [ ] Buka Devices Control.
+5. [ ] Bagian Tambah Jadwal tidak tampil.
+6. [ ] Bagian Daftar Jadwal Aktif tidak tampil.
+7. [ ] Klik Stop Kontak 1 ON.
+8. [ ] Relay 1 menyala.
+9. [ ] LCD tampil `STOP KONTAK 1` / `KIPAS ON 1 MENIT`.
+10. [ ] Setelah 1 menit, relay 1 OFF otomatis.
+11. [ ] Toggle Stop Kontak 1 kembali OFF.
+12. [ ] Klik Stop Kontak 2 ON.
+13. [ ] Relay 2 menyala.
+14. [ ] LCD tampil `STOP KONTAK 2` / `CHARGER 1 MENIT`.
+15. [ ] Setelah 1 menit, relay 2 OFF otomatis.
+16. [ ] Toggle Stop Kontak 2 kembali OFF.
+17. [ ] Klik Bluetooth ON.
+18. [ ] LCD tampil `BLUETOOTH` / `DIAKTIFKAN`.
+19. [ ] DFPlayer memutar `0003.mp3`.
+20. [ ] Klik Bluetooth OFF.
+21. [ ] LCD tampil `BLUETOOTH` / `DIMATIKAN`.
+22. [ ] DFPlayer memutar `0013.mp3`.
+23. [ ] Test DFPlayer track `0013` dari UI berhasil.
+24. [ ] Worker menerima ack dan event.
+25. [ ] Dashboard menampilkan status yang sama dengan hardware.
+
+---
+
 *Checklist ini dibuat berdasarkan implementation plan Smartbox Assistant v1.0*
-*Tanggal: 2026-06-12*
+*Tanggal: 2026-06-13*

@@ -64,10 +64,10 @@ export async function PUT(request: Request) {
     }
     if (
       (time !== undefined && !TIME_PATTERN.test(time)) ||
-      (dfTrack !== undefined && (!Number.isInteger(Number(dfTrack)) || Number(dfTrack) < 1 || Number(dfTrack) > 12))
+      (dfTrack !== undefined && (!Number.isInteger(Number(dfTrack)) || Number(dfTrack) < 1 || Number(dfTrack) > 13))
     ) {
       return NextResponse.json(
-        { error: "Alarm tidak valid. Waktu harus HH:MM dan track harus 1-12." },
+        { error: "Alarm tidak valid. Waktu harus HH:MM dan track harus 1-13." },
         { status: 400 }
       );
     }

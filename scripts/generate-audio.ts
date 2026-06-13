@@ -1,7 +1,7 @@
 /**
  * scripts/generate-audio.ts
  *
- * Script untuk generate 12 file audio DFPlayer via Gemini TTS API.
+ * Script untuk generate 13 file audio DFPlayer via Gemini TTS API.
  * Jalankan MANUAL setelah mengisi GEMINI_API_KEY di .env.
  *
  * Cara pakai:
@@ -11,15 +11,15 @@
  *   npx tsx scripts/generate-audio.ts --force
  *
  * Untuk generate track tertentu saja:
- *   npx tsx scripts/generate-audio.ts --track=12
+ *   npx tsx scripts/generate-audio.ts --track=13
  *
  * Output:
  *   - public/generated/         (Web-accessible, nama deskriptif)
  *   - scripts/output/dfplayer/  (Untuk di-copy ke microSD DFPlayer)
- *     └── 0001.wav s/d 0012.wav
+ *     `-- 0001.mp3 s/d 0013.mp3
  *
  * Aturan DFPlayer:
- *   - Nama file HARUS 4 digit: 0001.wav, 0002.wav, ..., 0012.wav
+ *   - Nama file HARUS 4 digit: 0001.mp3, 0002.mp3, ..., 0013.mp3
  *   - Taruh di ROOT microSD (bukan folder)
  *   - Format microSD: FAT32
  */
@@ -145,6 +145,13 @@ const TRACKS: TrackConfig[] = [
     filename: "0012",
     label: "gerakan_melambaikan_tangan",
     text: "Gerakan melambaikan tangan terdeteksi. Halo, selamat datang!",
+    voice: "Charon",
+  },
+  {
+    track: 13,
+    filename: "0013",
+    label: "bluetooth_dimatikan",
+    text: "Bluetooth Smartbox Assistant dimatikan.",
     voice: "Charon",
   },
 ];
@@ -318,7 +325,7 @@ async function generateAudio() {
     : TRACKS;
 
   if (onlyTrack && tracksToProcess.length === 0) {
-    console.error(`[ERROR] Track ${onlyTrack} tidak ditemukan (valid: 1-12)`);
+    console.error(`[ERROR] Track ${onlyTrack} tidak ditemukan (valid: 1-13)`);
     process.exit(1);
   }
 
@@ -381,7 +388,7 @@ async function generateAudio() {
   if (success.length > 0 || skipped.length > 0) {
     console.log("\n[LANGKAH SELANJUTNYA]");
     console.log(`1. Buka folder: ${dfOutputDir}`);
-    console.log("2. Salin SEMUA file (0001.mp3 s/d 0012.mp3) ke ROOT microSD");
+    console.log("2. Salin SEMUA file (0001.mp3 s/d 0013.mp3) ke ROOT microSD");
     console.log("3. Format microSD: FAT32, nama file HARUS 4 digit");
     console.log("4. Pasang microSD ke DFPlayer Mini");
     console.log("5. Upload firmware ke ESP32-S3 dan test setiap track");

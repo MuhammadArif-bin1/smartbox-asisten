@@ -47,6 +47,7 @@
   0010.mp3 = gerakan terdeteksi (walk)
   0011.mp3 = gerakan melompat terdeteksi (jump)
   0012.mp3 = gerakan melambaikan tangan (wave)
+  0013.mp3 = bluetooth dimatikan
 */
 
 #include <Adafruit_NeoPixel.h>
@@ -132,6 +133,8 @@ const char *DEVICE_ID = "smartbox-001";
 #define TRACK_GESTURE_WALK        10
 #define TRACK_GESTURE_JUMP        11
 #define TRACK_GESTURE_WAVE        12
+#define TRACK_BLUETOOTH_OFF       13
+#define DFPLAYER_MAX_TRACK        TRACK_BLUETOOTH_OFF
 
 #define TRACK_SYSTEM_READY        TRACK_STARTUP_READY
 #define TRACK_SHOW_TIME_TEMP      TRACK_TIME_TEMP_REALTIME
@@ -253,6 +256,7 @@ DFRobotDFPlayerMini dfPlayer;
 bool rtcReady = false;
 bool lcdReady = false;
 bool dfPlayerReady = false;
+bool systemReadyPlayed = false;
 
 bool gasEnabled = true;
 bool tempEnabled = true;
@@ -261,6 +265,10 @@ bool buzzerManual = false;
 
 bool relay1State = false;
 bool relay2State = false;
+bool relay1AutoOffActive = false;
+unsigned long relay1AutoOffAt = 0;
+bool relay2AutoOffActive = false;
+unsigned long relay2AutoOffAt = 0;
 bool bluetoothAudioState = false;
 bool relay1ForcedByGas = false;
 
@@ -291,9 +299,10 @@ bool bluetoothAktif = false;
 bool bleSudahDibuat = false;
 String dataBluetooth = "";
 unsigned long waktuBluetoothMulai = 0;
-unsigned long durasiBluetooth = 60000;
+unsigned long durasiBluetooth = 0;
 bool pendingBluetoothSongPlay = false;
 unsigned long bluetoothSongPlayTime = 0;
+bool bluetoothAudioOffAfterVoice = false;
 
 Preferences preferences;
 
@@ -372,7 +381,8 @@ void playDfTrack(int track);
 void playVoice(uint8_t track, const char* reason);
 void serviceVoiceQueue();
 void stopDfTrack();
-void setRelay(uint8_t relayNumber, bool state, bool withVoice);
+void setRelay(uint8_t relayNumber, bool state, bool withVoice, bool publishStatus = true);
+void checkRelayAutoOff();
 void setBuzzer(bool state, bool manualMode);
 void handleRelayScheduleCommand(JsonObject data, const char *cmdId, const char *type);
 void deleteRelaySchedule(const char *schId);
@@ -791,9 +801,11 @@ uint8_t getVoicePriority(const char* reason) {
 }
 
 void startVoiceNow(uint8_t track, const char* reason, uint8_t priority) {
+  bool audioEnabledTemporarily = false;
   if (!bluetoothAudioState) {
     setBluetoothAudio(true);
     delay(300);
+    audioEnabledTemporarily = !bluetoothAktif;
   }
 
   Serial.print("[DFPLAYER] Play track: ");
@@ -808,6 +820,10 @@ void startVoiceNow(uint8_t track, const char* reason, uint8_t priority) {
   currentVoicePriority = priority;
   dfplayerStatusStr = "playing_" + String(track);
   publishVoicePlayedEvent(track, reason);
+
+  if (audioEnabledTemporarily) {
+    bluetoothAudioOffAfterVoice = true;
+  }
 }
 
 void playVoice(uint8_t track, const char* reason) {
@@ -815,8 +831,8 @@ void playVoice(uint8_t track, const char* reason) {
     Serial.println("[DFPLAYER] Tidak ready, suara batal diputar.");
     return;
   }
-  if (track < 1 || track > 12) {
-    Serial.println("[DFPLAYER] Track di luar rentang 1-12.");
+  if (track < 1 || track > DFPLAYER_MAX_TRACK) {
+    Serial.printf("[DFPLAYER] Track di luar rentang 1-%d.\n", DFPLAYER_MAX_TRACK);
     return;
   }
 
@@ -853,6 +869,13 @@ void serviceVoiceQueue() {
     pendingVoiceReason = "";
     startVoiceNow(track, reason.c_str(), priority);
   }
+
+  if (!dfplayerBusy && pendingVoiceTrack == 0 && bluetoothAudioOffAfterVoice) {
+    bluetoothAudioOffAfterVoice = false;
+    setBluetoothAudio(false);
+    setRgb(255, 0, 0);
+    Serial.println("[BLE] Audio amplifier OFF setelah suara Bluetooth dimatikan selesai.");
+  }
 }
 
 void playVoiceTrack(int track) { playVoice((uint8_t)track, "manual"); }
@@ -871,9 +894,23 @@ void publishVoicePlayedEvent(int track, const char* source) {
 }
 
 void playSystemReady() {
+  if (systemReadyPlayed) {
+    Serial.println("[DFPLAYER] Startup voice sudah diputar, permintaan ulang diabaikan.");
+    return;
+  }
+
   setLcdOverride("SMARTBOX READY", "SIAP DIGUNAKAN", 4000);
+
+  if (!dfPlayerReady) {
+    Serial.println("[DFPLAYER] Startup voice gagal: DFPlayer belum ready.");
+    setLcdOverride("DFPLAYER ERROR", "CEK RX TX SD", 4000);
+    publishEvent("ERROR", "system.ready_audio_failed", "DFPlayer belum ready saat startup.");
+    return;
+  }
+
+  systemReadyPlayed = true;
   playVoice(TRACK_STARTUP_READY, "system_boot");
-  publishEvent("INFO", "system.ready", "SmartBox Assistant siap digunakan");
+  publishEvent("INFO", "system.ready", "Smartbox Assistant siap digunakan.");
 }
 
 void playTimeTemperatureVoice() {
@@ -910,7 +947,7 @@ void playAlarmVoice(String alarmType) {
 }
 
 void playScheduledAlarm(int track, const char *timeStr) {
-  if (track < 1 || track > 12) return;
+  if (track < 1 || track > DFPLAYER_MAX_TRACK) return;
 
   if (rtcReady) {
     DateTime now = rtc.now();
@@ -1256,13 +1293,30 @@ void checkRelaySchedules() {
   }
 }
 
-void nyalakanBluetooth() {
-  if (bluetoothAktif) {
-    waktuBluetoothMulai = millis();
-    Serial.println("[BLE] Bluetooth sudah aktif, sapaan tidak diputar ulang.");
-    return;
+void checkRelayAutoOff() {
+  unsigned long now = millis();
+
+  if (relay1AutoOffActive && (long)(now - relay1AutoOffAt) >= 0) {
+    relay1AutoOffActive = false;
+    Serial.println("[RELAY] Relay 1 OFF by auto-off");
+    setRelay(1, false, false);
+    setLcdOverride("STOP KONTAK 1", "KIPAS OFF", 3000);
+    publishEvent("INFO", "relay1.auto_off", "Stop Kontak 1 otomatis mati setelah 1 menit.");
   }
 
+  if (relay2AutoOffActive && (long)(now - relay2AutoOffAt) >= 0) {
+    relay2AutoOffActive = false;
+    Serial.println("[RELAY] Relay 2 OFF by auto-off");
+    setRelay(2, false, false);
+    setLcdOverride("STOP KONTAK 2", "CHARGER OFF", 3000);
+    publishEvent("INFO", "relay2.auto_off", "Stop Kontak 2 otomatis mati setelah 1 menit.");
+  }
+}
+
+void nyalakanBluetooth() {
+  if (bluetoothAktif) return;
+
+  bluetoothAudioOffAfterVoice = false;
   setupBluetooth();
 
   bluetoothAktif = true;
@@ -1272,31 +1326,19 @@ void nyalakanBluetooth() {
   delay(300);
 
   setLcdOverride("BLUETOOTH", "DIAKTIFKAN", 4000);
+
   playVoice(TRACK_BLUETOOTH_ACTIVE, "bluetooth_active");
 
   waktuBluetoothMulai = millis();
 
   setRgb(0, 255, 0);
 
-  Serial.print("[BLE] Bluetooth aktif. Nama perangkat: ");
-  Serial.println(BLUETOOTH_DEVICE_NAME);
-
-  Serial.print("[LCD] BT DIAKTIFKAN - ");
-  Serial.println(BLUETOOTH_DEVICE_NAME);
-
-  StaticJsonDocument<256> doc;
-  doc["deviceId"] = DEVICE_ID;
-  doc["level"] = "INFO";
-  doc["type"] = "bluetooth_active";
-  doc["status"] = "active";
-  doc["message"] = "Bluetooth diaktifkan";
-  doc["bluetoothName"] = BLUETOOTH_DEVICE_NAME;
-  doc["millis"] = millis();
-
-  publishJson(topicEvent(), doc, false);
+  publishEvent("INFO", "bluetooth.on", "Bluetooth Smartbox Assistant diaktifkan.");
 }
 
 void matikanBluetooth() {
+  if (!bluetoothAktif) return;
+
   bluetoothAktif = false;
   deviceConnected = false;
 
@@ -1308,15 +1350,16 @@ void matikanBluetooth() {
 
   setRgb(255, 0, 0);
 
-  setLcdOverride("BLUETOOTH", "DIMATIKAN", 3000);
+  setLcdOverride("BLUETOOTH", "DIMATIKAN", 4000);
 
-  Serial.println("[BLE] Bluetooth dimatikan.");
+  playVoice(TRACK_BLUETOOTH_OFF, "bluetooth_off");
+  bluetoothAudioOffAfterVoice = true;
 
-  publishEvent("INFO", "bluetooth.off", "Bluetooth dimatikan.");
+  publishEvent("INFO", "bluetooth.off", "Bluetooth Smartbox Assistant dimatikan.");
 }
 
 void checkBluetoothTimer() {
-  if (!bluetoothAktif) return;
+  if (!bluetoothAktif || durasiBluetooth == 0) return;
 
   if (millis() - waktuBluetoothMulai >= durasiBluetooth) {
     matikanBluetooth();
@@ -1415,7 +1458,7 @@ void setLcdOverride(const char *l1, const char *l2, unsigned long durationMs) {
 
   lcdOverrideUntil = millis() + durationMs;
 
-  Serial.println("[LCD] Override tampil.");
+  Serial.printf("[LCD] %s - %s\n", lcdOverrideLine1, lcdOverrideLine2);
 
   if (lcdReady) {
     printLcdLine(0, lcdOverrideLine1);
@@ -1448,9 +1491,10 @@ void stopDfTrack() {
   }
 }
 
-void setRelay(uint8_t relayNumber, bool state, bool withVoice = false) {
+void setRelay(uint8_t relayNumber, bool state, bool withVoice, bool publishStatus) {
   if (relayNumber == 1) { relay1State = state; digitalWrite(RELAY_1_PIN, state ? RELAY_ON : RELAY_OFF); }
   if (relayNumber == 2) { relay2State = state; digitalWrite(RELAY_2_PIN, state ? RELAY_ON : RELAY_OFF); }
+  Serial.printf("[RELAY] Relay %d %s\n", relayNumber, state ? "ON" : "OFF");
 
   if (relayNumber == 1) {
     setLcdOverride("STOP KONTAK 1", state ? "KIPAS ON" : "KIPAS OFF", 3000);
@@ -1458,18 +1502,19 @@ void setRelay(uint8_t relayNumber, bool state, bool withVoice = false) {
     setLcdOverride("STOP KONTAK 2", state ? "CHARGER ON" : "CHARGER OFF", 3000);
   }
 
-  // Publish event: relay.updated
-  StaticJsonDocument<384> doc;
-  doc["deviceId"] = DEVICE_ID;
-  doc["level"] = "INFO";
-  doc["type"] = "relay.updated";
-  char msg[32];
-  snprintf(msg, sizeof(msg), "Relay %d %s", relayNumber, state ? "ON" : "OFF");
-  doc["message"] = msg;
-  JsonObject payload = doc.createNestedObject("payload");
-  payload["relay"] = relayNumber;
-  payload["state"] = state;
-  publishJson(topicEvent(), doc, false);
+  if (publishStatus) {
+    StaticJsonDocument<384> doc;
+    doc["deviceId"] = DEVICE_ID;
+    doc["level"] = "INFO";
+    doc["type"] = "relay.updated";
+    char msg[32];
+    snprintf(msg, sizeof(msg), "Relay %d %s", relayNumber, state ? "ON" : "OFF");
+    doc["message"] = msg;
+    JsonObject payload = doc.createNestedObject("payload");
+    payload["relay"] = relayNumber;
+    payload["state"] = state;
+    publishJson(topicEvent(), doc, false);
+  }
 
   // Also send telemetry now to update status instantly
   sendTelemetryNow();
@@ -1577,7 +1622,7 @@ void connectMqtt() {
   );
 
   if (ok) {
-    Serial.println("[MQTT] Connected.");
+    Serial.println("[MQTT] Connected");
 
     mqttClient.subscribe(topicCommand().c_str());
     mqttClient.subscribe("smartbox/relay/set");
@@ -1609,8 +1654,54 @@ void connectMqtt() {
 void handleRelayCommand(JsonObject data, const char *cmdId, const char *type) {
   bool state = data["state"] | false;
   int relayNumber = data["relay"] | 1;
-  setRelay(relayNumber, state, true);
+  int autoOffSeconds = data["autoOffSeconds"] | 0;
+
+  if (relayNumber < 1 || relayNumber > 2) {
+    publishAck(cmdId, type, false, "Relay tidak valid.");
+    Serial.printf("[RELAY] Relay %d tidak valid.\n", relayNumber);
+    return;
+  }
+
+  setRelay(relayNumber, state, false, false);
+
+  if (relayNumber == 1) {
+    if (state && autoOffSeconds > 0) {
+      relay1AutoOffActive = true;
+      relay1AutoOffAt = millis() + (autoOffSeconds * 1000UL);
+      Serial.printf("[RELAY] Relay 1 auto-off in %d seconds\n", autoOffSeconds);
+      setLcdOverride("STOP KONTAK 1", "KIPAS ON 1 MENIT", 3000);
+    } else {
+      relay1AutoOffActive = false;
+      if (!state) setLcdOverride("STOP KONTAK 1", "KIPAS OFF", 3000);
+    }
+  }
+
+  if (relayNumber == 2) {
+    if (state && autoOffSeconds > 0) {
+      relay2AutoOffActive = true;
+      relay2AutoOffAt = millis() + (autoOffSeconds * 1000UL);
+      Serial.printf("[RELAY] Relay 2 auto-off in %d seconds\n", autoOffSeconds);
+      setLcdOverride("STOP KONTAK 2", "CHARGER 1 MENIT", 3000);
+    } else {
+      relay2AutoOffActive = false;
+      if (!state) setLcdOverride("STOP KONTAK 2", "CHARGER OFF", 3000);
+    }
+  }
+
   publishAck(cmdId, type, true, "Relay updated.");
+
+  StaticJsonDocument<256> doc;
+  doc["deviceId"] = DEVICE_ID;
+  doc["level"] = "INFO";
+  doc["type"] = "relay.updated";
+  doc["message"] = "Relay state updated";
+  JsonObject payload = doc.createNestedObject("payload");
+  payload["relay"] = relayNumber;
+  payload["state"] = state;
+  payload["autoOffSeconds"] = autoOffSeconds;
+  payload["millis"] = millis();
+
+  publishJson(topicEvent(), doc, false);
 }
 
 void handleAlarmCommand(JsonObject data, const char *cmdId, const char *type) {
@@ -1633,7 +1724,7 @@ void handleAlarmCommand(JsonObject data, const char *cmdId, const char *type) {
       }
     }
   }
-  if (slot < 0 || slot >= 3 || track < 1 || track > 12) {
+  if (slot < 0 || slot >= 3 || track < 1 || track > DFPLAYER_MAX_TRACK) {
     publishAck(cmdId, type, false, "Slot atau track alarm tidak valid.");
     return;
   }
@@ -1657,6 +1748,8 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
     else if (topic.endsWith("/alarm/set")) type = "alarm.set";
   }
 
+  Serial.printf("[CMD] %s received\n", type);
+
   if (strcmp(type, "relay.set") == 0) handleRelayCommand(data, cmdId, type);
   else if (strcmp(type, "gasSensor.set") == 0) {
     gasEnabled = data["enabled"] | true;
@@ -1665,7 +1758,7 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
     publishAck(cmdId, type, true, "Sensor updated.");
   } else if (strcmp(type, "voice.play") == 0) {
     int track = data["track"] | -1;
-    if (track >= 1 && track <= 12) {
+    if (track >= 1 && track <= 13) {
       playVoice((uint8_t)track, "dashboard_voice_test");
       publishAck(cmdId, type, true, "DFPlayer play command received.");
     } else {
@@ -1679,7 +1772,7 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
   } else if (strcmp(type, "alarm.trigger") == 0) {
     int track = data["track"] | -1;
     const char *timeStr = data["time"] | "";
-    if (track >= 1 && track <= 12) {
+    if (track >= 1 && track <= 13) {
       playScheduledAlarm(track, timeStr);
       publishAck(cmdId, type, true, "Alarm jadwal dipicu.");
     } else {
@@ -1699,13 +1792,21 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
     bool state = data["state"] | false;
     setBuzzer(state, true);
     publishAck(cmdId, type, true, state ? "Buzzer ON" : "Buzzer OFF");
-    publishEvent("INFO", "buzzer.updated", state ? "Buzzer dinyalakan" : "Buzzer dimatikan");
+    StaticJsonDocument<256> eventDoc;
+    eventDoc["deviceId"] = DEVICE_ID;
+    eventDoc["level"] = "INFO";
+    eventDoc["type"] = "buzzer.updated";
+    eventDoc["message"] = state ? "Buzzer dinyalakan" : "Buzzer dimatikan";
+    JsonObject eventPayload = eventDoc.createNestedObject("payload");
+    eventPayload["state"] = state;
+    eventPayload["millis"] = millis();
+    publishJson(topicEvent(), eventDoc, false);
   } else if (strcmp(type, "bluetooth.set") == 0) {
     bool state = data["state"] | false;
-    int durationSeconds = data["durationSeconds"] | 60;
+    int durationSeconds = data["durationSeconds"] | 0;
 
     if (state) {
-      durasiBluetooth = durationSeconds * 1000UL;
+      durasiBluetooth = durationSeconds > 0 ? durationSeconds * 1000UL : 0;
       nyalakanBluetooth();
       publishAck(cmdId, type, true, "Bluetooth diaktifkan.");
     } else {
@@ -1824,6 +1925,13 @@ void publishTelemetry(int gasRaw, float tempC, bool gasWarning, bool tempWarning
   doc["obstacleNear"] = obstacleNear;
   doc["relay1"] = relay1State;
   doc["relay2"] = relay2State;
+  unsigned long nowMs = millis();
+  unsigned long relay1RemainingMs =
+    relay1AutoOffActive && (long)(relay1AutoOffAt - nowMs) > 0 ? relay1AutoOffAt - nowMs : 0;
+  unsigned long relay2RemainingMs =
+    relay2AutoOffActive && (long)(relay2AutoOffAt - nowMs) > 0 ? relay2AutoOffAt - nowMs : 0;
+  doc["relay1AutoOffRemaining"] = relay1RemainingMs > 0 ? (relay1RemainingMs + 999UL) / 1000UL : 0;
+  doc["relay2AutoOffRemaining"] = relay2RemainingMs > 0 ? (relay2RemainingMs + 999UL) / 1000UL : 0;
   doc["bluetoothRelay"] = bluetoothAktif;
   doc["bluetoothAudio"] = bluetoothAudioState;
   doc["buzzer"] = digitalRead(BUZZER_PIN) == HIGH;
@@ -2283,17 +2391,6 @@ void setup() {
   Serial.println();
   Serial.println("========== SMARTBOX BOOT ==========");
 
-  secureClient.setInsecure();
-
-  mqttClient.setServer(MQTT_HOST, MQTT_PORT);
-  mqttClient.setCallback(mqttCallback);
-  mqttClient.setKeepAlive(30);
-  mqttClient.setSocketTimeout(15);
-  mqttClient.setBufferSize(2048);
-
-  loadSettings();
-  loadSchedules();
-
   pinMode(RELAY_1_PIN, OUTPUT);
   pinMode(RELAY_2_PIN, OUTPUT);
   pinMode(BUZZER_PIN, OUTPUT);
@@ -2354,18 +2451,21 @@ void setup() {
 
   setupMicI2S();
 
+  secureClient.setInsecure();
+  mqttClient.setServer(MQTT_HOST, MQTT_PORT);
+  mqttClient.setCallback(mqttCallback);
+  mqttClient.setKeepAlive(30);
+  mqttClient.setSocketTimeout(15);
+  mqttClient.setBufferSize(2048);
+
   connectWiFi();
   connectMqtt();
 
+  loadSettings();
+  loadSchedules();
   calibrateMQ2(100);
 
-  if (dfPlayerReady) {
-    setLcdOverride("SMARTBOX", "ASSISTANT READY", 3000);
-    playSystemReady();
-  } else {
-    Serial.println("[DFPLAYER] Startup voice dilewati karena DFPlayer error.");
-    setLcdOverride("DFPLAYER ERROR", "SMARTBOX READY", 4000);
-  }
+  playSystemReady();
 
   Serial.println("========== SMARTBOX READY ==========");
 }
@@ -2384,6 +2484,7 @@ void loop() {
   checkBlackButton();
   checkAlarms();
   checkRelaySchedules();
+  checkRelayAutoOff();
   checkBluetoothTimer();
   serviceVoiceQueue();
 

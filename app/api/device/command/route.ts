@@ -50,6 +50,7 @@ export async function POST(request: Request) {
     // 2. Publish command ke MQTT topic
     try {
       await publishMessage(topic, mqttPayload);
+      console.log(`[API Command] Command published to ${topic}`);
       
       // 3. Update status command menjadi SENT
       const updatedCommand = await prisma.deviceCommand.update({

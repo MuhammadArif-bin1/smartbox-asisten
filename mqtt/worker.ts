@@ -53,6 +53,60 @@ async function ensureDevice(deviceId: string, isOnline: boolean = true) {
   }
 }
 
+type ActuatorPatch = {
+  relay1?: boolean;
+  relay2?: boolean;
+  bluetoothAudio?: boolean;
+  buzzer?: boolean;
+};
+
+async function syncActuatorState(deviceId: string, patch: ActuatorPatch) {
+  const now = new Date();
+
+  await retryQuery(() => prisma.smartboxStatus.upsert({
+    where: { deviceId },
+    create: {
+      deviceId,
+      online: true,
+      lastSeenAt: now,
+      ...patch,
+    },
+    update: {
+      online: true,
+      lastSeenAt: now,
+      ...patch,
+    },
+  })).catch((err) => {
+    console.error(`[Worker] Error syncing actuator state for ${deviceId}:`, err);
+  });
+
+  const lastReading = await retryQuery(() => prisma.sensorReading.findFirst({
+    where: { deviceId },
+    orderBy: { createdAt: "desc" },
+  })).catch(() => null);
+
+  await retryQuery(() => prisma.sensorReading.create({
+    data: {
+      deviceId,
+      temperature: lastReading?.temperature ?? 0,
+      gasRaw: lastReading?.gasRaw ?? 0,
+      gasDetected: lastReading?.gasDetected ?? false,
+      gasLevel: lastReading?.gasLevel ?? "normal",
+      temperatureHigh: lastReading?.temperatureHigh ?? false,
+      pirDetected: lastReading?.pirDetected ?? false,
+      obstacleNear: lastReading?.obstacleNear ?? false,
+      relay1: patch.relay1 ?? lastReading?.relay1 ?? false,
+      relay2: patch.relay2 ?? lastReading?.relay2 ?? false,
+      bluetoothRelay: patch.bluetoothAudio ?? lastReading?.bluetoothRelay ?? false,
+      buzzer: patch.buzzer ?? lastReading?.buzzer ?? false,
+      gasSensorEnabled: lastReading?.gasSensorEnabled ?? true,
+      createdAt: now,
+    },
+  })).catch((err) => {
+    console.error(`[Worker] Error saving actuator SensorReading for ${deviceId}:`, err);
+  });
+}
+
 client.on("connect", () => {
   console.log("[Worker] Connected to MQTT broker!");
   
@@ -61,13 +115,15 @@ client.on("connect", () => {
   client.subscribe("smartbox/+/event", { qos: 1 });
   client.subscribe("smartbox/+/ack", { qos: 1 });
   client.subscribe("smartbox/+/status", { qos: 1 });
+  client.subscribe("smartbox/+/cmd", { qos: 1 });
   
-  console.log("[Worker] Subscribed to wildcard topics: smartbox/+/telemetry, event, ack, status");
+  console.log("[Worker] Subscribed to wildcard topics: smartbox/+/telemetry, event, ack, status, cmd");
 });
 
 client.on("message", async (topic, message) => {
   const payloadStr = message.toString();
-  console.log(`[Worker] Message received on [${topic}]: ${payloadStr}`);
+  console.log(`[Worker] Message received on ${topic}`);
+  console.log(`[Worker] Payload: ${payloadStr}`);
   
   try {
     const parts = topic.split("/");
@@ -80,7 +136,11 @@ client.on("message", async (topic, message) => {
     const messageType = parts[2];
     const data = JSON.parse(payloadStr);
 
-    if (messageType === "status") {
+    if (messageType === "cmd") {
+      console.log(`[Worker] Command published to ${topic}`);
+    }
+
+    else if (messageType === "status") {
       const isOnline = data.online === true;
       console.log(`[Worker] Device ${deviceId} status changed to: ${isOnline ? "ONLINE" : "OFFLINE"}`);
       await ensureDevice(deviceId, isOnline);
@@ -218,12 +278,33 @@ client.on("message", async (topic, message) => {
     
     else if (messageType === "event") {
       const { level = "INFO", type = "generic", message = "" } = data;
+      const payloadObj = data.payload && typeof data.payload === "object" ? data.payload : {};
       
       await ensureDevice(deviceId, true);
 
+      const actuatorPatch: ActuatorPatch = {};
+      if (type === "relay.updated") {
+        if (payloadObj.relay === 1 && typeof payloadObj.state === "boolean") actuatorPatch.relay1 = payloadObj.state;
+        if (payloadObj.relay === 2 && typeof payloadObj.state === "boolean") actuatorPatch.relay2 = payloadObj.state;
+      } else if (type === "relay1.auto_off") {
+        actuatorPatch.relay1 = false;
+      } else if (type === "relay2.auto_off") {
+        actuatorPatch.relay2 = false;
+      } else if (type === "bluetooth.on") {
+        actuatorPatch.bluetoothAudio = true;
+      } else if (type === "bluetooth.off" || type === "bluetooth.auto_off") {
+        actuatorPatch.bluetoothAudio = false;
+      } else if (type === "buzzer.updated" && typeof payloadObj.state === "boolean") {
+        actuatorPatch.buzzer = payloadObj.state;
+      }
+
+      if (Object.keys(actuatorPatch).length > 0) {
+        await syncActuatorState(deviceId, actuatorPatch);
+        console.log(`[Worker] Synced actuator state for ${deviceId}: ${JSON.stringify(actuatorPatch)}`);
+      }
+
       // Handle PIR motion event for fast real-time status update in database
       if (type === "pir.motion") {
-        const payloadObj = data.payload || {};
         const pirDetectedVal = typeof payloadObj.pirDetected === "boolean" 
           ? payloadObj.pirDetected 
           : (typeof data.pirDetected === "boolean" ? data.pirDetected : true);

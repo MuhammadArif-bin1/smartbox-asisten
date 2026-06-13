@@ -2,7 +2,7 @@
  * /api/gemini/tts - Server-side Gemini Text-to-Speech
  *
  * POST body: { track: number, text: string, voice?: string, style?: string }
- * - track: nomor track DFPlayer (1-12)
+ * - track: nomor track DFPlayer (1-13)
  * - text: teks yang akan di-TTS
  * - voice: nama voice Gemini (default: "Charon")
  * - style: instruksi gaya bicara
@@ -31,6 +31,7 @@ const TRACK_LABELS: Record<number, string> = {
   10: "gerakan_berjalan",
   11: "gerakan_melompat",
   12: "gerakan_melambaikan",
+  13: "bluetooth_dimatikan",
 };
 
 const DEFAULT_TEXTS: Record<number, string> = {
@@ -46,6 +47,7 @@ const DEFAULT_TEXTS: Record<number, string> = {
   10: "Gerakan terdeteksi. Selamat datang!",
   11: "Gerakan melompat terdeteksi.",
   12: "Gerakan melambaikan tangan terdeteksi. Halo!",
+  13: "Bluetooth Smartbox Assistant dimatikan.",
 };
 
 export async function POST(req: NextRequest) {
@@ -59,9 +61,9 @@ export async function POST(req: NextRequest) {
     } = body;
 
     // Validasi
-    if (!track || track < 1 || track > 12) {
+    if (!track || track < 1 || track > 13) {
       return NextResponse.json(
-        { error: "track harus antara 1 dan 12" },
+        { error: "track harus antara 1 dan 13" },
         { status: 400 }
       );
     }
@@ -162,7 +164,7 @@ export async function POST(req: NextRequest) {
     const mimeType = audioPart.inlineData.mimeType || "audio/wav";
     const ext = "mp3";
 
-    // Format DFPlayer: 4-digit filename (0001.mp3 - 0012.mp3)
+    // Format DFPlayer: 4-digit filename (0001.mp3 - 0013.mp3)
     const dfPlayerFilename = `${String(track).padStart(4, "0")}.${ext}`;
     const webFilename = `track_${String(track).padStart(2, "0")}_${TRACK_LABELS[track]}.${ext}`;
 

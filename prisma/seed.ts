@@ -31,6 +31,7 @@ async function main() {
     { track: 10, fileName: "0010.mp3", label: "Gerakan berjalan", feature: "pir", description: "Gerakan berjalan terdeteksi" },
     { track: 11, fileName: "0011.mp3", label: "Gerakan melompat", feature: "pir", description: "Gerakan melompat terdeteksi" },
     { track: 12, fileName: "0012.mp3", label: "Gerakan melambaikan tangan", feature: "pir", description: "Gerakan melambaikan tangan terdeteksi" },
+    { track: 13, fileName: "0013.mp3", label: "Bluetooth dimatikan", feature: "bluetooth", description: "Bluetooth Smartbox Assistant dimatikan" },
   ];
 
   console.log("Seeding AudioTrack database...");
