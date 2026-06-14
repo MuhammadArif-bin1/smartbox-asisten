@@ -209,7 +209,7 @@ unsigned long recordingStartMillis = 0;
 
 // AI Backend URL (Sesuaikan IP dengan IP laptop/PC Anda, contoh: http://192.168.1.10:3000)
 // PENTING: Jangan gunakan localhost di ESP32
-const char* AI_BACKEND_URL = "http://192.168.1.10:3000/api/gemini/chat-audio";
+const char* AI_BACKEND_URL = "https://smartbox-asisten.vercel.app/api/gemini/chat-audio";
 
 // Black Button Debounce & State Variables
 const unsigned long BLACK_BUTTON_DEBOUNCE_MS = 50;
