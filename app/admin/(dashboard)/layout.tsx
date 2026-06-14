@@ -9,8 +9,7 @@ import { ToastMessage } from "@/components/ui/Toast";
 
 /* ─── View title resolver ─── */
 const titleMap: Record<string, string> = {
-  "/admin": "Dashboard",
-  "/admin/monitoring": "Monitoring",
+  "/admin": "Monitoring",
   "/admin/devices": "Devices Control",
   "/admin/ai": "AI Assistant",
   "/admin/alarms": "Alarm Jadwal",
@@ -86,7 +85,7 @@ function SidebarStatusCards() {
 /* ─── Header ─── */
 function Header() {
   const pathname = usePathname();
-  const title = titleMap[pathname] || "Dashboard";
+  const title = titleMap[pathname] || "Monitoring";
 
   return (
     <header className="sticky top-0 z-10 border-b border-slate-200 bg-white/90 backdrop-blur">
@@ -94,7 +93,7 @@ function Header() {
         <div>
           <p className="text-xs font-bold uppercase tracking-[0.22em] text-blue-600 lg:hidden">SmartBox Assistant</p>
           <h1 className="text-2xl font-black tracking-normal text-slate-950 sm:text-3xl">
-            {title === "Dashboard" ? "SmartBox Assistant Dashboard" : title}
+            {title === "Monitoring" ? "SmartBox Assistant Monitoring" : title}
           </h1>
         </div>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">

@@ -2,8 +2,7 @@ import type { BoardProfile, RelayId, Alarm, ViewId } from "./smartbox-types";
 
 /* ─── Navigation views ─── */
 export const views: Array<{ id: ViewId; label: string; href: string }> = [
-  { id: "dashboard", label: "Dashboard", href: "/admin" },
-  { id: "monitoring", label: "Monitoring", href: "/admin/monitoring" },
+  { id: "monitoring", label: "Monitoring", href: "/admin" },
   { id: "devices", label: "Devices Control", href: "/admin/devices" },
   { id: "ai", label: "AI Assistant", href: "/admin/ai" },
   { id: "alarms", label: "Alarm Jadwal", href: "/admin/alarms" },
