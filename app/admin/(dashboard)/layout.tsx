@@ -174,7 +174,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const stored = localStorage.getItem("smartbox_auth");
     if (stored !== "1") {
-      router.replace("/admin/login");
+      router.replace("/login");
     } else {
       setChecked(true);
     }
