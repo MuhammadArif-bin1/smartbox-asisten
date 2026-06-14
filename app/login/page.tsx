@@ -12,7 +12,7 @@ export default function LoginPage() {
 
   // Redirect to admin if already authenticated
   useEffect(() => {
-    const stored = localStorage.getItem("smartbox_auth");
+    const stored = sessionStorage.getItem("smartbox_auth");
     if (stored === "1") {
       router.replace("/admin");
     }
@@ -25,7 +25,7 @@ export default function LoginPage() {
 
     setTimeout(() => {
       if (password === DASHBOARD_PASSWORD) {
-        localStorage.setItem("smartbox_auth", "1");
+        sessionStorage.setItem("smartbox_auth", "1");
         router.push("/admin");
       } else {
         setError("Password salah");

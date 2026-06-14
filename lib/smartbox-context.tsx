@@ -154,7 +154,7 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
       setIsAuthenticated(true);
       setLoginError("");
       setPasswordInput("");
-      localStorage.setItem("smartbox_auth", "1");
+      sessionStorage.setItem("smartbox_auth", "1");
       return;
     }
     setLoginError("Password salah");
@@ -369,7 +369,7 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
      ═══════════════════════════════════════════════════════════════ */
 
   useEffect(() => {
-    const stored = localStorage.getItem("smartbox_auth");
+    const stored = sessionStorage.getItem("smartbox_auth");
     if (stored === "1") {
       setIsAuthenticated(true);
     }
