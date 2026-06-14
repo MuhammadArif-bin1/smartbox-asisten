@@ -248,13 +248,15 @@ model RelaySchedule {
 }
 
 model AlarmSchedule {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
+  deviceId  String    @default("smartbox-001")
   name      String
   time      String
   track     Int
-  enabled   Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  active    Boolean   @default(true)
+  lastRunAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 }
 
 model PirGreetingSetting {

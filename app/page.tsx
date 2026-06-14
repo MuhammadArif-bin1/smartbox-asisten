@@ -179,6 +179,7 @@ async function sendDeviceCommandApi(deviceId: string, type: string, payload: Rec
 export default function Home() {
   const [activeView, setActiveView] = useState<ViewId>("dashboard");
   const [alarms, setAlarms] = useState(initialAlarms);
+  const [alarmSchedules, setAlarmSchedules] = useState<Array<{ id: string; name: string; time: string; track: number; active: boolean; lastRunAt?: string | null }>>([]);
   const [gasEnabled, setGasEnabled] = useState(true);
   const [temperatureEnabled, setTemperatureEnabled] = useState(true);
   const [gasEstimate, setGasEstimate] = useState(0);
@@ -229,6 +230,7 @@ export default function Home() {
   });
   const [lastTelemetryTime, setLastTelemetryTime] = useState<number>(0);
   const [tempHistory, setTempHistory] = useState(temperatureSeries);
+  const [gasHistory, setGasHistory] = useState<number[]>([120, 140, 150, 160, 200, 220, 210, 180, 160, 150, 140, 130, 120, 130, 140, 150, 160, 150]);
   const [flameDetected, setFlameDetected] = useState(false);
   const [pirDetected, setPirDetected] = useState<boolean | null>(null);
   const [obstacleNear, setObstacleNear] = useState(false);
@@ -238,7 +240,7 @@ export default function Home() {
   const [loginError, setLoginError] = useState("");
   const [events, setEvents] = useState<Array<{ id: string; type: string; message: string; createdAt: string; level: string }>>([]);
 
-  const activeAlarms = useMemo(() => alarms.filter((alarm) => alarm.enabled).length, [alarms]);
+  const activeAlarms = useMemo(() => alarmSchedules.filter((s) => s.active).length, [alarmSchedules]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -531,31 +533,21 @@ export default function Home() {
     loadSchedules();
   }, [isAuthenticated]);
 
-  // Fetch alarms from Neon DB via Prisma on mount
+  // Fetch alarm schedules from database on mount
   useEffect(() => {
     if (!isAuthenticated) return;
-    async function loadAlarms() {
+    async function loadAlarmSchedules() {
       try {
-        const response = await fetch("/api/alarms");
+        const response = await fetch("/api/alarm-schedules");
         if (response.ok) {
           const data = await response.json();
-          if (Array.isArray(data) && data.length > 0) {
-            const mapped = data.map((item: { id: string; label: string; time: string; greeting: string; dfTrack: number; enabled: boolean }) => ({
-              id: item.id,
-              label: item.label,
-              time: item.time,
-              greeting: item.greeting,
-              track: item.dfTrack,
-              enabled: item.enabled,
-            }));
-            setAlarms(mapped);
-          }
+          setAlarmSchedules(data);
         }
       } catch (err) {
-        console.error("Gagal memuat alarm dari database:", err);
+        console.error("Gagal memuat jadwal alarm dari database:", err);
       }
     }
-    loadAlarms();
+    loadAlarmSchedules();
   }, [isAuthenticated]);
 
   // Fetch PIR greeting settings from DB on mount
@@ -615,6 +607,8 @@ export default function Home() {
           if (Array.isArray(data) && data.length > 0) {
             const history = data.map((item: ReadingData) => item.temperature || 28);
             setTempHistory(history);
+            const gasHistoryList = data.map((item: ReadingData) => item.gasRaw ?? 120);
+            setGasHistory(gasHistoryList);
             
             const latest = data[data.length - 1] as ReadingData | undefined;
             if (latest) {
@@ -783,6 +777,13 @@ export default function Home() {
     setTempHistory((current) => [...current.slice(1), visibleTempEstimate]);
   }, [isAuthenticated, telemetrySource, temperatureEnabled, visibleTempEstimate]);
 
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    if (telemetrySource === "Offline" || !gasEnabled) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setGasHistory((current) => [...current.slice(1), visibleGasEstimate]);
+  }, [isAuthenticated, telemetrySource, gasEnabled, visibleGasEstimate]);
+
   function notify(message: string, tone: Toast["tone"] = "info") {
     setToast({ id: Date.now(), message, tone });
   }
@@ -836,6 +837,95 @@ export default function Home() {
 
   function updateAlarm(id: string, field: keyof Alarm, value: string | number | boolean) {
     setAlarms((current) => current.map((alarm) => alarm.id === id ? { ...alarm, [field]: value } : alarm));
+  }
+
+  async function saveAlarmSchedule(sch: { id?: string; name: string; time: string; track: number; active: boolean }) {
+    try {
+      const isEdit = !!sch.id;
+      const url = isEdit ? `/api/alarm-schedules/${sch.id}` : "/api/alarm-schedules";
+      const method = isEdit ? "PATCH" : "POST";
+      const response = await fetch(url, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(sch),
+      });
+
+      if (response.ok) {
+        const saved = await response.json();
+        setAlarmSchedules((current) => {
+          if (isEdit) {
+            return current.map((item) => (item.id === sch.id ? saved : item));
+          } else {
+            return [...current, saved].sort((a, b) => a.time.localeCompare(b.time));
+          }
+        });
+        notify(isEdit ? "Jadwal alarm berhasil diperbarui" : "Jadwal alarm berhasil disimpan", "success");
+      } else {
+        const result = await response.json().catch(() => null);
+        notify(result?.error || "Gagal menyimpan jadwal alarm", "error");
+      }
+    } catch (err) {
+      console.error("Error saving alarm schedule:", err);
+      notify("Gagal menyimpan jadwal alarm", "error");
+    }
+  }
+
+  async function deleteAlarmSchedule(id: string) {
+    try {
+      const response = await fetch(`/api/alarm-schedules/${id}`, {
+        method: "DELETE",
+      });
+
+      if (response.ok) {
+        setAlarmSchedules((current) => current.filter((s) => s.id !== id));
+        notify("Jadwal alarm berhasil dihapus", "success");
+      } else {
+        notify("Gagal menghapus jadwal alarm", "error");
+      }
+    } catch (err) {
+      console.error("Error deleting alarm schedule:", err);
+      notify("Gagal menghapus jadwal alarm", "error");
+    }
+  }
+
+  async function toggleAlarmScheduleActive(id: string, currentActive: boolean) {
+    const nextActive = !currentActive;
+    setAlarmSchedules((current) => current.map((s) => s.id === id ? { ...s, active: nextActive } : s));
+
+    try {
+      const response = await fetch(`/api/alarm-schedules/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ active: nextActive }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Gagal update status");
+      }
+      notify(`Alarm ${nextActive ? "diaktifkan" : "dinonaktifkan"}`, "info");
+    } catch (err) {
+      console.error("Error toggling alarm active:", err);
+      setAlarmSchedules((current) => current.map((s) => s.id === id ? { ...s, active: currentActive } : s));
+      notify("Gagal memperbarui status alarm", "error");
+    }
+  }
+
+  async function testPlayVoice(track: number) {
+    try {
+      const response = await fetch("/api/voice/play", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ track, reason: "manual_test" }),
+      });
+      if (response.ok) {
+        notify("Perintah suara (test play) dikirim ke ESP32", "success");
+      } else {
+        notify("Gagal mengirim perintah suara", "error");
+      }
+    } catch (err) {
+      console.error("Error playing voice test:", err);
+      notify("Gagal mengirim perintah suara", "error");
+    }
   }
 
   function toggleGas() {
@@ -1039,6 +1129,11 @@ export default function Home() {
   const common = {
     activeAlarms,
     alarms,
+    alarmSchedules,
+    onSaveSchedule: saveAlarmSchedule,
+    onDeleteSchedule: deleteAlarmSchedule,
+    onToggleScheduleActive: toggleAlarmScheduleActive,
+    onTestPlayVoice: testPlayVoice,
     buzzerEnabled,
     boardLedScheduleEnabled,
     gasEnabled,
@@ -1054,6 +1149,7 @@ export default function Home() {
     status,
     telemetrySource,
     tempHistory,
+    gasHistory,
     tempPercent,
     tempState,
     tempWarning,
@@ -1127,6 +1223,11 @@ export default function Home() {
 type PageProps = {
   activeAlarms: number;
   alarms: Alarm[];
+  alarmSchedules: Array<{ id: string; name: string; time: string; track: number; active: boolean; lastRunAt?: string | null }>;
+  onSaveSchedule: (sch: { id?: string; name: string; time: string; track: number; active: boolean }) => Promise<void>;
+  onDeleteSchedule: (id: string) => Promise<void>;
+  onToggleScheduleActive: (id: string, currentActive: boolean) => Promise<void>;
+  onTestPlayVoice: (track: number) => Promise<void>;
   boardLedScheduleEnabled: boolean;
   buzzerEnabled: boolean;
   gasEnabled: boolean;
@@ -1142,6 +1243,7 @@ type PageProps = {
   status: CommandStatus;
   telemetrySource: string;
   tempHistory: number[];
+  gasHistory: number[];
   tempPercent: number;
   tempState: string;
   tempWarning: boolean;
@@ -1344,265 +1446,386 @@ function ToastMessage({ toast, onClose }: { toast: Toast; onClose: () => void })
 }
 
 function DashboardPage(props: PageProps) {
-  const isSending = props.status === "sending";
+  const isOnline = props.deviceStatuses.esp32;
+  const hasData = isOnline && props.visibleTempEstimate > 0;
+  const lastUpdate = isOnline ? (props.deviceStatuses.lastSeen || "Baru saja") : "-";
+  const pirEvents = props.events.filter(e => e.type === "pir.motion" || e.type === "pir.greeting.played").slice(0, 5);
 
   return (
-    <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
-      <div className="grid gap-5">
-        <StatsGrid {...props} />
-        
-        {/* Quick Control Panel */}
-        <Panel title="Kontrol Cepat Real-time" subtitle="Kirim perintah langsung ke perangkat ESP32-S3 via database-tracked API.">
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-            <QuickControlRow
-              label="Stop Kontak 1 (Kipas)"
-              detail={props.relayState.socket1 ? "Kipas Menyala" : "Kipas Mati"}
-              enabled={props.relayState.socket1}
-              onToggle={() => props.toggleRelay("socket1")}
-              disabled={isSending}
-            />
-            <QuickControlRow
-              label="Stop Kontak 2 (Charger)"
-              detail={props.relayState.socket2 ? "Charger ON" : "Charger OFF"}
-              enabled={props.relayState.socket2}
-              onToggle={() => props.toggleRelay("socket2")}
-              disabled={isSending}
-            />
-            <QuickControlRow
-              label="Relay Bluetooth"
-              detail={props.relayState.ampli ? "Bluetooth Aktif (1 m)" : "Bluetooth Mati"}
-              enabled={props.relayState.ampli}
-              onToggle={() => props.toggleRelay("ampli")}
-              disabled={isSending}
-            />
-            <QuickControlRow
-              label="Alarm Buzzer"
-              detail={props.buzzerEnabled ? "Buzzer ON" : "Buzzer OFF"}
-              enabled={props.buzzerEnabled}
-              onToggle={() => {
-                const next = !props.buzzerEnabled;
-                props.setBuzzerEnabled(next);
-                props.sendDeviceCommand("buzzer.set", { state: next }, `Buzzer ${next ? "aktif" : "mati"}`);
-              }} 
-              disabled={isSending}
-            />
-            
-            <div className="rounded-2xl border border-slate-200 bg-white p-4 flex flex-col justify-between min-h-[110px] relative">
-              <div>
-                <p className="text-sm font-bold text-slate-900">Test Suara DFPlayer</p>
-                <p className="text-xs text-slate-500">Pilih track audio 1-13.</p>
-              </div>
-              <div className="mt-3 flex gap-2">
-                <select 
-                  id="dashboard-dfplayer-track"
-                  className="h-9 rounded-xl border border-slate-200 bg-white px-2 text-xs font-semibold outline-none flex-1 focus:ring-2 focus:ring-blue-500/20"
-                  defaultValue={1}
-                  disabled={isSending}
-                >
-                  {audioTracks.map((track) => (
-                    <option key={track.id} value={track.id}>
-                      {track.id.toString().padStart(4, "0")} - {track.label}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  onClick={async () => {
-                    const select = document.getElementById("dashboard-dfplayer-track") as HTMLSelectElement;
-                    const track = Number(select?.value || 1);
-                    await props.sendDeviceCommand("voice.play", { track }, "Perintah suara", "Perintah suara dikirim", "Gagal mengirim perintah");
-                  }}
-                  disabled={isSending}
-                  className="h-9 rounded-xl bg-blue-600 px-3 text-xs font-bold text-white transition hover:bg-blue-700 active:scale-95 shadow-sm disabled:opacity-50"
-                  type="button"
-                >
-                  Play
-                </button>
-                <button
-                  onClick={() => props.sendDeviceCommand("dfplayer.stop", {}, "DFPlayer Stop")}
-                  disabled={isSending}
-                  className="h-9 rounded-xl bg-red-100 text-red-600 px-3 text-xs font-bold transition hover:bg-red-200 active:scale-95 disabled:opacity-50"
-                  type="button"
-                >
-                  Stop
-                </button>
-              </div>
-              {isSending && (
-                <div className="absolute inset-0 bg-white/40 backdrop-blur-[0.5px] rounded-2xl flex items-center justify-center">
-                  <span className="text-[10px] font-black text-blue-600 animate-pulse bg-blue-50/90 px-2.5 py-1 rounded-full border border-blue-100 shadow-sm">Mengirim...</span>
-                </div>
-              )}
+    <div className="grid gap-6">
+      {/* 3 Main Sensor Cards */}
+      <div className="grid gap-5 grid-cols-1 md:grid-cols-3">
+        {/* Card 1: Suhu Ruangan */}
+        <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm shadow-slate-100 flex flex-col justify-between min-h-[160px] hover:shadow-md transition">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Suhu Ruangan</span>
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 border border-blue-100 text-blue-600">
+              <svg className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M14 4v10.5a4.5 4.5 0 11-4 0V4a2 2 0 114 0z" />
+              </svg>
             </div>
           </div>
-        </Panel>
+          <div className="mt-4">
+            {!hasData ? (
+              <div className="text-slate-400 py-1">
+                <p className="text-sm font-bold text-slate-600">Menunggu data...</p>
+                <p className="text-xs text-slate-400">ESP32-S3 belum mengirim data suhu.</p>
+              </div>
+            ) : (
+              <>
+                <h3 className="text-3xl font-black text-slate-900">{props.visibleTempEstimate.toFixed(1)}°C</h3>
+                <div className="mt-2 flex items-center justify-between">
+                  <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-bold border ${
+                    props.tempWarning ? "bg-red-50 text-red-600 border-red-200 animate-pulse" : "bg-emerald-50 text-emerald-600 border-emerald-200"
+                  }`}>
+                    {props.tempState}
+                  </span>
+                  <span className="text-[10px] text-slate-400 font-semibold font-mono">DS3231 • {lastUpdate}</span>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
 
-        <div className="grid gap-5 2xl:grid-cols-[minmax(0,1.25fr)_minmax(360px,0.75fr)]">
-          <Panel title="Grafik Suhu Ruangan" subtitle="Ringkasan suhu 24 jam terakhir.">
-            <TemperatureChart value={props.visibleTempEstimate} series={props.tempHistory} />
+        {/* Card 2: Sensor Gas / Asap */}
+        <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm shadow-slate-100 flex flex-col justify-between min-h-[160px] hover:shadow-md transition">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Status Gas / Asap</span>
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-50 border border-emerald-100 text-emerald-600">
+              <svg className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M17.657 18.585A8 8 0 1120 12c0 2.13-.86 4.03-2.243 5.402z" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+            </div>
+          </div>
+          <div className="mt-4">
+            {!isOnline ? (
+              <div className="text-slate-400 py-1">
+                <p className="text-sm font-bold text-slate-600">Tidak Terhubung</p>
+                <p className="text-xs text-slate-400">Sensor MQ-2 tidak online.</p>
+              </div>
+            ) : (
+              <>
+                <h3 className="text-3xl font-black text-slate-900">{props.gasPpm} PPM</h3>
+                <div className="mt-2 flex items-center justify-between">
+                  <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-bold border ${
+                    props.gasWarning ? "bg-red-50 text-red-600 border-red-200 animate-pulse" : "bg-emerald-50 text-emerald-600 border-emerald-200"
+                  }`}>
+                    {props.gasState}
+                  </span>
+                  <span className="text-[10px] text-slate-400 font-semibold font-mono">MQ-2 • RAW: {props.visibleGasEstimate} • {lastUpdate}</span>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* Card 3: Sensor PIR (Gerakan) */}
+        <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm shadow-slate-100 flex flex-col justify-between min-h-[160px] hover:shadow-md transition">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Gerakan PIR</span>
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-orange-50 border border-orange-100 text-orange-600">
+              <svg className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4a1 1 0 100-2 1 1 0 000 2zM8 9h8a1.5 1.5 0 011.5 1.5v6M9 22V15m6 7v-7M12 9v6" />
+              </svg>
+            </div>
+          </div>
+          <div className="mt-4">
+            {!isOnline ? (
+              <div className="text-slate-400 py-1">
+                <p className="text-sm font-bold text-slate-600">Tidak Terhubung</p>
+                <p className="text-xs text-slate-400">Sensor PIR tidak online.</p>
+              </div>
+            ) : (
+              <>
+                <h3 className="text-3xl font-black text-slate-900">
+                  {props.pirDetected ? "Ada Gerakan" : "Tidak Ada Gerakan"}
+                </h3>
+                <div className="mt-2 flex items-center justify-between">
+                  <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-bold border ${
+                    props.pirDetected ? "bg-red-50 text-red-600 border-red-200 animate-pulse" : "bg-emerald-50 text-emerald-600 border-emerald-200"
+                  }`}>
+                    {props.pirDetected ? "Gerakan Terdeteksi" : "Aman"}
+                  </span>
+                  <span className="text-[10px] text-slate-400 font-semibold font-mono">PIR Sensor • {lastUpdate}</span>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Main split section */}
+      <div className="grid gap-6 lg:grid-cols-[3fr_2fr]">
+        <div className="grid gap-6">
+          <Panel title="Grafik Suhu Ruangan" subtitle="Visualisasi perubahan suhu real-time.">
+            {!hasData ? (
+              <div className="flex flex-col items-center justify-center py-12 px-4 text-center rounded-2xl border border-dashed border-slate-200 bg-slate-50 text-slate-400">
+                <p className="text-sm font-bold">Belum ada data sensor</p>
+                <p className="text-xs mt-1">Menunggu telemetry dari ESP32-S3.</p>
+              </div>
+            ) : (
+              <TemperatureChart value={props.visibleTempEstimate} series={props.tempHistory} />
+            )}
           </Panel>
-          <Panel title="Ringkasan Sistem" subtitle="Status cepat tanpa kontrol detail.">
+
+          <Panel title="Grafik Gas / Asap" subtitle="Visualisasi kadar gas/asap MQ-2 (RAW value).">
+            {!isOnline ? (
+              <div className="flex flex-col items-center justify-center py-12 px-4 text-center rounded-2xl border border-dashed border-slate-200 bg-slate-50 text-slate-400">
+                <p className="text-sm font-bold">Belum ada data sensor</p>
+                <p className="text-xs mt-1">Menunggu telemetry dari ESP32-S3.</p>
+              </div>
+            ) : (
+              <GasChart value={props.visibleGasEstimate} series={props.gasHistory} />
+            )}
+          </Panel>
+        </div>
+
+        <div className="grid gap-6 content-start">
+          <Panel title="Timeline Gerakan PIR" subtitle="Riwayat gerakan terdeteksi terbaru.">
             <div className="grid gap-3">
-              <ReadingRow label="Suhu" value={props.telemetrySource === "Offline" ? "-" : `${props.visibleTempEstimate.toFixed(1)} C`} status={props.tempState} percent={props.telemetrySource === "Offline" ? 0 : props.tempPercent} tone="blue" />
-              <ReadingRow label="Gas / Asap" value={props.telemetrySource === "Offline" ? "-" : `${props.gasPpm} PPM`} status={props.gasState} percent={props.telemetrySource === "Offline" ? 0 : props.gasPercent} tone="emerald" />
-              <ReadingRow label="Relay Aktif" value={props.telemetrySource === "Offline" ? "-" : `${props.relayActiveCount} / 3`} status="Perangkat" percent={props.telemetrySource === "Offline" ? 0 : Math.round((props.relayActiveCount / 3) * 100)} tone="orange" />
+              {pirEvents.length === 0 ? (
+                <div className="text-center py-6 border border-dashed border-slate-200 rounded-2xl bg-slate-50/50">
+                  <p className="text-xs font-bold text-slate-400">Tidak ada riwayat gerakan terdeteksi baru-baru ini.</p>
+                </div>
+              ) : (
+                pirEvents.map((evt) => (
+                  <div key={evt.id} className="flex gap-3 items-start border-b border-slate-100 pb-3 last:border-0 last:pb-0">
+                    <span className="h-2 w-2 rounded-full bg-orange-500 mt-1.5 shrink-0 animate-pulse" />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-bold text-slate-800">{evt.message || "Gerakan Terdeteksi"}</p>
+                      <p className="text-[10px] text-slate-400 mt-0.5 font-semibold font-mono">
+                        {new Date(evt.createdAt).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                      </p>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </Panel>
+
+          <Panel title="Kondisi Ruangan" subtitle="Ringkasan status seluruh komponen ruangan.">
+            <div className="grid gap-3">
+              <SummaryBadgeRow label="Suhu" value={props.tempState} active={props.tempWarning} />
+              <SummaryBadgeRow label="Gas" value={props.gasState} active={props.gasWarning} />
+              <SummaryBadgeRow label="Gerakan" value={props.pirDetected ? "Ada" : "Tidak Ada"} active={props.pirDetected} />
+              <SummaryBadgeRow label="MQTT" value={props.mqttOnline ? "Terhubung" : "Terputus"} active={!props.mqttOnline} />
+              <SummaryBadgeRow label="ESP32" value={isOnline ? "Online" : "Offline"} active={!isOnline} />
+            </div>
+          </Panel>
+
+          <Panel title="AI Assistant" subtitle={props.mqttOnline ? "Online" : "Menunggu broker"}>
+            <div className="rounded-2xl bg-slate-100 p-4 text-sm leading-6 text-slate-700">
+              <p className="font-bold text-slate-900">Halo! Saya SmartBox Assistant.</p>
+              <p className="mt-1">Kondisi ruangan saat ini {props.tempState.toLowerCase()}, gas {props.gasState.toLowerCase()}, dan MQTT {props.mqttOnline ? "terhubung" : "offline"}.</p>
             </div>
           </Panel>
         </div>
       </div>
-      <RightRail {...props} />
     </div>
   );
 }
 
-function QuickControlRow({
-  label,
-  detail,
-  enabled,
-  onToggle,
-  disabled
-}: {
-  label: string;
-  detail: string;
-  enabled: boolean;
-  onToggle: () => void;
-  disabled?: boolean;
-}) {
+function SummaryBadgeRow({ label, value, active }: { label: string; value: string; active: boolean | null }) {
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4 flex flex-col justify-between min-h-[110px] relative">
-      <div>
-        <p className="text-sm font-bold text-slate-900">{label}</p>
-        <p className="mt-1 text-xs text-slate-500">{detail}</p>
-      </div>
-      <div className="mt-3 flex justify-between items-center">
-        <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold border ${
-          enabled ? "bg-emerald-50 text-emerald-600 border-emerald-200" : "bg-slate-100 text-slate-400 border-slate-200"
-        }`}>
-          <span className={`h-1.5 w-1.5 rounded-full ${enabled ? "bg-emerald-500 animate-pulse" : "bg-slate-300"}`} />
-          {enabled ? "ON" : "OFF"}
-        </span>
-        <Switch checked={enabled} onChange={onToggle} disabled={disabled} />
-      </div>
-      {disabled && (
-        <div className="absolute inset-0 bg-white/40 backdrop-blur-[0.5px] rounded-2xl flex items-center justify-center">
-          <span className="text-[10px] font-black text-blue-600 animate-pulse bg-blue-50/90 px-2.5 py-1 rounded-full border border-blue-100 shadow-sm">Mengirim...</span>
-        </div>
-      )}
+    <div className="flex justify-between items-center text-sm border-b border-slate-100 pb-2.5 last:border-0 last:pb-0">
+      <span className="font-semibold text-slate-500">{label}</span>
+      <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-bold ${
+        active 
+          ? "bg-red-50 text-red-600 border-red-200 border" 
+          : (value === "Offline" || value === "Terputus" || value === "Tidak Terhubung" || value === "Tidak Ada"
+            ? "bg-slate-100 text-slate-500 border-slate-200 border"
+            : "bg-emerald-50 text-emerald-600 border-emerald-200 border")
+      }`}>
+        {value}
+      </span>
     </div>
   );
 }
 
 function MonitoringPage(props: PageProps) {
-  const isTempDataWaiting = !props.deviceStatuses.esp32 || props.visibleTempEstimate === 0;
-  const isSending = props.status === "sending";
+  const isOnline = props.deviceStatuses.esp32;
+  const lastUpdate = isOnline ? (props.deviceStatuses.lastSeen || "Baru saja") : "-";
+
   return (
-    <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_420px]">
-      <div className="grid gap-5">
-        <Panel title="Monitoring Sensor Real-time" subtitle={`Sumber data: ${props.telemetrySource}`}>
-          <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
-            <ReadingRow 
-              label="Suhu Ruangan" 
-              value={isTempDataWaiting ? "Menunggu data..." : `${props.visibleTempEstimate.toFixed(1)}°C`} 
-              status={isTempDataWaiting ? "Offline" : props.tempState} 
-              percent={isTempDataWaiting ? 0 : props.tempPercent} 
-              tone="blue" 
+    <div className="grid gap-6 lg:grid-cols-[3fr_2fr]">
+      <div className="grid gap-6">
+        <Panel title="Detail Kondisi Ruangan" subtitle={`Sumber data: ${props.telemetrySource}`}>
+          <div className="grid gap-4 md:grid-cols-3">
+            <DetailedSensorCard
+              title="Suhu Ruangan"
+              value={isOnline && props.visibleTempEstimate > 0 ? `${props.visibleTempEstimate.toFixed(1)}°C` : "Menunggu data..."}
+              status={props.tempState}
+              lastSeen={lastUpdate}
+              online={isOnline}
+              accent="blue"
+              icon={
+                <svg className="h-6 w-6 text-blue-600" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M14 4v10.5a4.5 4.5 0 11-4 0V4a2 2 0 114 0z" />
+                </svg>
+              }
             />
-            <ReadingRow label="Gas / Asap" value={props.gasState === "Tidak Terhubung" || props.gasState === "Offline" ? "-" : `${props.gasPpm} PPM (${props.visibleGasEstimate} RAW)`} status={props.gasState} percent={props.gasState === "Tidak Terhubung" || props.gasState === "Offline" ? 0 : props.gasPercent} tone="emerald" />
-            <ReadingRow 
-              label="Gerakan (PIR)" 
-              value={!props.deviceStatuses.esp32 ? "Tidak Terhubung" : (props.pirDetected === null ? "Menunggu data PIR..." : (props.pirDetected ? "Gerakan Terdeteksi" : "Tidak Ada Gerakan"))}
-              status={!props.deviceStatuses.esp32 ? "Offline" : (props.pirDetected === null ? "Menunggu data PIR..." : (props.pirDetected ? "Gerakan Terdeteksi" : "Tidak Ada Gerakan"))}
-              percent={!props.deviceStatuses.esp32 ? 0 : (props.pirDetected ? 100 : 0)}
-              tone="orange"
+
+            <DetailedSensorCard
+              title="Sensor Gas / Asap"
+              value={isOnline ? `${props.gasPpm} PPM` : "Tidak Terhubung"}
+              status={props.gasState}
+              lastSeen={lastUpdate}
+              online={isOnline}
+              accent="emerald"
+              icon={
+                <svg className="h-6 w-6 text-emerald-600" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M17.657 18.585A8 8 0 1120 12c0 2.13-.86 4.03-2.243 5.402z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+              }
             />
-          </div>
-          <div className="mt-4 grid gap-4 md:grid-cols-2">
-            <WarningCard
-              title="Deteksi Peringatan Suhu"
-              value={isTempDataWaiting ? "Menunggu data..." : `${props.visibleTempEstimate.toFixed(1)}°C`}
-              threshold={`${TEMP_WARNING_C} C`}
-              active={props.tempWarning}
-              message={props.tempWarning ? `Peringatan suhu DS3231H terdeteksi, pembacaan ${props.visibleTempEstimate.toFixed(1)} C lebih dari batas ${TEMP_WARNING_C} C.` : `Aman, suhu DS3231H masih di batas aman ${TEMP_WARNING_C} C atau lebih rendah.`}
-            />
-            <WarningCard
-              title="Deteksi Peringatan Gas"
-              value={`${props.visibleGasEstimate} raw / ${props.gasPpm} PPM`}
-              threshold={`${GAS_WARNING_RAW} raw`}
-              active={props.gasWarning}
-              message={props.gasWarning ? `Peringatan gas terdeteksi, estimasi ${props.visibleGasEstimate} raw melewati ambang ${GAS_WARNING_RAW} raw.` : "Gas/asap masih di bawah ambang peringatan."}
+
+            <DetailedSensorCard
+              title="Gerakan PIR"
+              value={isOnline ? (props.pirDetected ? "Gerakan Terdeteksi" : "Tidak Ada Gerakan") : "Tidak Terhubung"}
+              status={isOnline ? (props.pirDetected ? "Ada Gerakan" : "Aman") : "Offline"}
+              lastSeen={lastUpdate}
+              online={isOnline}
+              accent="orange"
+              icon={
+                <svg className="h-6 w-6 text-orange-600" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 4a1 1 0 100-2 1 1 0 000 2zM8 9h8a1.5 1.5 0 011.5 1.5v6M9 22V15m6 7v-7M12 9v6" />
+                </svg>
+              }
             />
           </div>
         </Panel>
-        <Panel title="Kontrol Cepat Real-time" subtitle="Kontrol aktuator utama dari halaman monitoring.">
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-            <QuickControlRow
-              label="Stop Kontak 1 (Kipas)"
-              detail={props.relayState.socket1 ? "Kipas menyala" : "Kipas mati"}
-              enabled={props.relayState.socket1}
-              onToggle={() => props.toggleRelay("socket1")}
-              disabled={isSending}
-            />
-            <QuickControlRow
-              label="Stop Kontak 2 (Charger)"
-              detail={props.relayState.socket2 ? "Charger aktif" : "Charger mati"}
-              enabled={props.relayState.socket2}
-              onToggle={() => props.toggleRelay("socket2")}
-              disabled={isSending}
-            />
-            <QuickControlRow
-              label="Relay Bluetooth"
-              detail={props.relayState.ampli ? "Bluetooth aktif" : "Bluetooth mati"}
-              enabled={props.relayState.ampli}
-              onToggle={() => props.toggleRelay("ampli")}
-              disabled={isSending}
-            />
-            <QuickControlRow
-              label="Buzzer"
-              detail={props.buzzerEnabled ? "Buzzer ON" : "Buzzer OFF"}
-              enabled={props.buzzerEnabled}
-              onToggle={() => {
-                const next = !props.buzzerEnabled;
-                props.setBuzzerEnabled(next);
-                props.sendDeviceCommand("buzzer.set", { state: next }, `Buzzer ${next ? "aktif" : "mati"}`);
-              }}
-              disabled={isSending}
-            />
-            <div className="relative flex min-h-[110px] flex-col justify-between rounded-2xl border border-slate-200 bg-white p-4">
+
+        <Panel title="Grafik Sensor Real-time" subtitle="Monitoring grafik sensor suhu dan gas.">
+          <div className="grid gap-6">
+            <div className="grid gap-4 md:grid-cols-2">
               <div>
-                <p className="text-sm font-bold text-slate-900">Test DFPlayer</p>
-                <p className="mt-1 text-xs text-slate-500">Putar track 0001 untuk pengujian cepat.</p>
+                <p className="text-xs font-bold text-slate-400 mb-2 uppercase">Grafik Suhu</p>
+                {isOnline && props.visibleTempEstimate > 0 ? (
+                  <TemperatureChart value={props.visibleTempEstimate} series={props.tempHistory} />
+                ) : (
+                  <div className="flex items-center justify-center h-[270px] rounded-2xl border border-dashed border-slate-200 bg-slate-50 text-slate-400 text-xs font-bold">
+                    Menunggu data...
+                  </div>
+                )}
               </div>
-              <button
-                className="mt-3 h-9 rounded-xl bg-blue-600 px-3 text-xs font-bold text-white transition hover:bg-blue-700 disabled:opacity-50"
-                disabled={isSending}
-                onClick={() => props.sendDeviceCommand("voice.play", { track: 1 }, "Test DFPlayer")}
-                type="button"
-              >
-                {isSending ? "Mengirim..." : "Putar 0001.mp3"}
-              </button>
+              <div>
+                <p className="text-xs font-bold text-slate-400 mb-2 uppercase">Grafik Gas</p>
+                {isOnline ? (
+                  <GasChart value={props.visibleGasEstimate} series={props.gasHistory} />
+                ) : (
+                  <div className="flex items-center justify-center h-[270px] rounded-2xl border border-dashed border-slate-200 bg-slate-50 text-slate-400 text-xs font-bold">
+                    Tidak terhubung.
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </Panel>
-        <Panel title="Grafik Suhu Ruangan" subtitle="Visual monitoring khusus sensor.">
-          <TemperatureChart value={props.visibleTempEstimate} series={props.tempHistory} />
-        </Panel>
       </div>
-      <Panel title="Kontrol Sensor" subtitle="Kontrol dipindah khusus ke halaman monitoring.">
+
+      <Panel title="Kontrol Sensor" subtitle="Atur konfigurasi sensitivitas dan status sensor ESP32-S3.">
+        {!isOnline && (
+          <div className="mb-4 rounded-2xl bg-red-50 border border-red-200 p-4 text-xs font-bold text-red-600 flex items-center gap-2">
+            <span className="h-2 w-2 rounded-full bg-red-500 animate-pulse shrink-0" />
+            <span>ESP32-S3 sedang offline. Kontrol dinonaktifkan.</span>
+          </div>
+        )}
         <div className="grid gap-3">
-          <ControlRow label="Sensor Gas" detail="Aktifkan atau nonaktifkan sensor gas." enabled={props.gasEnabled} onToggle={props.toggleGas} />
-          <ControlRow label="Sensor Suhu" detail="Kontrol pembacaan suhu dari ESP32." enabled={props.temperatureEnabled} onToggle={props.toggleTemperature} />
-          <ControlRow label="Sensor PIR (Gerakan)" detail="Aktifkan atau nonaktifkan sensor gerak PIR." enabled={props.pirEnabled} onToggle={props.togglePir} />
-          <ControlRow label="Sleep Mode" detail="Matikan LCD & relay jika tidak ada gerakan 1 jam." enabled={props.sleepModeEnabled} onToggle={props.toggleSleepMode} />
+          <ControlRow 
+            label="Sensor Gas" 
+            detail="Aktifkan atau nonaktifkan sensor gas MQ-2." 
+            enabled={props.gasEnabled} 
+            onToggle={props.toggleGas} 
+            disabled={!isOnline}
+          />
+          <ControlRow 
+            label="Sensor Suhu" 
+            detail="Kontrol pembacaan suhu dari sensor DS3231." 
+            enabled={props.temperatureEnabled} 
+            onToggle={props.toggleTemperature} 
+            disabled={!isOnline}
+          />
+          <ControlRow 
+            label="Sensor PIR (Gerakan)" 
+            detail="Aktifkan atau nonaktifkan deteksi gerakan." 
+            enabled={props.pirEnabled} 
+            onToggle={props.togglePir} 
+            disabled={!isOnline}
+          />
+          <ControlRow 
+            label="Sleep Mode" 
+            detail="Matikan LCD & relay jika tidak ada gerakan 1 jam." 
+            enabled={props.sleepModeEnabled} 
+            onToggle={props.toggleSleepMode} 
+            disabled={!isOnline}
+          />
           <ControlRow
             label="Alarm Buzzer"
-            detail="Peringatan suara lokal saat bahaya."
+            detail="Bunyi peringatan lokal jika bahaya terdeteksi."
             enabled={props.buzzerEnabled}
+            disabled={!isOnline}
             onToggle={() => {
               const next = !props.buzzerEnabled;
               props.setBuzzerEnabled(next);
-              props.publish("smartbox/buzzer/set", { enabled: next, pin: boardPins.buzzer }, `Buzzer ${next ? "aktif" : "mati"}`);
+              props.sendDeviceCommand("buzzer.set", { state: next }, `Buzzer ${next ? "aktif" : "mati"}`);
             }}
           />
         </div>
       </Panel>
+    </div>
+  );
+}
+
+function DetailedSensorCard({
+  title,
+  value,
+  status,
+  lastSeen,
+  online,
+  accent,
+  icon,
+}: {
+  title: string;
+  value: string;
+  status: string;
+  lastSeen: string;
+  online: boolean;
+  accent: "blue" | "emerald" | "orange";
+  icon: React.ReactNode;
+}) {
+  const accentBorder = {
+    blue: "border-blue-100 hover:border-blue-200",
+    emerald: "border-emerald-100 hover:border-emerald-200",
+    orange: "border-orange-100 hover:border-orange-200",
+  };
+
+  const accentBg = {
+    blue: "bg-blue-50/75",
+    emerald: "bg-emerald-50/75",
+    orange: "bg-orange-50/75",
+  };
+
+  return (
+    <div className={`rounded-3xl border bg-white p-5 shadow-sm transition hover:shadow-md ${accentBorder[accent] || "border-slate-200"} flex flex-col justify-between min-h-[160px]`}>
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">{title}</span>
+        <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${accentBg[accent]}`}>
+          {icon}
+        </div>
+      </div>
+      <div className="mt-4">
+        <h3 className="text-2xl font-black text-slate-900 break-all">{value}</h3>
+        <div className="mt-3 flex justify-between items-center flex-wrap gap-2">
+          <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[10px] font-bold border ${
+            online ? "bg-emerald-50 text-emerald-600 border-emerald-200" : "bg-red-50 text-red-600 border-red-200"
+          }`}>
+            {online ? "ONLINE" : "OFFLINE"}
+          </span>
+          <span className="text-[10px] text-slate-400 font-semibold font-mono">{lastSeen !== "-" ? `Update: ${lastSeen}` : "Belum terhubung"}</span>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1612,9 +1835,66 @@ function DevicesPage(props: PageProps) {
   const [testTrack, setTestTrack] = useState(1);
   const isSending = props.status === "sending";
 
+  const [editingSchedule, setEditingSchedule] = useState<{ id?: string; name: string; relayNumber: number; startTime: string; endTime: string; days: string; enabled: boolean } | null>(null);
+  const [schName, setSchName] = useState("");
+  const [schRelay, setSchRelay] = useState(1);
+  const [schStart, setSchStart] = useState("08:00");
+  const [schEnd, setSchEnd] = useState("18:00");
+  const [schDays, setSchDays] = useState<string[]>(["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]);
+  const [schEnabled, setSchEnabled] = useState(true);
+
+  useEffect(() => {
+    if (editingSchedule) {
+      setSchName(editingSchedule.name);
+      setSchRelay(editingSchedule.relayNumber);
+      setSchStart(editingSchedule.startTime);
+      setSchEnd(editingSchedule.endTime);
+      try {
+        setSchDays(JSON.parse(editingSchedule.days));
+      } catch {
+        setSchDays(["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]);
+      }
+      setSchEnabled(editingSchedule.enabled);
+    } else {
+      setSchName("");
+      setSchRelay(1);
+      setSchStart("08:00");
+      setSchEnd("18:00");
+      setSchDays(["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]);
+      setSchEnabled(true);
+    }
+  }, [editingSchedule]);
+
+  const handleSchSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!schName.trim()) {
+      props.notify("Nama jadwal wajib diisi", "error");
+      return;
+    }
+    await props.saveRelaySchedule({
+      id: editingSchedule?.id,
+      name: schName.trim(),
+      relayNumber: schRelay,
+      startTime: schStart,
+      endTime: schEnd,
+      days: JSON.stringify(schDays),
+      enabled: schEnabled,
+    });
+    setEditingSchedule(null);
+  };
+
+  const daysOfWeek = [
+    { id: "monday", label: "Sen" },
+    { id: "tuesday", label: "Sel" },
+    { id: "wednesday", label: "Rab" },
+    { id: "thursday", label: "Kam" },
+    { id: "friday", label: "Jum" },
+    { id: "saturday", label: "Sab" },
+    { id: "sunday", label: "Min" },
+  ];
+
   return (
     <div className="grid gap-6">
-      {/* Description Header Banner */}
       <div className="rounded-3xl bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 p-6 text-white shadow-xl shadow-blue-100/40">
         <h2 className="text-2xl font-black">Devices Control</h2>
         <p className="mt-2 text-sm text-blue-100 font-medium leading-relaxed max-w-2xl">
@@ -1622,8 +1902,7 @@ function DevicesPage(props: PageProps) {
         </p>
       </div>
 
-      <div className="grid gap-6 grid-cols-1 md:grid-cols-2 lg:grid-cols-3">
-        {/* Device Status Card */}
+      <div className="grid gap-6 grid-cols-1 md:grid-cols-3">
         <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm shadow-slate-100/50 flex flex-col justify-between h-full min-h-[220px]">
           <div>
             <div className="flex items-center justify-between">
@@ -1639,14 +1918,14 @@ function DevicesPage(props: PageProps) {
             </div>
             <div className="mt-5 grid gap-2">
               <div className="flex justify-between items-center text-sm border-b border-slate-100 pb-2">
-                <span className="font-semibold text-slate-500">IP ESP32</span>
+                <span className="font-semibold text-slate-500 font-mono">IP ESP32</span>
                 <span className="font-mono font-bold text-slate-800">{props.deviceStatuses.ip || "-"}</span>
               </div>
-              <div className="flex justify-between items-center text-sm border-b border-slate-100 pb-2">
-                <span className="font-semibold text-slate-500">Kekuatan Sinyal (RSSI)</span>
+              <div className="flex justify-between items-center text-sm border-b border-slate-100 pb-2 font-mono">
+                <span className="font-semibold text-slate-500">RSSI</span>
                 <span className="font-bold text-slate-800">{props.deviceStatuses.rssi ? `${props.deviceStatuses.rssi} dBm` : "-"}</span>
               </div>
-              <div className="flex justify-between items-center text-sm">
+              <div className="flex justify-between items-center text-sm font-mono">
                 <span className="font-semibold text-slate-500">Last Seen</span>
                 <span className="font-bold text-slate-800">{props.deviceStatuses.lastSeen || "-"}</span>
               </div>
@@ -1659,11 +1938,9 @@ function DevicesPage(props: PageProps) {
           </div>
         </div>
 
-        {/* Controls Relay Card */}
         <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm shadow-slate-100/50">
           <h3 className="text-base font-black text-slate-900 border-b border-slate-100 pb-3 mb-4">Kontrol Relay</h3>
           <div className="grid gap-4">
-            {/* Stop Kontak 1 */}
             <div className="flex flex-col gap-2 rounded-2xl border border-slate-100 bg-slate-50/50 p-3">
               <div className="flex items-center justify-between">
                 <div>
@@ -1677,7 +1954,6 @@ function DevicesPage(props: PageProps) {
               )}
             </div>
             
-            {/* Stop Kontak 2 */}
             <div className="flex flex-col gap-2 rounded-2xl border border-slate-100 bg-slate-50/50 p-3">
               <div className="flex items-center justify-between">
                 <div>
@@ -1691,12 +1967,11 @@ function DevicesPage(props: PageProps) {
               )}
             </div>
 
-            {/* Relay Bluetooth */}
             <div className="flex flex-col gap-2 rounded-2xl border border-slate-100 bg-slate-50/50 p-3">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm font-bold text-slate-900">Relay Bluetooth (Smartbox Assistant)</p>
-                  <p className="text-xs text-slate-500">
+                  <p className="text-sm font-bold text-slate-900">Relay Bluetooth</p>
+                  <p className="text-xs text-slate-500 font-mono">
                     {props.relayState.ampli ? "Bluetooth Aktif" : "Bluetooth Mati"}
                   </p>
                 </div>
@@ -1706,7 +1981,6 @@ function DevicesPage(props: PageProps) {
           </div>
         </div>
 
-        {/* Buzzer and DFPlayer Card */}
         <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm shadow-slate-100/50 flex flex-col justify-between">
           <div>
             <h3 className="text-base font-black text-slate-900 border-b border-slate-100 pb-3 mb-4">Buzzer & Test Suara</h3>
@@ -1721,8 +1995,6 @@ function DevicesPage(props: PageProps) {
                 props.sendDeviceCommand("buzzer.set", { state: next }, `Buzzer ${next ? "aktif" : "mati"}`);
               }} />
             </div>
-          </div>
-          <div>
             <div className="rounded-2xl border border-slate-100 bg-slate-50/50 p-3">
               <p className="text-sm font-bold text-slate-900 mb-2">Test DFPlayer Suara</p>
               <div className="flex gap-2">
@@ -1741,7 +2013,7 @@ function DevicesPage(props: PageProps) {
                 <button
                   onClick={async () => {
                     setIsPlayingTest(true);
-                    await props.sendDeviceCommand("voice.play", { track: testTrack }, "Play Suara", "Perintah suara dikirim", "Gagal mengirim perintah");
+                    await props.sendDeviceCommand("voice.play", { track: testTrack, reason: "manual_test" }, "Play Suara", "Perintah suara dikirim", "Gagal mengirim perintah");
                     setIsPlayingTest(false);
                   }}
                   disabled={isPlayingTest || isSending}
@@ -1754,6 +2026,183 @@ function DevicesPage(props: PageProps) {
             </div>
           </div>
         </div>
+      </div>
+
+      <div className="grid gap-6 lg:grid-cols-[3fr_2fr]">
+        <Panel title="Jadwal Otomatis Stop Kontak" subtitle="Daftar jadwal aktif untuk menyalakan/mematikan Stop Kontak 1 dan 2 secara otomatis.">
+          <div className="grid gap-3">
+            {props.relaySchedules.length === 0 ? (
+              <div className="text-center py-8 border border-dashed border-slate-200 rounded-3xl bg-slate-50">
+                <p className="text-xs font-bold text-slate-400">Belum ada jadwal otomatis dikonfigurasi.</p>
+              </div>
+            ) : (
+              props.relaySchedules.map((sch) => {
+                let activeDays: string[] = [];
+                try {
+                  activeDays = JSON.parse(sch.days);
+                } catch {
+                  activeDays = [];
+                }
+                return (
+                  <div key={sch.id} className="flex flex-col sm:flex-row justify-between sm:items-center gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <div>
+                      <p className="text-sm font-bold text-slate-900">{sch.name}</p>
+                      <p className="text-xs text-slate-500 font-semibold mt-1">
+                        Stop Kontak {sch.relayNumber} • {sch.startTime} - {sch.endTime}
+                      </p>
+                      <div className="flex gap-1 mt-2">
+                        {daysOfWeek.map((day) => {
+                          const active = activeDays.includes(day.id);
+                          return (
+                            <span key={day.id} className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${
+                              active ? "bg-blue-50 text-blue-600 border border-blue-100" : "bg-slate-50 text-slate-300 border border-slate-100"
+                            } border`}>
+                              {day.label}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    
+                    <div className="flex items-center justify-between sm:justify-end gap-3 border-t sm:border-0 pt-3 sm:pt-0">
+                      <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[10px] font-bold border ${
+                        sch.enabled ? "bg-emerald-50 text-emerald-600 border-emerald-200" : "bg-slate-100 text-slate-400 border-slate-200"
+                      }`}>
+                        {sch.enabled ? "Aktif" : "Nonaktif"}
+                      </span>
+                      <div className="flex gap-1">
+                        <button
+                          onClick={() => {
+                            props.saveRelaySchedule({ ...sch, enabled: !sch.enabled });
+                          }}
+                          className="h-8 w-8 rounded-lg bg-slate-50 border border-slate-200 flex items-center justify-center hover:bg-slate-100 transition"
+                          title={sch.enabled ? "Nonaktifkan" : "Aktifkan"}
+                          type="button"
+                        >
+                          ⚡
+                        </button>
+                        <button
+                          onClick={() => setEditingSchedule(sch)}
+                          className="h-8 w-8 rounded-lg bg-slate-50 border border-slate-200 flex items-center justify-center hover:bg-slate-100 transition"
+                          title="Edit"
+                          type="button"
+                        >
+                          ✏️
+                        </button>
+                        <button
+                          onClick={() => props.deleteRelaySchedule(sch.id)}
+                          className="h-8 w-8 rounded-lg bg-red-50 text-red-600 border-red-200 flex items-center justify-center hover:bg-red-100 transition"
+                          title="Hapus"
+                          type="button"
+                        >
+                          🗑️
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </Panel>
+        
+        <Panel title={editingSchedule ? "Edit Jadwal Otomatis" : "Tambah Jadwal Otomatis"} subtitle="Atur jam operasional Stop Kontak 1/2.">
+          <form onSubmit={handleSchSubmit} className="grid gap-4">
+            <label className="grid gap-1.5">
+              <span className="text-xs font-bold text-slate-500">Nama Jadwal</span>
+              <input
+                type="text"
+                value={schName}
+                onChange={(e) => setSchName(e.target.value)}
+                placeholder="Misal: Charger Laptop Malam"
+                className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-500 font-medium"
+              />
+            </label>
+            
+            <div className="grid grid-cols-2 gap-3">
+              <label className="grid gap-1.5">
+                <span className="text-xs font-bold text-slate-500">Stop Kontak</span>
+                <select
+                  value={schRelay}
+                  onChange={(e) => setSchRelay(Number(e.target.value))}
+                  className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold outline-none focus:border-blue-500"
+                >
+                  <option value={1}>Stop Kontak 1 (Kipas)</option>
+                  <option value={2}>Stop Kontak 2 (Charger)</option>
+                </select>
+              </label>
+              
+              <div className="grid grid-cols-2 gap-2">
+                <label className="grid gap-1.5">
+                  <span className="text-xs font-bold text-slate-500">Mulai</span>
+                  <input
+                    type="time"
+                    value={schStart}
+                    onChange={(e) => setSchStart(e.target.value)}
+                    className="h-11 rounded-xl border border-slate-200 bg-white px-2 text-sm outline-none focus:border-blue-500 font-bold text-center"
+                  />
+                </label>
+                <label className="grid gap-1.5">
+                  <span className="text-xs font-bold text-slate-500">Selesai</span>
+                  <input
+                    type="time"
+                    value={schEnd}
+                    onChange={(e) => setSchEnd(e.target.value)}
+                    className="h-11 rounded-xl border border-slate-200 bg-white px-2 text-sm outline-none focus:border-blue-500 font-bold text-center"
+                  />
+                </label>
+              </div>
+            </div>
+            
+            <div className="grid gap-2">
+              <span className="text-xs font-bold text-slate-500">Hari Operasional</span>
+              <div className="flex flex-wrap gap-1">
+                {daysOfWeek.map((day) => {
+                  const active = schDays.includes(day.id);
+                  return (
+                    <button
+                      type="button"
+                      key={day.id}
+                      onClick={() => setSchDays((current) =>
+                        current.includes(day.id) ? current.filter((item) => item !== day.id) : [...current, day.id]
+                      )}
+                      className={`h-8 rounded-lg px-2 text-xs font-bold transition ${
+                        active ? "bg-blue-600 text-white" : "bg-white text-slate-600 ring-1 ring-slate-200"
+                      }`}
+                    >
+                      {day.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            
+            <div className="flex justify-between items-center bg-slate-50 border border-slate-200 rounded-xl p-3">
+              <div>
+                <p className="text-xs font-bold text-slate-800">Aktifkan Jadwal</p>
+              </div>
+              <Switch checked={schEnabled} onChange={() => setSchEnabled(!schEnabled)} />
+            </div>
+            
+            <div className="flex gap-2 justify-end mt-2">
+              {editingSchedule && (
+                <button
+                  type="button"
+                  onClick={() => setEditingSchedule(null)}
+                  className="h-10 px-4 rounded-xl bg-slate-100 text-slate-600 text-xs font-bold hover:bg-slate-200 transition"
+                >
+                  Batal
+                </button>
+              )}
+              <button
+                type="submit"
+                className="h-10 px-5 rounded-xl bg-blue-600 text-white text-xs font-bold hover:bg-blue-700 shadow-md shadow-blue-100 transition"
+              >
+                {editingSchedule ? "Simpan Perubahan" : "Simpan Jadwal"}
+              </button>
+            </div>
+          </form>
+        </Panel>
       </div>
     </div>
   );
@@ -1813,15 +2262,77 @@ function AiPage(props: PageProps) {
   );
 }
 
+function LiveClockCard({ online, rtcReady }: { online: boolean; rtcReady: boolean }) {
+  const [currentTime, setCurrentTime] = useState<Date | null>(null);
+
+  useEffect(() => {
+    setCurrentTime(new Date());
+    const interval = setInterval(() => {
+      setCurrentTime(new Date());
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  if (!currentTime) return null;
+
+  const timeFormatter = new Intl.DateTimeFormat("id-ID", {
+    timeZone: "Asia/Jakarta",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  });
+  const dateFormatter = new Intl.DateTimeFormat("id-ID", {
+    timeZone: "Asia/Jakarta",
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
+
+  const timeString = timeFormatter.format(currentTime);
+  const dateString = dateFormatter.format(currentTime);
+  const isSync = online && rtcReady;
+
+  return (
+    <div className="rounded-3xl bg-slate-950 border-4 border-slate-800 p-6 text-emerald-400 font-mono shadow-2xl relative overflow-hidden flex flex-col items-center justify-center min-h-[180px]">
+      <div className="absolute inset-0 opacity-[0.03] pointer-events-none bg-[radial-gradient(#00ff00_1px,transparent_1px)] [background-size:16px_16px]" />
+      
+      <div className="z-10 flex flex-col items-center">
+        <div className="mb-2 flex items-center gap-1.5 self-center text-xs border border-emerald-500/30 bg-emerald-950/40 px-2.5 py-0.5 rounded-full">
+          <span className={`h-2 w-2 rounded-full ${isSync ? "bg-emerald-500 animate-pulse" : "bg-orange-500 animate-pulse"}`} />
+          <span className="text-[10px] uppercase font-bold tracking-wider">
+            {isSync ? "RTC / LCD I2C Sync" : "Menggunakan waktu sistem web"}
+          </span>
+        </div>
+
+        <h2 className="text-4xl sm:text-6xl font-black tracking-widest text-emerald-300 drop-shadow-[0_0_8px_rgba(52,211,153,0.3)]">
+          {timeString}
+        </h2>
+
+        <p className="mt-3 text-sm sm:text-base font-bold text-emerald-400/90 text-center">
+          {dateString} • Asia/Jakarta (WIB)
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function AlarmsPage(props: PageProps) {
-  const [sendingAlarmId, setSendingAlarmId] = useState<string | null>(null);
+  const [editingSchedule, setEditingSchedule] = useState<{ id?: string; name: string; time: string; track: number; active: boolean } | null>(null);
+  
+  const [formName, setFormName] = useState("");
+  const [formTime, setFormTime] = useState("08:00");
+  const [formTrack, setFormTrack] = useState(4);
+  const [formActive, setFormActive] = useState(true);
+
   const [savingPirGreeting, setSavingPirGreeting] = useState(false);
   const [localPirGreetingTrack, setLocalPirGreetingTrack] = useState(props.pirGreetingTrack || 10);
   const [localPirGreetingStart, setLocalPirGreetingStart] = useState(props.pirGreetingStart || "07:00");
   const [localPirGreetingEnd, setLocalPirGreetingEnd] = useState(props.pirGreetingEnd || "22:00");
   const [localPirGreetingCooldown, setLocalPirGreetingCooldown] = useState(props.pirGreetingCooldown || 10);
   const [localPirGreetingPlayMode, setLocalPirGreetingPlayMode] = useState(props.pirGreetingPlayMode || "cooldown");
-  const [localPirGreetingDays, setLocalPirGreetingDays] = useState<string[]>(props.pirGreetingDays);
+  const [localPirGreetingDays, setLocalPirGreetingDays] = useState<string[]>(props.pirGreetingDays || []);
 
   const daysOfWeek = [
     { id: "monday", label: "Sen" },
@@ -1834,15 +2345,12 @@ function AlarmsPage(props: PageProps) {
   ];
 
   useEffect(() => {
-    const timer = setTimeout(() => {
-      setLocalPirGreetingTrack(props.pirGreetingTrack || 10);
-      setLocalPirGreetingStart(props.pirGreetingStart || "07:00");
-      setLocalPirGreetingEnd(props.pirGreetingEnd || "22:00");
-      setLocalPirGreetingCooldown(props.pirGreetingCooldown || 10);
-      setLocalPirGreetingPlayMode(props.pirGreetingPlayMode || "cooldown");
-      setLocalPirGreetingDays(props.pirGreetingDays);
-    }, 0);
-    return () => clearTimeout(timer);
+    setLocalPirGreetingTrack(props.pirGreetingTrack || 10);
+    setLocalPirGreetingStart(props.pirGreetingStart || "07:00");
+    setLocalPirGreetingEnd(props.pirGreetingEnd || "22:00");
+    setLocalPirGreetingCooldown(props.pirGreetingCooldown || 10);
+    setLocalPirGreetingPlayMode(props.pirGreetingPlayMode || "cooldown");
+    setLocalPirGreetingDays(props.pirGreetingDays || []);
   }, [
     props.pirGreetingCooldown,
     props.pirGreetingDays,
@@ -1852,74 +2360,35 @@ function AlarmsPage(props: PageProps) {
     props.pirGreetingTrack,
   ]);
 
-  async function sendAlarm(alarm: Alarm) {
-    setSendingAlarmId(alarm.id);
-    
-    try {
-      const response = await fetch("/api/alarms", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          id: alarm.id,
-          label: alarm.label,
-          time: alarm.time,
-          greeting: alarm.greeting,
-          dfTrack: alarm.track,
-          enabled: alarm.enabled,
-        }),
-      });
-      if (!response.ok) throw new Error("Alarm ditolak API");
-
-      await props.sendDeviceCommand(
-        "alarm.set",
-        {
-          id: alarm.id,
-          time: alarm.time,
-          track: alarm.track,
-          enabled: alarm.enabled,
-        },
-        `Alarm ${alarm.label} ${alarm.time}`,
-        "Alarm tersimpan dan tersinkron ke ESP32",
-        "Alarm tersimpan, tetapi sinkronisasi MQTT gagal"
-      );
-    } catch (err) {
-      console.error("Gagal menyimpan alarm ke database:", err);
-      props.notify("Gagal menyimpan alarm jadwal.", "error");
-    } finally {
-      setSendingAlarmId(null);
+  useEffect(() => {
+    if (editingSchedule) {
+      setFormName(editingSchedule.name);
+      setFormTime(editingSchedule.time);
+      setFormTrack(editingSchedule.track);
+      setFormActive(editingSchedule.active);
+    } else {
+      setFormName("");
+      setFormTime("08:00");
+      setFormTrack(4);
+      setFormActive(true);
     }
-  }
+  }, [editingSchedule]);
 
-  async function toggleAlarmEnabled(alarm: Alarm) {
-    const next = !alarm.enabled;
-    props.updateAlarm(alarm.id, "enabled", next);
-    props.notify(`Alarm ${alarm.label} ${next ? "aktif" : "mati"}`, "info");
-
-    try {
-      const response = await fetch("/api/alarms", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          id: alarm.id,
-          label: alarm.label,
-          time: alarm.time,
-          greeting: alarm.greeting,
-          dfTrack: alarm.track,
-          enabled: next,
-        }),
-      });
-      if (!response.ok) throw new Error("Alarm ditolak API");
-      await props.sendDeviceCommand(
-        "alarm.set",
-        { id: alarm.id, time: alarm.time, track: alarm.track, enabled: next },
-        `Alarm ${alarm.label} ${next ? "aktif" : "mati"}`
-      );
-    } catch (err) {
-      console.error("Gagal memperbarui status alarm di database:", err);
-      props.updateAlarm(alarm.id, "enabled", !next);
-      props.notify("Gagal memperbarui status alarm.", "error");
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!formName.trim()) {
+      props.notify("Nama pengingat wajib diisi", "error");
+      return;
     }
-  }
+    await props.onSaveSchedule({
+      id: editingSchedule?.id,
+      name: formName.trim(),
+      time: formTime,
+      track: formTrack,
+      active: formActive,
+    });
+    setEditingSchedule(null);
+  };
 
   async function savePirGreeting(enabled = props.pirGreetingEnabled) {
     setSavingPirGreeting(true);
@@ -1936,152 +2405,267 @@ function AlarmsPage(props: PageProps) {
   }
 
   return (
-    <div className="grid gap-5">
-      <Panel title="Alarm Jadwal DFPlayer" subtitle="Alarm suara berjalan dengan timezone Asia/Jakarta dan tidak memuat jadwal stop kontak.">
-        <div className="grid gap-3">
-          {props.alarms.map((alarm) => (
-            <div key={alarm.id} className="grid gap-4 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm shadow-slate-100 xl:grid-cols-[auto_110px_minmax(180px,1fr)_260px_auto_auto] xl:items-center">
-              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-blue-50 text-blue-600">
-                <svg className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+    <div className="grid gap-6">
+      <LiveClockCard online={props.deviceStatuses.esp32} rtcReady={props.deviceStatuses.rtc} />
+
+      <div className="grid gap-6 lg:grid-cols-[3fr_2fr]">
+        <Panel title="Jadwal Alarm DFPlayer" subtitle="Jadwal alarm otomatis untuk suara/sapaan otomatis melalui DFPlayer.">
+          <div className="grid gap-3">
+            {props.alarmSchedules.length === 0 ? (
+              <div className="text-center py-12 border border-dashed border-slate-200 rounded-3xl bg-slate-50">
+                <svg className="mx-auto h-12 w-12 text-slate-400 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
+                <p className="text-sm font-bold text-slate-700">Belum ada alarm jadwal</p>
+                <p className="text-xs text-slate-500 mt-1">Buat jadwal alarm baru di panel sebelah kanan.</p>
               </div>
-              <input className="h-12 rounded-2xl border border-slate-200 px-4 text-sm font-bold outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50" type="time" value={alarm.time} onChange={(event) => props.updateAlarm(alarm.id, "time", event.target.value)} />
-              <input className="h-12 min-w-0 rounded-2xl border border-slate-200 px-4 text-sm font-medium outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50" placeholder="Pesan pengingat..." value={alarm.greeting} onChange={(event) => props.updateAlarm(alarm.id, "greeting", event.target.value)} />
-              <select className="h-12 rounded-2xl border border-slate-200 bg-white px-4 text-sm font-semibold outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50" value={alarm.track} onChange={(event) => props.updateAlarm(alarm.id, "track", Number(event.target.value))}>
-                {audioTracks.map((track) => (
-                  <option key={track.id} value={track.id}>
-                    {track.id.toString().padStart(3, "0")} - {track.name.replace(/_/g, " ").replace(".mp3", "")}
-                  </option>
-                ))}
-              </select>
-              <div className="flex justify-end xl:justify-center">
-                <Switch checked={alarm.enabled} onChange={() => toggleAlarmEnabled(alarm)} />
-              </div>
-              <button
-                className="h-12 rounded-2xl bg-blue-600 px-6 text-sm font-black text-white transition hover:bg-blue-700 shadow-md shadow-blue-100 disabled:bg-slate-400"
-                disabled={sendingAlarmId === alarm.id}
-                onClick={() => sendAlarm(alarm)}
-                type="button"
-              >
-                {sendingAlarmId === alarm.id ? "Mengirim" : "Kirim"}
-              </button>
-            </div>
-          ))}
-        </div>
-      </Panel>
-
-
-      <Panel title="Greeting Wakeup PIR" subtitle="PIR hanya mendeteksi gerakan; track 0010-0012 dipilih oleh pengguna, bukan klasifikasi gesture otomatis.">
-        <div className="grid gap-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            <div className="grid gap-1">
-              <span className="text-xs font-bold text-slate-500">Aktifkan Greeting PIR</span>
-              <div className="flex h-11 items-center">
-                <Switch checked={props.pirGreetingEnabled} disabled={savingPirGreeting} onChange={() => savePirGreeting(!props.pirGreetingEnabled)} />
-              </div>
-            </div>
-
-            <div className="grid gap-1">
-              <span className="text-xs font-bold text-slate-500">Track DFPlayer</span>
-              <select 
-                className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold outline-none focus:border-blue-400"
-                value={localPirGreetingTrack} 
-                onChange={(event) => setLocalPirGreetingTrack(Number(event.target.value))}
-              >
-                {audioTracks.filter((track) => track.id >= 10 && track.id <= 12).map((track) => (
-                  <option key={track.id} value={track.id}>
-                    {track.name} - {track.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="grid gap-1">
-              <span className="text-xs font-bold text-slate-500">Jam Mulai Sapa</span>
-              <input 
-                className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400"
-                type="time" 
-                value={localPirGreetingStart} 
-                onChange={(event) => setLocalPirGreetingStart(event.target.value)} 
-              />
-            </div>
-
-            <div className="grid gap-1">
-              <span className="text-xs font-bold text-slate-500">Jam Selesai Sapa</span>
-              <input 
-                className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400"
-                type="time" 
-                value={localPirGreetingEnd} 
-                onChange={(event) => setLocalPirGreetingEnd(event.target.value)} 
-              />
-            </div>
-
-            <div className="grid gap-1">
-              <span className="text-xs font-bold text-slate-500">Cooldown (detik)</span>
-              <input
-                className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400"
-                min={10}
-                onChange={(event) => setLocalPirGreetingCooldown(Math.max(10, Number(event.target.value)))}
-                type="number"
-                value={localPirGreetingCooldown}
-              />
-            </div>
-
-            <div className="grid gap-1">
-              <span className="text-xs font-bold text-slate-500">Mode Putar</span>
-              <select
-                className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold outline-none focus:border-blue-400"
-                onChange={(event) => setLocalPirGreetingPlayMode(event.target.value)}
-                value={localPirGreetingPlayMode}
-              >
-                <option value="cooldown">Cooldown</option>
-                <option value="once_schedule">Sekali per jadwal</option>
-                <option value="once_motion">Sekali per gerakan</option>
-              </select>
-            </div>
-          </div>
-
-          <div className="grid gap-2 border-t border-slate-200 pt-4">
-            <span className="text-xs font-bold text-slate-500">Hari Aktif</span>
-            <div className="flex flex-wrap gap-2">
-              {daysOfWeek.map((day) => {
-                const active = localPirGreetingDays.includes(day.id);
+            ) : (
+              props.alarmSchedules.map((sch) => {
+                const trackInfo = audioTracks.find(t => t.id === sch.track);
                 return (
-                  <button
-                    className={`h-9 rounded-xl px-3 text-xs font-bold transition ${
-                      active ? "bg-blue-600 text-white" : "bg-white text-slate-600 ring-1 ring-slate-200"
-                    }`}
-                    key={day.id}
-                    onClick={() => setLocalPirGreetingDays((current) =>
-                      current.includes(day.id) ? current.filter((item) => item !== day.id) : [...current, day.id]
-                    )}
-                    type="button"
-                  >
-                    {day.label}
-                  </button>
+                  <div key={sch.id} className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm hover:shadow-md transition">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-blue-50 text-blue-600 font-mono text-lg font-bold">
+                        {sch.time}
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-sm font-bold text-slate-900 truncate">{sch.name}</p>
+                        <p className="text-xs text-slate-500 font-semibold truncate mt-0.5">
+                          Track: {String(sch.track).padStart(4, "0")} • {trackInfo?.label || "Unknown"}
+                        </p>
+                      </div>
+                    </div>
+                    
+                    <div className="flex items-center justify-between sm:justify-end gap-3 border-t sm:border-0 pt-3 sm:pt-0">
+                      <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[10px] font-bold border ${
+                        sch.active ? "bg-emerald-50 text-emerald-600 border-emerald-200" : "bg-slate-100 text-slate-400 border-slate-200"
+                      }`}>
+                        {sch.active ? "Aktif" : "Nonaktif"}
+                      </span>
+                      
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => props.onToggleScheduleActive(sch.id, sch.active)}
+                          className={`h-8 w-8 rounded-lg flex items-center justify-center transition border ${
+                            sch.active ? "bg-slate-50 text-slate-600 hover:bg-slate-100 border-slate-200" : "bg-blue-50 text-blue-600 hover:bg-blue-100 border-blue-200"
+                          }`}
+                          title={sch.active ? "Nonaktifkan" : "Aktifkan"}
+                          type="button"
+                        >
+                          ⚡
+                        </button>
+                        <button
+                          onClick={() => setEditingSchedule(sch)}
+                          className="h-8 w-8 rounded-lg bg-slate-50 text-slate-600 border border-slate-200 flex items-center justify-center hover:bg-slate-100 transition"
+                          title="Edit"
+                          type="button"
+                        >
+                          ✏️
+                        </button>
+                        <button
+                          onClick={() => props.onTestPlayVoice(sch.track)}
+                          className="h-8 w-8 rounded-lg bg-emerald-50 text-emerald-600 border border-emerald-200 flex items-center justify-center hover:bg-emerald-100 transition"
+                          title="Test Play"
+                          type="button"
+                        >
+                          ▶️
+                        </button>
+                        <button
+                          onClick={() => props.onDeleteSchedule(sch.id)}
+                          className="h-8 w-8 rounded-lg bg-red-50 text-red-600 border border-red-200 flex items-center justify-center hover:bg-red-100 transition"
+                          title="Hapus"
+                          type="button"
+                        >
+                          🗑️
+                        </button>
+                      </div>
+                    </div>
+                  </div>
                 );
-              })}
+              })
+            )}
+          </div>
+        </Panel>
+
+        <div className="grid gap-6">
+          <Panel 
+            title={editingSchedule ? "Edit Alarm Jadwal" : "Tambah Alarm Jadwal"} 
+            subtitle={editingSchedule ? "Perbarui detail alarm yang sudah ada." : "Buat pengingat suara otomatis baru."}
+          >
+            <form onSubmit={handleSubmit} className="grid gap-4">
+              <label className="grid gap-1.5">
+                <span className="text-xs font-bold text-slate-500 font-semibold">Nama Pengingat</span>
+                <input
+                  type="text"
+                  value={formName}
+                  onChange={(e) => setFormName(e.target.value)}
+                  placeholder="Misal: Pengingat Pagi"
+                  className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-500 font-semibold"
+                />
+              </label>
+
+              <div className="grid grid-cols-2 gap-3">
+                <label className="grid gap-1.5">
+                  <span className="text-xs font-bold text-slate-500 font-semibold">Jam Alarm (24 Jam)</span>
+                  <input
+                    type="time"
+                    value={formTime}
+                    onChange={(e) => setFormTime(e.target.value)}
+                    className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-500 font-bold"
+                  />
+                </label>
+
+                <label className="grid gap-1.5">
+                  <span className="text-xs font-bold text-slate-500 font-semibold">Track DFPlayer</span>
+                  <select
+                    value={formTrack}
+                    onChange={(e) => setFormTrack(Number(e.target.value))}
+                    className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-500 font-bold"
+                  >
+                    {audioTracks.map((track) => (
+                      <option key={track.id} value={track.id}>
+                        {String(track.id).padStart(4, "0")} - {track.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              <div className="flex justify-between items-center bg-slate-50 border border-slate-200 rounded-xl p-3">
+                <div>
+                  <p className="text-xs font-bold text-slate-800">Status Awal</p>
+                  <p className="text-[10px] text-slate-400">Jadwal langsung berjalan jika aktif.</p>
+                </div>
+                <Switch checked={formActive} onChange={() => setFormActive(!formActive)} />
+              </div>
+
+              <div className="flex gap-2 justify-end mt-2">
+                {editingSchedule && (
+                  <button
+                    type="button"
+                    onClick={() => setEditingSchedule(null)}
+                    className="h-10 px-4 rounded-xl bg-slate-100 text-slate-600 text-xs font-bold hover:bg-slate-200 transition"
+                  >
+                    Batal
+                  </button>
+                )}
+                <button
+                  type="submit"
+                  className="h-10 px-5 rounded-xl bg-blue-600 text-white text-xs font-bold hover:bg-blue-700 shadow-md shadow-blue-100 transition"
+                >
+                  {editingSchedule ? "Simpan Perubahan" : "Simpan Jadwal"}
+                </button>
+              </div>
+            </form>
+          </Panel>
+
+          <Panel title="Greeting Wakeup PIR" subtitle="Atur greeting suara ketika PIR mendeteksi gerakan.">
+            <div className="grid gap-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="grid gap-1">
+                  <span className="text-xs font-bold text-slate-500 font-semibold">Aktifkan Greeting PIR</span>
+                  <div className="flex h-11 items-center">
+                    <Switch checked={props.pirGreetingEnabled} disabled={savingPirGreeting} onChange={() => savePirGreeting(!props.pirGreetingEnabled)} />
+                  </div>
+                </div>
+
+                <div className="grid gap-1">
+                  <span className="text-xs font-bold text-slate-500 font-semibold">Track DFPlayer</span>
+                  <select 
+                    className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold outline-none focus:border-blue-450"
+                    value={localPirGreetingTrack} 
+                    onChange={(event) => setLocalPirGreetingTrack(Number(event.target.value))}
+                  >
+                    {audioTracks.filter((track) => track.id >= 10 && track.id <= 12).map((track) => (
+                      <option key={track.id} value={track.id}>
+                        {track.name} - {track.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="grid gap-1">
+                  <span className="text-xs font-bold text-slate-500 font-semibold">Jam Mulai Sapa</span>
+                  <input 
+                    className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-450"
+                    type="time" 
+                    value={localPirGreetingStart} 
+                    onChange={(event) => setLocalPirGreetingStart(event.target.value)} 
+                  />
+                </div>
+
+                <div className="grid gap-1">
+                  <span className="text-xs font-bold text-slate-500 font-semibold">Jam Selesai Sapa</span>
+                  <input 
+                    className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-450"
+                    type="time" 
+                    value={localPirGreetingEnd} 
+                    onChange={(event) => setLocalPirGreetingEnd(event.target.value)} 
+                  />
+                </div>
+
+                <div className="grid gap-1">
+                  <span className="text-xs font-bold text-slate-500 font-semibold">Cooldown (detik)</span>
+                  <input
+                    className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-450 font-bold"
+                    min={10}
+                    onChange={(event) => setLocalPirGreetingCooldown(Math.max(10, Number(event.target.value)))}
+                    type="number"
+                    value={localPirGreetingCooldown}
+                  />
+                </div>
+
+                <div className="grid gap-1">
+                  <span className="text-xs font-bold text-slate-500 font-semibold">Mode Putar</span>
+                  <select
+                    className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold outline-none focus:border-blue-450"
+                    onChange={(event) => setLocalPirGreetingPlayMode(event.target.value)}
+                    value={localPirGreetingPlayMode}
+                  >
+                    <option value="cooldown">Cooldown</option>
+                    <option value="once_schedule">Sekali per jadwal</option>
+                    <option value="once_motion">Sekali per gerakan</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid gap-2 border-t border-slate-200 pt-4">
+                <span className="text-xs font-bold text-slate-500 font-semibold">Hari Aktif</span>
+                <div className="flex flex-wrap gap-2">
+                  {daysOfWeek.map((day) => {
+                    const active = localPirGreetingDays.includes(day.id);
+                    return (
+                      <button
+                        className={`h-9 rounded-xl px-3 text-xs font-bold transition ${
+                          active ? "bg-blue-600 text-white" : "bg-white text-slate-600 ring-1 ring-slate-200"
+                        }`}
+                        key={day.id}
+                        onClick={() => setLocalPirGreetingDays((current) =>
+                          current.includes(day.id) ? current.filter((item) => item !== day.id) : [...current, day.id]
+                        )}
+                        type="button"
+                      >
+                        {day.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="flex justify-end pt-2 border-t border-slate-200 mt-4">
+                <button
+                  className="h-11 rounded-xl bg-blue-600 px-6 text-sm font-black text-white transition hover:bg-blue-700 disabled:bg-slate-400"
+                  disabled={savingPirGreeting || localPirGreetingDays.length === 0}
+                  onClick={() => savePirGreeting()}
+                  type="button"
+                >
+                  {savingPirGreeting ? "Menyimpan..." : "Simpan Pengaturan"}
+                </button>
+              </div>
             </div>
-          </div>
-
-          <div className="flex flex-col gap-3 border-t border-slate-200 pt-4 sm:flex-row sm:items-center sm:justify-between">
-            <span className="text-xs font-semibold text-slate-500">Trigger berhenti setelah jam selesai; audio yang sedang berjalan tidak dihentikan paksa.</span>
-            <button
-              className="h-11 rounded-xl bg-blue-600 px-6 text-sm font-black text-white transition hover:bg-blue-700 disabled:bg-slate-400"
-              disabled={savingPirGreeting || localPirGreetingDays.length === 0}
-              onClick={() => savePirGreeting()}
-              type="button"
-            >
-              {savingPirGreeting ? "Menyimpan..." : "Simpan Pengaturan"}
-            </button>
-          </div>
+          </Panel>
         </div>
-      </Panel>
-
-      <Panel title="DFPlayer Audio Map" subtitle="Pilih file MP3 ini langsung pada setiap baris alarm jadwal.">
-        <AudioMap />
-      </Panel>
+      </div>
     </div>
   );
 }
@@ -2408,6 +2992,25 @@ function TemperatureChart({ value, series = temperatureSeries }: { value: number
   );
 }
 
+function GasChart({ value, series }: { value: number; series: number[] }) {
+  const points = series.map((item, index) => `${30 + index * 32},${210 - (Math.min(2500, item) / 2500) * 160}`).join(" ");
+  return (
+    <div className="overflow-hidden rounded-2xl bg-gradient-to-b from-white to-orange-50 p-2">
+      <svg className="h-[270px] w-full" viewBox="0 0 620 270" role="img" aria-label="Grafik kadar gas/asap">
+        {[0, 1, 2, 3, 4].map((line) => <line key={line} x1="30" x2="590" y1={50 + line * 40} y2={50 + line * 40} stroke="#ffedd5" strokeDasharray="5 5" />)}
+        <polyline points={`30,230 ${points} 574,230`} fill="rgba(249,115,22,0.10)" stroke="none" />
+        <polyline points={points} fill="none" stroke="#f97316" strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" />
+        {series.map((item, index) => <circle key={`${item}-${index}`} cx={30 + index * 32} cy={210 - (Math.min(2500, item) / 2500) * 160} r="4" fill="#f97316" />)}
+        <g>
+          <rect x="410" y="70" width="126" height="54" rx="10" fill="#0f172a" />
+          <text x="426" y="94" fill="white" fontSize="17" fontWeight="700">{Math.round(value)} RAW</text>
+          <text x="426" y="114" fill="#cbd5e1" fontSize="12">Saat ini</text>
+        </g>
+      </svg>
+    </div>
+  );
+}
+
 function ReadingRow({ label, value, status, percent, tone }: { label: string; value: string; status: string; percent: number; tone: "blue" | "emerald" | "orange" }) {
   const color = { blue: "bg-blue-600", emerald: "bg-emerald-500", orange: "bg-orange-500" };
   const warning = status === "Peringatan" || status === "Waspada" || status === "Panas" || status === "Bahaya" || status === "Terdeteksi" || status === "Ada Gerakan" || status === "Gerakan Terdeteksi" || status === "Dekat";
@@ -2469,14 +3072,14 @@ function WarningCard({
   );
 }
 
-function ControlRow({ label, detail, enabled, onToggle }: { label: string; detail: string; enabled: boolean; onToggle: () => void }) {
+function ControlRow({ label, detail, enabled, onToggle, disabled }: { label: string; detail: string; enabled: boolean; onToggle: () => void; disabled?: boolean }) {
   return (
-    <div className="flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-3">
+    <div className={`flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-3 transition-opacity duration-200 ${disabled ? "opacity-50" : ""}`}>
       <div>
         <p className="text-sm font-bold text-slate-900">{label}</p>
         <p className="mt-0.5 text-xs text-slate-500">{detail}</p>
       </div>
-      <Switch checked={enabled} onChange={onToggle} />
+      <Switch checked={enabled} onChange={onToggle} disabled={disabled} />
     </div>
   );
 }

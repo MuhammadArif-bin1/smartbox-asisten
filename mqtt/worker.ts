@@ -579,14 +579,15 @@ async function checkRelaySchedules() {
 }
 
 async function checkAlarmSchedules() {
+  console.log("[Worker] Alarm schedule check running");
   try {
     const { weekday, hour, minute, date } = getJakartaDateTime();
     const timeStr = `${hour}:${minute}`;
-    const weekdayCode = weekday.slice(0, 3).toUpperCase();
-    const alarms = await retryQuery(() => prisma.alarm.findMany({
-      where: { enabled: true },
+
+    const schedules = await retryQuery(() => prisma.alarmSchedule.findMany({
+      where: { active: true },
     })).catch((err) => {
-      console.error("[Worker Alarm] Error fetching alarms:", err);
+      console.error("[Worker Alarm] Error fetching alarm schedules:", err);
       return [];
     });
 
@@ -594,47 +595,76 @@ async function checkAlarmSchedules() {
     const topic = `smartbox/${targetDeviceId}/cmd`;
     await ensureDevice(targetDeviceId, true);
 
-    for (const alarm of alarms) {
-      const repeatDays = alarm.repeatDays.map((day) => day.toUpperCase());
-      if (alarm.time !== timeStr || !repeatDays.includes(weekdayCode)) {
+    for (const schedule of schedules) {
+      if (schedule.time !== timeStr) {
         continue;
       }
 
       const triggerKey = `${date}:${timeStr}`;
-      if (lastAlarmTrigger.get(alarm.id) === triggerKey) {
+      if (lastAlarmTrigger.get(schedule.id) === triggerKey) {
         continue;
       }
-      lastAlarmTrigger.set(alarm.id, triggerKey);
+
+      // Check if lastRunAt is within the current minute
+      if (schedule.lastRunAt) {
+        const lastRun = new Date(schedule.lastRunAt);
+        const formatter = new Intl.DateTimeFormat("en-US", {
+          timeZone: "Asia/Jakarta",
+          hour: "2-digit",
+          minute: "2-digit",
+          hourCycle: "h23",
+        });
+        const parts = formatter.formatToParts(lastRun);
+        const map: Record<string, string> = {};
+        for (const part of parts) {
+          map[part.type] = part.value;
+        }
+        const lastRunTimeStr = `${map.hour}:${map.minute}`;
+        const lastRunDateStr = lastRun.toLocaleDateString("en-CA", { timeZone: "Asia/Jakarta" });
+
+        if (lastRunTimeStr === timeStr && lastRunDateStr === date) {
+          lastAlarmTrigger.set(schedule.id, triggerKey);
+          continue;
+        }
+      }
+
+      lastAlarmTrigger.set(schedule.id, triggerKey);
+
+      await retryQuery(() => prisma.alarmSchedule.update({
+        where: { id: schedule.id },
+        data: { lastRunAt: new Date() },
+      })).catch((err) => console.error("[Worker Alarm] Error updating lastRunAt:", err));
 
       const command = {
-        id: `schedule_alarm_${alarm.id}_${date.replaceAll("-", "")}_${timeStr.replace(":", "")}`,
-        type: "alarm.trigger",
+        id: "cmd_alarm_voice_play",
+        type: "voice.play",
         payload: {
-          track: alarm.dfTrack,
-          time: timeStr,
-          scheduleId: alarm.id,
-          name: alarm.label,
-          source: "schedule",
+          track: schedule.track,
+          reason: "schedule_alarm",
+          label: schedule.name,
         },
       };
 
       client.publish(topic, JSON.stringify(command), { qos: 1 });
-      console.log(`[Worker Alarm] Triggered track ${alarm.dfTrack} for alarm: ${alarm.label}`);
+      
+      console.log(`[Worker] Alarm schedule triggered: ${schedule.name}`);
+      console.log(`[Worker] Publish voice.play to smartbox/${targetDeviceId}/cmd`);
+      console.log(`[Worker] Track DFPlayer: ${String(schedule.track).padStart(4, "0")}`);
 
       await retryQuery(() => prisma.eventLog.create({
         data: {
           deviceId: targetDeviceId,
           level: "INFO",
-          type: "alarm.schedule_triggered",
-          message: `Alarm '${alarm.label}' memicu track ${alarm.dfTrack}`,
+          type: "alarm.triggered",
+          message: "Alarm jadwal dipicu dan suara DFPlayer diputar.",
           payload: {
-            track: alarm.dfTrack,
-            time: timeStr,
-            scheduleId: alarm.id,
-            source: "schedule",
+            track: schedule.track,
+            name: schedule.name,
           },
         },
       })).catch((err) => console.error("[Worker Alarm] Error writing EventLog:", err));
+      
+      console.log(`[Worker] Event saved: alarm.triggered`);
     }
   } catch (err) {
     console.error("[Worker Alarm] Unhandled error in checkAlarmSchedules:", err);

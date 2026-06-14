@@ -982,7 +982,7 @@ void playScheduledAlarm(int track, const char *timeStr) {
 
 void playGasWarningVoice(String gasType) {
   unsigned long now = millis();
-  if (now - lastGasAudioTime < GAS_VOICE_COOLDOWN_MS) return;
+  if (lastGasAudioTime > 0 && now - lastGasAudioTime < GAS_VOICE_COOLDOWN_MS) return;
   lastGasAudioTime = now;
   int track = -1;
   const char* reason = "";
@@ -1758,8 +1758,11 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
     publishAck(cmdId, type, true, "Sensor updated.");
   } else if (strcmp(type, "voice.play") == 0) {
     int track = data["track"] | -1;
+    const char *reason = data["reason"] | "dashboard_voice_test";
     if (track >= 1 && track <= 13) {
-      playVoice((uint8_t)track, "dashboard_voice_test");
+      Serial.println("[CMD] voice.play received");
+      Serial.printf("[DFPLAYER] Play track: %d reason: %s\n", track, reason);
+      playVoice((uint8_t)track, reason);
       publishAck(cmdId, type, true, "DFPlayer play command received.");
     } else {
       publishAck(cmdId, type, false, "Track tidak valid.");
@@ -1987,13 +1990,13 @@ void checkWarnings(int gasRaw, float tempC, bool anyGasWarning, bool tempWarning
     setRgb(255, 0, 0);
     if (!relay1State) setRelay(1, true, false);
     relay1ForcedByGas = true;
+    playGasWarningVoice("gas");
 
     if (!lastGasWarning) {
       lastGasWarning = true;
       lastSmokeWarning = false;
       gasStatusStr = "detected";
       smokeStatusStr = "normal";
-      playGasWarningVoice("gas");
       publishEvent("WARNING", "gas.detected", "Gas terdeteksi!");
       setLcdOverride("GAS TERDETEKSI", "SEGERA PERIKSA!", 5000);
     }
