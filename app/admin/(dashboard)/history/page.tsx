@@ -16,17 +16,19 @@ export default function HistoryPage() {
           </div>
         ) : (
           ctx.events.map((evt) => (
-            <div key={evt.id} className="grid grid-cols-[1fr_auto] gap-3 rounded-2xl bg-white border border-slate-200 p-5 text-sm shadow-sm hover:shadow-md transition">
-              <div>
-                <span className={`inline-block rounded-full px-3 py-1 text-xs font-bold mr-2 ${
-                  evt.level === "WARNING" || evt.level === "CRITICAL" ? "bg-red-50 text-red-600 border border-red-100" : "bg-blue-50 text-blue-600 border border-blue-100"
-                }`}>
-                  {evt.level}
-                </span>
-                <span className="font-bold text-slate-900 text-base">{evt.type}</span>
-                <p className="mt-2 text-slate-600 leading-relaxed">{evt.message}</p>
+            <div key={evt.id} className="flex flex-col sm:flex-row justify-between sm:items-start gap-4 rounded-2xl bg-white border border-slate-200 p-5 text-sm shadow-sm hover:shadow-md transition">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className={`inline-block rounded-full px-3 py-1 text-xs font-bold ${
+                    evt.level === "WARNING" || evt.level === "CRITICAL" ? "bg-red-50 text-red-600 border border-red-100" : "bg-blue-50 text-blue-600 border border-blue-100"
+                  }`}>
+                    {evt.level}
+                  </span>
+                  <span className="font-bold text-slate-900 text-base">{evt.type}</span>
+                </div>
+                <p className="mt-2 text-slate-600 leading-relaxed break-words">{evt.message}</p>
               </div>
-              <span className="text-xs font-bold text-slate-400 whitespace-nowrap">
+              <span className="text-xs font-bold text-slate-400 whitespace-nowrap self-end sm:self-auto shrink-0">
                 {new Date(evt.createdAt).toLocaleString("id-ID", { dateStyle: "short", timeStyle: "short" })}
               </span>
             </div>

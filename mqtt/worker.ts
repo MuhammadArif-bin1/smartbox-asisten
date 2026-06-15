@@ -454,9 +454,11 @@ function getJakartaDateTime() {
   }
   
   const weekday = map.weekday ? map.weekday.toLowerCase() : "";
-  const hour = map.hour || "00";
-  const minute = map.minute || "00";
-  const date = `${map.year || "0000"}-${map.month || "00"}-${map.day || "00"}`;
+  const hour = String(parseInt(map.hour || "0", 10)).padStart(2, "0");
+  const minute = String(parseInt(map.minute || "0", 10)).padStart(2, "0");
+  const month = String(parseInt(map.month || "0", 10)).padStart(2, "0");
+  const day = String(parseInt(map.day || "0", 10)).padStart(2, "0");
+  const date = `${map.year || "0000"}-${month}-${day}`;
   
   return { weekday, hour, minute, date };
 }

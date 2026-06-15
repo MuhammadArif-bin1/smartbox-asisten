@@ -338,6 +338,20 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
           if (isEdit) return current.map((item) => (item.id === sch.id ? saved : item));
           return [...current, saved];
         });
+
+        // Sync schedule to ESP32 hardware over MQTT!
+        await sendDeviceCommand(
+          "relaySchedule.set",
+          {
+            id: saved.id,
+            relay: saved.relayNumber,
+            start: saved.startTime,
+            end: saved.endTime,
+            enabled: saved.enabled,
+          },
+          `Sync Jadwal ${saved.name}`
+        );
+
         notify(isEdit ? "Jadwal berhasil diperbarui" : "Jadwal berhasil ditambahkan", "success");
       } else {
         const result = await response.json().catch(() => null);
@@ -354,6 +368,14 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
       const response = await fetch(`/api/devices/relay-schedules/${id}`, { method: "DELETE" });
       if (response.ok) {
         setRelaySchedules((current) => current.filter((s) => s.id !== id));
+
+        // Sync deletion to ESP32 hardware over MQTT!
+        await sendDeviceCommand(
+          "relaySchedule.delete",
+          { id },
+          "Sync Hapus Jadwal"
+        );
+
         notify("Jadwal berhasil dihapus", "success");
       } else {
         notify("Gagal menghapus jadwal", "error");
@@ -550,6 +572,20 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
             } else if (data.type === "buzzer.updated") {
               const buzzerState = readBoolean(eventPayload.state);
               if (typeof buzzerState === "boolean") setBuzzerEnabled(buzzerState);
+            } else if (data.type === "pir.motion") {
+              const pirVal = typeof eventPayload.pirDetected === "boolean"
+                ? eventPayload.pirDetected
+                : (typeof data.pirDetected === "boolean" ? data.pirDetected : true);
+              setPirDetected(pirVal);
+            } else if (data.type === "gas.detected") {
+              setGasLevel("bahaya");
+              setGasEstimate((prev) => Math.max(prev, GAS_WARNING_RAW));
+            } else if (data.type === "smoke.detected") {
+              setGasLevel("waspada");
+              setGasEstimate((prev) => Math.max(prev, 1250));
+            } else if (data.type === "gas.cleared") {
+              setGasLevel("normal");
+              setGasEstimate(120);
             }
 
             // Autoplay AI voice response

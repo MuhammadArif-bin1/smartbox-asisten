@@ -1655,6 +1655,11 @@ void handleRelayCommand(JsonObject data, const char *cmdId, const char *type) {
   bool state = data["state"] | false;
   int relayNumber = data["relay"] | 1;
   int autoOffSeconds = data["autoOffSeconds"] | 0;
+  const char *source = data["source"] | "";
+
+  if (state && autoOffSeconds == 0 && strcmp(source, "schedule") != 0) {
+    autoOffSeconds = 60;
+  }
 
   if (relayNumber < 1 || relayNumber > 2) {
     publishAck(cmdId, type, false, "Relay tidak valid.");
@@ -1980,12 +1985,13 @@ void sendTelemetryHttp(int gasRaw, float tempC, bool gasWarning, bool tempWarnin
   http.end();
 }
 
-void checkWarnings(int gasRaw, float tempC, bool anyGasWarning, bool tempWarning) {
+void checkWarnings(int gasRaw, float tempC, bool anyGasWarning, bool tempWarning, bool pirDetected) {
   bool isGas = gasEnabled && gasRaw >= gasThreshold;
   bool isSmoke = gasEnabled && gasRaw >= smokeThreshold && gasRaw < gasThreshold;
+  bool gasWarning = isGas || isSmoke;
+  bool triggerBuzzer = (gasWarning && pirDetected) || (gasEnabled && gasRaw >= 1300);
 
   if (isGas) {
-    setBuzzer(true, false);
     setBluetoothAudio(true);
     setRgb(255, 0, 0);
     if (!relay1State) setRelay(1, true, false);
@@ -2002,7 +2008,6 @@ void checkWarnings(int gasRaw, float tempC, bool anyGasWarning, bool tempWarning
     }
   } 
   else if (isSmoke) {
-    setBuzzer(true, false);
     setBluetoothAudio(true);
     setRgb(255, 80, 0);
 
@@ -2018,6 +2023,9 @@ void checkWarnings(int gasRaw, float tempC, bool anyGasWarning, bool tempWarning
   } 
   else {
     if (gasRaw < resetThreshold) {
+      if (lastGasWarning || lastSmokeWarning) {
+        publishEvent("INFO", "gas.cleared", "Kondisi gas/asap kembali normal.");
+      }
       lastGasWarning = false;
       lastSmokeWarning = false;
       gasStatusStr = "normal";
@@ -2026,7 +2034,14 @@ void checkWarnings(int gasRaw, float tempC, bool anyGasWarning, bool tempWarning
         setRelay(1, false, false);
         relay1ForcedByGas = false;
       }
+    }
+  }
 
+  // Handle buzzer state based on new rules
+  if (triggerBuzzer) {
+    setBuzzer(true, false);
+  } else {
+    if (gasRaw < resetThreshold || (!pirDetected && gasRaw < 1300)) {
       if (!buzzerManual) {
         setBuzzer(false, false);
       }
@@ -2394,8 +2409,8 @@ void setup() {
   Serial.println();
   Serial.println("========== SMARTBOX BOOT ==========");
 
-  pinMode(RELAY_1_PIN, OUTPUT);
-  pinMode(RELAY_2_PIN, OUTPUT);
+  pinMode(RELAY_1_PIN, OUTPUT_OPEN_DRAIN);
+  pinMode(RELAY_2_PIN, OUTPUT_OPEN_DRAIN);
   pinMode(BUZZER_PIN, OUTPUT);
   pinMode(BT_BASE_PIN, OUTPUT);
 
@@ -2500,22 +2515,22 @@ void loop() {
   bool tempWarning = tempEnabled && tempC >= tempThreshold;
   bool pirDetected = pirEnabled && digitalRead(PIR_PIN) == HIGH;
 
-  if (pirDetected && !lastPirDetectedState) {
+  if (pirDetected != lastPirDetectedState) {
     lastMotionDetectedTime = millis();
-    Serial.println("[PIR] HIGH - gerakan terdeteksi.");
+    Serial.printf("[PIR] State changed to: %s\n", pirDetected ? "HIGH" : "LOW");
 
     StaticJsonDocument<384> doc;
     doc["deviceId"] = DEVICE_ID;
     doc["level"] = "INFO";
     doc["type"] = "pir.motion";
-    doc["message"] = "Gerakan terdeteksi oleh PIR";
+    doc["message"] = pirDetected ? "Gerakan terdeteksi oleh PIR" : "Tidak ada gerakan";
     JsonObject payload = doc.createNestedObject("payload");
-    payload["pirDetected"] = true;
+    payload["pirDetected"] = pirDetected;
     publishJson(topicEvent(), doc, false);
   }
   lastPirDetectedState = pirDetected;
 
-  checkWarnings(gasRaw, tempC, gasWarning, tempWarning);
+  checkWarnings(gasRaw, tempC, gasWarning, tempWarning, pirDetected);
   checkPirGreeting();
 
   updateLed12c(gasWarning, isSmoke, pirDetected, WiFi.status() == WL_CONNECTED, mqttClient.connected());
