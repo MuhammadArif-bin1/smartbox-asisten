@@ -20,7 +20,7 @@ const client = mqtt.connect(brokerUrl, {
  * Helper function to retry Prisma queries if the database connection drops
  * (Useful for Neon DB auto-suspend wakeups)
  */
-async function retryQuery<T>(fn: () => Promise<T>, retries = 3, delay = 1000): Promise<T> {
+async function retryQuery<T>(fn: () => Promise<T>, retries = 5, delay = 2000): Promise<T> {
   try {
     return await fn();
   } catch (err) {
