@@ -88,9 +88,12 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
   const gasPpm = Math.round(visibleGasEstimate / 60);
   const gasPercent = Math.round((visibleGasEstimate / 4095) * 100);
   const tempPercent = Math.round((visibleTempEstimate / 50) * 100);
-  const gasWarning = hasGasSensor && gasEnabled && (gasLevel === "bahaya" || gasLevel === "waspada" || visibleGasEstimate >= GAS_WARNING_RAW);
+  const isGasLevelDangerous = gasLevel === "bahaya" || gasLevel === "gas";
+  const isGasLevelWarning = gasLevel === "waspada" || gasLevel === "smoke";
+
+  const gasWarning = hasGasSensor && gasEnabled && (isGasLevelDangerous || isGasLevelWarning || visibleGasEstimate >= GAS_WARNING_RAW);
   const tempWarning = hasTempSensor && temperatureEnabled && visibleTempEstimate > TEMP_WARNING_C;
-  const gasState = !hasGasSensor ? "Tidak Terhubung" : (gasEnabled ? (gasLevel === "bahaya" ? "Bahaya" : (gasLevel === "waspada" ? "Waspada" : "Aman")) : "Nonaktif");
+  const gasState = !hasGasSensor ? "Tidak Terhubung" : (gasEnabled ? (isGasLevelDangerous ? "Bahaya" : (isGasLevelWarning ? "Waspada" : "Aman")) : "Nonaktif");
   const tempState = !hasTempSensor ? "Tidak Terhubung" : (temperatureEnabled ? (tempWarning ? "Peringatan" : "Aman") : "Nonaktif");
   const mqttOnline = mqttRealtime === "online" || mqttApiOnline;
   const relayActiveCount = relayControls.filter((relay) => relayState[relay.id]).length;
@@ -482,7 +485,11 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
             if (typeof telemetry.gasEnabled === "boolean") setGasEnabled(telemetry.gasEnabled);
             if (typeof telemetry.tempEnabled === "boolean") setTemperatureEnabled(telemetry.tempEnabled);
             if (typeof telemetry.gasRaw === "number") setGasEstimate(Math.max(0, Math.min(4095, Math.round(telemetry.gasRaw))));
-            if (typeof telemetry.gasLevel === "string") setGasLevel(telemetry.gasLevel);
+            if (typeof telemetry.gasLevel === "string") {
+              const rawLevel = telemetry.gasLevel.toLowerCase();
+              const mappedLevel = rawLevel === "gas" ? "bahaya" : (rawLevel === "smoke" ? "waspada" : rawLevel);
+              setGasLevel(mappedLevel);
+            }
             if (typeof telemetry.temperatureC === "number") setTempEstimate(roundTemperature(telemetry.temperatureC));
             if (typeof telemetry.flameDetected === "boolean") setFlameDetected(telemetry.flameDetected);
             if (typeof telemetry.pirDetected === "boolean") setPirDetected(telemetry.pirDetected);
@@ -723,6 +730,7 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
       relay2?: boolean;
       bluetoothRelay?: boolean;
       buzzer?: boolean;
+      gasLevel?: string;
       createdAt: string;
     }
 
@@ -742,6 +750,11 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
               if (typeof latest.temperature === "number") setTempEstimate(latest.temperature);
               if (typeof latest.gasRaw === "number") setGasEstimate(latest.gasRaw);
               if (typeof latest.gasSensorEnabled === "boolean") setGasEnabled(latest.gasSensorEnabled);
+              if (typeof latest.gasLevel === "string") {
+                const rawLevel = latest.gasLevel.toLowerCase();
+                const mappedLevel = rawLevel === "gas" ? "bahaya" : (rawLevel === "smoke" ? "waspada" : rawLevel);
+                setGasLevel(mappedLevel);
+              }
               setTemperatureEnabled(true);
               if (typeof latest.pirDetected === "boolean") setPirDetected(latest.pirDetected);
 

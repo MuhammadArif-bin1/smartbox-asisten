@@ -42,10 +42,8 @@ export function DetailedSensorCard({
           <h3 className="text-2xl font-black text-slate-900 break-words">{value}</h3>
           {status && status !== "Offline" && status !== "Tidak Terhubung" && (
             <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-bold border ${
-              status === "Bahaya" || status === "Ada Gerakan" || status === "Peringatan"
+              status === "Bahaya" || status === "Ada Gerakan" || status === "Peringatan" || status === "Waspada"
                 ? "bg-red-50 text-red-600 border-red-200 animate-pulse"
-                : status === "Waspada"
-                ? "bg-amber-50 text-amber-600 border-amber-200"
                 : status === "Aman" || status === "normal"
                 ? "bg-emerald-50 text-emerald-600 border-emerald-200"
                 : "bg-slate-50 text-slate-600 border-slate-200"

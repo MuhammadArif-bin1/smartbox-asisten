@@ -11,28 +11,14 @@
   - MQ2 gas sensor
   - PIR motion
   - IR obstacle
-  - Relay stop kontak 1 dan 2
+  - Relay stop kontak 1 dan 2 (Low-Level Trigger)
   - Bluetooth/amplifier power via transistor GPIO14
   - DFPlayer Mini untuk suara alarm/peringatan
   - Buzzer
   - RGB LED bawaan ESP32-S3 GPIO48
-  - INMP441 untuk deteksi tepukan
+  - INMP441 untuk KWS & Gemini (I2S_NUM_1)
+  - PT8211 DAC untuk Gemini Response (I2S_NUM_0 via ESP8266Audio)
   - MQTT telemetry, event, ack, dan command
-
-  Library Arduino IDE:
-  - PubSubClient
-  - ArduinoJson
-  - RTClib by Adafruit
-  - LiquidCrystal_I2C
-  - DFRobotDFPlayerMini
-  - Adafruit NeoPixel
-
-  Catatan:
-  - Relay 1/2 memakai LOW LEVEL TRIGGER, jadi ON = LOW dan OFF = HIGH.
-  - Bluetooth/amplifier GPIO14 memakai transistor, jadi ON = HIGH dan OFF = LOW.
-  - GPIO19 dan GPIO20 bisa bentrok dengan USB pada beberapa ESP32-S3.
-    Jika upload/serial bermasalah, pindahkan WHITE_BTN_PIN dan RED_BTN_PIN ke
-  GPIO39/GPIO40.
 
   DFPlayer Track Mapping:
   0001.mp3 = smartbox assistant siap digunakan
@@ -48,6 +34,8 @@
   0011.mp3 = gerakan melompat terdeteksi (jump)
   0012.mp3 = gerakan melambaikan tangan (wave)
   0013.mp3 = bluetooth dimatikan
+  0014.mp3 = Hallo Aero
+  0015.mp3 = Perkenalkan, saya adalah Aero...
 */
 
 #include <Adafruit_NeoPixel.h>
@@ -67,6 +55,16 @@
 #include <WiFiClientSecure.h>
 #include <Wire.h>
 #include <driver/i2s.h>
+#include <FS.h>
+#include <LittleFS.h>
+
+// ESP8266Audio Libraries
+#include "AudioFileSourceLittleFS.h"
+#include "AudioGeneratorMP3.h"
+#include "AudioOutputI2S.h"
+
+// Edge Impulse Library
+#include <Smartbox_asistent_inferencing.h>
 
 // ==========================================================
 // 1. WIFI & MQTT CLOUD CONFIG
@@ -99,18 +97,20 @@ const char *DEVICE_ID = "smartbox-001";
 #define NUM_PIXELS 1
 #define ESP_RX_PIN 8
 #define ESP_TX_PIN 18
+
+// Mic INMP441 (I2S_NUM_1)
 #define MIC_SCK 4
 #define MIC_WS 5
 #define MIC_SD 6
-#define MIC_I2S_PORT I2S_NUM_0
+#define MIC_I2S_PORT I2S_NUM_1
 
-#define LED_12C_PIN 12 // Pin LED 12C/12V (Silakan ubah ke pin yang sesuai jika berbeda, contoh: GPIO 12 atau 13)
+#define LED_12C_PIN 12
 
-#define ENABLE_PT8211_TEST 0
+// DAC PT8211 (I2S_NUM_0)
 #define PT_BCLK 15
 #define PT_LRC 16
 #define PT_DOUT 17
-#define PT_I2S_PORT I2S_NUM_1
+#define PT_I2S_PORT I2S_NUM_0
 
 // ==========================================================
 // 3. RELAY LOGIC
@@ -134,7 +134,9 @@ const char *DEVICE_ID = "smartbox-001";
 #define TRACK_GESTURE_JUMP        11
 #define TRACK_GESTURE_WAVE        12
 #define TRACK_BLUETOOTH_OFF       13
-#define DFPLAYER_MAX_TRACK        TRACK_BLUETOOTH_OFF
+#define TRACK_HALO_AERO           14
+#define TRACK_INTRO               15
+#define DFPLAYER_MAX_TRACK        TRACK_INTRO
 
 #define TRACK_SYSTEM_READY        TRACK_STARTUP_READY
 #define TRACK_SHOW_TIME_TEMP      TRACK_TIME_TEMP_REALTIME
@@ -164,7 +166,7 @@ float tempOffset = 0.0;
 float gasRawFiltered = -1.0;
 
 // ==========================================================
-// 6. VOICE COOLDOWN
+// 6. VOICE COOLDOWN & WARNING FLAGS
 // ==========================================================
 const unsigned long VOICE_MIN_GAP_MS = 2500;
 unsigned long lastVoiceMillis = 0;
@@ -183,6 +185,10 @@ unsigned long lastGasAudioTime  = 0;
 unsigned long lastTempAudioTime = 0;
 unsigned long lastPirEventTime  = 0;
 
+// Warning audio single play flags (Anti-stuttering)
+bool isGasWarningPlayed = false;
+bool isSmokeWarningPlayed = false;
+
 // Audio recording variables and struct
 struct __attribute__((packed)) WavHeader {
   char chunkId[4] = {'R', 'I', 'F', 'F'};
@@ -200,16 +206,14 @@ struct __attribute__((packed)) WavHeader {
   uint32_t subchunk2Size;
 };
 
-const size_t MAX_RECORD_TIME_SEC = 5;
-const size_t RECORD_BUFFER_SIZE = MAX_RECORD_TIME_SEC * 16000 * 2; // 160,000 bytes
+const size_t RECORD_TIME_SEC = 4;
+const size_t RECORD_BUFFER_SIZE = RECORD_TIME_SEC * 16000 * 2; // 128,000 bytes
 uint8_t *recordBuffer = NULL;
 size_t recordBufferIdx = 0;
-bool isRecording = false;
 unsigned long recordingStartMillis = 0;
 
-// AI Backend URL (Sesuaikan IP dengan IP laptop/PC Anda, contoh: http://192.168.1.10:3000)
-// PENTING: Jangan gunakan localhost di ESP32
-const char* AI_BACKEND_URL = "https://smartbox-asisten.vercel.app/api/gemini/chat-audio";
+// Next.js API URL
+const char* AI_BACKEND_URL = "http://192.168.1.10:3000/api/gemini/chat-audio";
 
 // Black Button Debounce & State Variables
 const unsigned long BLACK_BUTTON_DEBOUNCE_MS = 50;
@@ -229,13 +233,46 @@ const unsigned long LCD_INTERVAL_MS = 1000;
 const unsigned long WARNING_AUDIO_GAP_MS = 10000;
 const unsigned long MQTT_RETRY_GAP_MS = 3000;
 
-bool clapEnabled = true;
-const long CLAP_MIN_VALUE = 50000;
-const int CLAP_THRESHOLD_FACTOR = 3;
-int32_t sampleBuffer[64];
-long runningAverage = 2000;
-unsigned long lastClapTime = 0;
-int clapCount = 0;
+// Edge Impulse configuration
+#define SAMPLE_RATE   EI_CLASSIFIER_FREQUENCY
+#define I2S_SHIFT 14
+#define AUDIO_GAIN 2.0f
+#define MIC_RMS_MIN 10.0f
+
+#define SCORE_THRESHOLD_HALO        0.70f
+#define SCORE_THRESHOLD_CALIBRATION 0.70f
+#define SCORE_THRESHOLD_CLAP        0.70f
+#define COMMAND_COOLDOWN_MS         2500
+
+#ifndef EI_CLASSIFIER_SLICE_SIZE
+#define EI_CLASSIFIER_SLICE_SIZE (EI_CLASSIFIER_RAW_SAMPLE_COUNT / EI_CLASSIFIER_SLICES_PER_MODEL_WINDOW)
+#endif
+
+int16_t *audio_buffer = NULL;
+unsigned long lastCommandTime = 0;
+unsigned long lastDebugTime = 0;
+const unsigned long DEBUG_INTERVAL_MS = 700;
+bool smartboxAwake = false;
+
+// ==========================================================
+// I2S & MEMORY STATES (STATE MACHINE)
+// ==========================================================
+enum SystemState {
+  STATE_KWS,          // Menjalankan Edge Impulse Keyword Spotting secara bawaan
+  STATE_RECORDING,    // Merekam suara dari mic ke buffer PSRAM (KWS dihentikan sementara)
+  STATE_SENDING,      // Mengunggah file WAV ke server Next.js (KWS dihentikan sementara)
+  STATE_DOWNLOADING,  // Mengunduh respon file MP3 ke LittleFS (KWS dihentikan sementara)
+  STATE_PLAYING       // Memutar audio balasan Gemini via PT8211 (KWS dihentikan sementara)
+};
+
+SystemState systemState = STATE_KWS;
+String aiResponseUrl = "";
+bool isPlayingResponse = false;
+
+// Pointers untuk ESP8266Audio
+AudioFileSourceLittleFS *audioFile = nullptr;
+AudioOutputI2S *audioOut = nullptr;
+AudioGeneratorMP3 *audioMp3 = nullptr;
 
 // ==========================================================
 // 8. OBJECTS
@@ -244,7 +281,7 @@ WiFiClientSecure secureClient;
 PubSubClient mqttClient(secureClient);
 
 RTC_DS3231 rtc;
-LiquidCrystal_I2C lcd(0x27, 16, 2); // Jika LCD tidak tampil, ganti 0x27 menjadi 0x3F
+LiquidCrystal_I2C lcd(0x27, 16, 2);
 Adafruit_NeoPixel rgbLed(NUM_PIXELS, RGB_PIN, NEO_GRB + NEO_KHZ800);
 
 HardwareSerial dfSerial(1);
@@ -389,6 +426,8 @@ void deleteRelaySchedule(const char *schId);
 void saveSettings();
 void saveSchedules();
 void calibrateMQ2(int samples);
+void calibrateMQ2(); // Overload dummy kalibrasi
+void toggleRelay1();  // Overload dummy toggle relay
 void sendTelemetryNow();
 int getFilteredGas();
 void playBluetoothGreeting();
@@ -399,13 +438,12 @@ void playVoiceTrack(int track);
 void playSystemReady();
 void playTimeTemperatureVoice();
 void playAlarmVoice(String alarmType);
+void playScheduledAlarm(int track, const char *timeStr);
 void playGasWarningVoice(String gasType);
 void playTemperatureWarningVoice();
 void playPirGreeting(String motionType);
 void publishVoicePlayedEvent(int track, const char* source);
 void handleWhiteButtonQuickPress();
-void sendRecordedAudio();
-void updateRecording();
 void checkPirGreeting();
 int timeToMinutes(int hour, int minute);
 bool isNowInTimeRange(int nowHour, int nowMinute, int startHour, int startMinute, int endHour, int endMinute);
@@ -415,16 +453,23 @@ void checkBluetoothTimer();
 void checkBlackButton();
 void handleBlackButtonQuickPress();
 void handleBlackButtonLongPress();
-bool recordAudioWavToBuffer(uint8_t** wavData, size_t* wavSize, int seconds);
-bool sendVoiceToAIBackend(uint8_t* wavData, size_t wavSize);
-bool recordAndSendVoiceToAI();
 
 void initLed12c();
 void led12cOn();
 void led12cOff();
 void blinkLed12c(int times, int delayMs);
 void updateLed12c(bool gasWarning, bool smokeWarning, bool pirDetected, bool wifiConnected, bool mqttConnected);
-void playScheduledAlarm(int track, const char *timeStr);
+
+// State Machine Helpers
+void handleSendingState();
+void handleDownloadingState();
+void handlePlayingState();
+
+// Edge Impulse Get Data Callback
+int microphone_audio_signal_get_data(size_t offset, size_t length, float *out_ptr);
+
+// Dummy check claps untuk menghindari kompilasi error jika dipanggil
+void checkClaps() {}
 
 // ==========================================================
 // 10. MQTT TOPICS
@@ -485,41 +530,6 @@ void publishAck(const char *id, const char *type, bool ok, const char *message) 
   doc["message"] = message;
   doc["millis"] = millis();
   publishJson(topicAck(), doc, false);
-}
-
-int timeToMinutes(int hour, int minute) {
-  return hour * 60 + minute;
-}
-
-bool isNowInTimeRange(int nowHour, int nowMinute, int startHour, int startMinute, int endHour, int endMinute) {
-  int nowValue = timeToMinutes(nowHour, nowMinute);
-  int startValue = timeToMinutes(startHour, startMinute);
-  int endValue = timeToMinutes(endHour, endMinute);
-
-  if (startValue <= endValue) {
-    return nowValue >= startValue && nowValue <= endValue;
-  }
-
-  return nowValue >= startValue || nowValue <= endValue;
-}
-
-bool parseTimeToHourMinute(const char* timeStr, int &hour, int &minute) {
-  if (timeStr == NULL || strlen(timeStr) != 5 || timeStr[2] != ':') {
-    return false;
-  }
-
-  int parsedHour = -1;
-  int parsedMinute = -1;
-  if (sscanf(timeStr, "%2d:%2d", &parsedHour, &parsedMinute) != 2) {
-    return false;
-  }
-  if (parsedHour < 0 || parsedHour > 23 || parsedMinute < 0 || parsedMinute > 59) {
-    return false;
-  }
-
-  hour = parsedHour;
-  minute = parsedMinute;
-  return true;
 }
 
 // ==========================================================
@@ -743,12 +753,11 @@ void updateLed12c(bool gasWarning, bool smokeWarning, bool pirDetected, bool wif
   
   // 1. Peringatan Gas / Asap (Prioritas 1 - Berkedip Cepat)
   if (gasWarning || smokeWarning) {
-    unsigned int fastBlinkInterval = 150; // 150ms
+    unsigned int fastBlinkInterval = 150;
     if (now - lastLedBlinkAt >= fastBlinkInterval) {
       lastLedBlinkAt = now;
       ledState = !ledState;
       digitalWrite(LED_12C_PIN, ledState ? LED_ON : LED_OFF);
-      Serial.printf("[LED12C] Gas/Smoke Alert Blink: %s\n", ledState ? "ON" : "OFF");
     }
     return;
   }
@@ -756,14 +765,13 @@ void updateLed12c(bool gasWarning, bool smokeWarning, bool pirDetected, bool wif
   // 2. PIR Deteksi Gerakan (Prioritas 2 - Menyala Singkat dengan Cooldown)
   static unsigned long pirLedActiveUntil = 0;
   static unsigned long lastPirLedTriggerAt = 0;
-  const unsigned long pirLedDuration = 1000; // Menyala 1 detik
-  const unsigned long pirLedCooldown = 5000; // Cooldown 5 detik
+  const unsigned long pirLedDuration = 1000;
+  const unsigned long pirLedCooldown = 5000;
 
   if (pirDetected && (now - lastPirLedTriggerAt >= pirLedCooldown)) {
     lastPirLedTriggerAt = now;
     pirLedActiveUntil = now + pirLedDuration;
     digitalWrite(LED_12C_PIN, LED_ON);
-    Serial.println("[LED12C] PIR Trigger: ON");
   }
 
   static bool pirLedWasActive = false;
@@ -775,16 +783,14 @@ void updateLed12c(bool gasWarning, bool smokeWarning, bool pirDetected, bool wif
     digitalWrite(LED_12C_PIN, LED_OFF);
     ledState = false;
     lastLedBlinkAt = now;
-    Serial.println("[LED12C] PIR Trigger: OFF");
   }
 
   // 3. Kondisi Normal (Berkedip Pelan sebagai indikator sistem hidup)
-  unsigned int normalBlinkInterval = 2000; // 2 detik
+  unsigned int normalBlinkInterval = 2000;
   if (now - lastLedBlinkAt >= normalBlinkInterval) {
     lastLedBlinkAt = now;
     ledState = !ledState;
     digitalWrite(LED_12C_PIN, ledState ? LED_ON : LED_OFF);
-    Serial.printf("[LED12C] Normal Blink: %s\n", ledState ? "ON" : "OFF");
   }
 }
 
@@ -828,7 +834,7 @@ void startVoiceNow(uint8_t track, const char* reason, uint8_t priority) {
 
 void playVoice(uint8_t track, const char* reason) {
   if (!dfPlayerReady) {
-    Serial.println("[DFPLAYER] Tidak ready, suara batal diputar.");
+    Serial.println("[DFPLAYER] Tidak ready, sapaan/peringatan batal diputar.");
     return;
   }
   if (track < 1 || track > DFPLAYER_MAX_TRACK) {
@@ -1024,168 +1030,44 @@ void playPirGreeting(String motionType) {
 }
 
 void handleWhiteButtonQuickPress() {
-  Serial.println("[BUTTON] White button pressed - assistant intro");
-  playVoice(TRACK_STARTUP_READY, "white_button_intro");
+  Serial.println("[BUTTON] White button pressed - playing track 1 ready");
+  playVoice(TRACK_STARTUP_READY, "white_button_ready");
   setLcdOverride("SMARTBOX", "ASSISTANT SIAP", 3000);
-  publishEvent("INFO", "assistant_intro", "Assistant memperkenalkan diri.");
-}
-
-void sendRecordedAudio() {
-  if (recordBuffer == NULL || recordBufferIdx == 0) {
-    Serial.println("[GEMINI] Tidak ada data audio untuk dikirim.");
-    if (recordBuffer != NULL) {
-      free(recordBuffer);
-      recordBuffer = NULL;
-    }
-    return;
-  }
-
-  Serial.printf("[BUTTON] Black hold recording - sending %d bytes to Gemini backend...\n", recordBufferIdx);
-  setLcdOverride("PROSES SUARA...", "MENGIRIM KE AI", 5000);
-
-  // Setup WAV header
-  WavHeader header;
-  header.chunkSize = 36 + recordBufferIdx;
-  header.subchunk2Size = recordBufferIdx;
-
-  WiFiClientSecure client;
-  client.setInsecure();
-  
-  HTTPClient http;
-  String serverUrl = "https://smartbox-asisten.vercel.app/api/gemini/chat-audio";
-  
-  if (http.begin(client, serverUrl)) {
-    http.addHeader("Content-Type", "audio/mp3");
-    
-    uint8_t *payload = (uint8_t*)malloc(44 + recordBufferIdx);
-    if (payload != NULL) {
-      memcpy(payload, &header, 44);
-      memcpy(payload + 44, recordBuffer, recordBufferIdx);
-      
-      Serial.println("[GEMINI] Audio request sent");
-      int httpResponseCode = http.POST(payload, 44 + recordBufferIdx);
-      
-      if (httpResponseCode > 0) {
-        String response = http.getString();
-        Serial.printf("[GEMINI] HTTP Response: %d\n", httpResponseCode);
-        Serial.println(response);
-        
-        StaticJsonDocument<512> doc;
-        DeserializationError error = deserializeJson(doc, response);
-        if (!error && doc["success"]) {
-          const char* aiText = doc["text"] | "Success";
-          setLcdOverride("AI JAWABAN:", aiText, 5000);
-        } else {
-          setLcdOverride("AI ERROR", "GAGAL PARSE", 3000);
-        }
-      } else {
-        Serial.printf("[GEMINI] HTTP Post failed, error: %s\n", http.errorToString(httpResponseCode).c_str());
-        setLcdOverride("KONEKSI ERROR", "KIRIM GAGAL", 3000);
-      }
-      free(payload);
-    } else {
-      Serial.println("[GEMINI] Gagal alokasi payload kirim.");
-      setLcdOverride("MEMORI PENUH", "KIRIM GAGAL", 3000);
-    }
-    http.end();
-  } else {
-    Serial.println("[GEMINI] Gagal memulai koneksi HTTP.");
-    setLcdOverride("HTTP ERROR", "KIRIM GAGAL", 3000);
-  }
-
-  free(recordBuffer);
-  recordBuffer = NULL;
-}
-
-void updateRecording() {
-  if (!isRecording) return;
-  
-  int32_t i2sSamples[64];
-  size_t bytesRead = 0;
-  esp_err_t err = i2s_read(MIC_I2S_PORT, i2sSamples, sizeof(i2sSamples), &bytesRead, 0);
-  if (err == ESP_OK && bytesRead > 0) {
-    size_t numSamples = bytesRead / 4;
-    for (size_t i = 0; i < numSamples; i++) {
-      if (recordBufferIdx + 2 <= RECORD_BUFFER_SIZE) {
-        int16_t sample16 = (int16_t)(i2sSamples[i] >> 14);
-        recordBuffer[recordBufferIdx++] = sample16 & 0xFF;
-        recordBuffer[recordBufferIdx++] = (sample16 >> 8) & 0xFF;
-      } else {
-        isRecording = false;
-        Serial.println("[BUTTON] Buffer recording penuh, kirim otomatis");
-        sendRecordedAudio();
-        break;
-      }
-    }
-  }
-  
-  if (isRecording && (millis() - recordingStartMillis >= MAX_RECORD_TIME_SEC * 1000)) {
-    isRecording = false;
-    Serial.println("[BUTTON] Waktu recording habis, kirim otomatis");
-    sendRecordedAudio();
-  }
+  publishEvent("INFO", "assistant_ready", "Smartbox Assistant siap digunakan.");
 }
 
 void checkPirGreeting() {
   if (!pirGreetingEnabled) return;
   if (!pirEnabled) return;
-  if (!rtcReady) return;
 
-  DateTime now = rtc.now();
-  bool inTimeRange = isNowInTimeRange(
-    now.hour(),
-    now.minute(),
-    pirGreetingStartHour,
-    pirGreetingStartMinute,
-    pirGreetingEndHour,
-    pirGreetingEndMinute
-  );
-
-  bool dayActive = (pirGreetingDaysMask & (1 << now.dayOfTheWeek())) != 0;
-  if (!inTimeRange || !dayActive) {
-    pirGreetingPlayedThisWindow = false;
-    pirGreetingPirWasHigh = digitalRead(PIR_PIN) == HIGH;
-    return;
-  }
-
-  bool pirDetected = digitalRead(PIR_PIN) == HIGH;
-  bool motionEdge = pirDetected && !pirGreetingPirWasHigh;
-  pirGreetingPirWasHigh = pirDetected;
+  bool pirDetected = (digitalRead(PIR_PIN) == HIGH);
   if (!pirDetected) return;
 
   unsigned long currentMillis = millis();
-  if (pirGreetingPlayMode == "once_schedule") {
-    if (pirGreetingPlayedThisWindow) return;
-  } else if (pirGreetingPlayMode == "once_motion") {
-    if (!motionEdge) return;
-  } else if (lastPirGreetingTime > 0 && currentMillis - lastPirGreetingTime < PIR_GREETING_COOLDOWN) {
-    return;
-  }
-
-  if (dfplayerBusy && currentVoicePriority >= 6) {
-    Serial.println("[PIR] Greeting ditunda karena suara bahaya aktif.");
+  // PIR Cooldown Check (10 Detik sesuai kebutuhan arsitektur)
+  if (lastPirGreetingTime > 0 && (currentMillis - lastPirGreetingTime < 10000)) {
     return;
   }
 
   lastPirGreetingTime = currentMillis;
   lastMotionDetectedTime = currentMillis;
-  pirGreetingPlayedThisWindow = true;
 
-  if (pirGreetingTrack < TRACK_GESTURE_WALK || pirGreetingTrack > TRACK_GESTURE_WAVE) {
-    pirGreetingTrack = TRACK_GESTURE_WALK;
-  }
+  // Pilih track secara acak antara 10, 11, atau 12
+  int selectedTrack = random(10, 13); // random(10, 13) menghasilkan 10, 11, atau 12
 
-  playVoice((uint8_t)pirGreetingTrack, "pir_greeting");
-  setLcdOverride("GERAKAN", "TERDETEKSI", 4000);
+  playVoice((uint8_t)selectedTrack, "pir_greeting");
+  
+  char trackMsg[16];
+  snprintf(trackMsg, sizeof(trackMsg), "TRACK %04d", selectedTrack);
+  setLcdOverride("GERAKAN", trackMsg, 4000);
 
   StaticJsonDocument<384> doc;
   doc["deviceId"] = DEVICE_ID;
   doc["level"] = "INFO";
   doc["type"] = "pir.greeting.played";
-  doc["message"] = "Greeting Wakeup PIR diputar karena gerakan terdeteksi.";
+  doc["message"] = "Greeting Wakeup PIR diputar secara acak.";
   JsonObject payload = doc.createNestedObject("payload");
-  payload["track"] = pirGreetingTrack;
-  payload["playMode"] = pirGreetingPlayMode;
+  payload["track"] = selectedTrack;
   publishJson(topicEvent(), doc, false);
 }
 
@@ -1277,7 +1159,7 @@ void checkRelaySchedules() {
       relaySchedules[i].lastTriggeredStartDay = now.day();
       Serial.printf("[SCHEDULE] Trigger START for Relay %d (Schedule: %s)\n", 
                     relaySchedules[i].relayNum, relaySchedules[i].id);
-      setRelay(relaySchedules[i].relayNum, true, false); // false = silent
+      setRelay(relaySchedules[i].relayNum, true, false);
     }
 
     // Check End Time (Turn OFF)
@@ -1288,7 +1170,7 @@ void checkRelaySchedules() {
       relaySchedules[i].lastTriggeredEndDay = now.day();
       Serial.printf("[SCHEDULE] Trigger END for Relay %d (Schedule: %s)\n", 
                     relaySchedules[i].relayNum, relaySchedules[i].id);
-      setRelay(relaySchedules[i].relayNum, false, false); // false = silent
+      setRelay(relaySchedules[i].relayNum, false, false);
     }
   }
 }
@@ -1401,7 +1283,7 @@ void printLcdLine(uint8_t row, const char *text) {
 void scanI2C() {
   Serial.println("[I2C] Scan alamat I2C...");
   byte count = 0;
-  uint8_t foundAddr = 0x27; // default
+  uint8_t foundAddr = 0x27;
 
   for (byte address = 1; address < 127; address++) {
     Wire.beginTransmission(address);
@@ -1471,7 +1353,6 @@ void setBluetoothAudio(bool state) {
   digitalWrite(BT_BASE_PIN, state ? HIGH : LOW);
   if (state) setRgb(0, 80, 0); else setRgb(80, 0, 0);
   
-  // Also send telemetry now to update status instantly
   sendTelemetryNow();
 }
 
@@ -1516,20 +1397,12 @@ void setRelay(uint8_t relayNumber, bool state, bool withVoice, bool publishStatu
     publishJson(topicEvent(), doc, false);
   }
 
-  // Also send telemetry now to update status instantly
   sendTelemetryNow();
 }
 
-void setBuzzer(bool state, bool manualMode = false) {
+void setBuzzer(bool state, bool manualMode) {
   if (manualMode) buzzerManual = state;
   digitalWrite(BUZZER_PIN, state ? HIGH : LOW);
-}
-
-void setupMicI2S() {
-  i2s_config_t i2s_config = {.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX), .sample_rate = 16000, .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT, .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT, .communication_format = I2S_COMM_FORMAT_STAND_I2S, .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1, .dma_buf_count = 8, .dma_buf_len = 64, .use_apll = false, .tx_desc_auto_clear = false, .fixed_mclk = 0};
-  i2s_pin_config_t pin_config = {.bck_io_num = MIC_SCK, .ws_io_num = MIC_WS, .data_out_num = I2S_PIN_NO_CHANGE, .data_in_num = MIC_SD};
-  i2s_driver_install(MIC_I2S_PORT, &i2s_config, 0, NULL);
-  i2s_set_pin(MIC_I2S_PORT, &pin_config);
 }
 
 void connectWiFi() {
@@ -1576,14 +1449,10 @@ void publishOnlineStatus(bool online) {
   doc["millis"] = millis();
 
   publishJson(topicStatus(), doc, true);
-
-  Serial.print("[MQTT] Publish status retained: ");
-  Serial.println(online ? "ONLINE" : "OFFLINE");
 }
 
 void connectMqtt() {
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("[MQTT] WiFi belum connected, MQTT batal.");
     return;
   }
 
@@ -1598,17 +1467,8 @@ void connectMqtt() {
   lastMqttReconnectAt = millis();
 
   Serial.println("[MQTT] Connecting to HiveMQ Cloud...");
-  Serial.print("[MQTT] Host: ");
-  Serial.println(MQTT_HOST);
-  Serial.print("[MQTT] Port: ");
-  Serial.println(MQTT_PORT);
-  Serial.print("[MQTT] User: ");
-  Serial.println(MQTT_USER);
-  Serial.print("[MQTT] Status topic: ");
-  Serial.println(topicStatus());
 
   String clientId = String("SmartBox-") + DEVICE_ID + "-" + String((uint32_t)ESP.getEfuseMac(), HEX);
-
   String willPayload = String("{\"deviceId\":\"") + DEVICE_ID + "\",\"online\":false}";
 
   bool ok = mqttClient.connect(
@@ -1636,19 +1496,9 @@ void connectMqtt() {
     sendTelemetryNow();
 
     publishEvent("INFO", "mqtt.connected", "ESP32 tersambung ke MQTT Cloud.");
-
-    Serial.println("[MQTT] Device status sekarang ONLINE.");
   } else {
     Serial.print("[MQTT] Gagal connect. State = ");
     Serial.println(mqttClient.state());
-
-    if (mqttClient.state() == -2) {
-      Serial.println("[MQTT] State -2: gagal koneksi network/TLS/server.");
-    } else if (mqttClient.state() == 5) {
-      Serial.println("[MQTT] State 5: username/password MQTT salah.");
-    } else if (mqttClient.state() == -4) {
-      Serial.println("[MQTT] State -4: timeout koneksi MQTT.");
-    }
   }
 }
 
@@ -1664,7 +1514,6 @@ void handleRelayCommand(JsonObject data, const char *cmdId, const char *type) {
 
   if (relayNumber < 1 || relayNumber > 2) {
     publishAck(cmdId, type, false, "Relay tidak valid.");
-    Serial.printf("[RELAY] Relay %d tidak valid.\n", relayNumber);
     return;
   }
 
@@ -1674,7 +1523,6 @@ void handleRelayCommand(JsonObject data, const char *cmdId, const char *type) {
     if (state && autoOffSeconds > 0) {
       relay1AutoOffActive = true;
       relay1AutoOffAt = millis() + (autoOffSeconds * 1000UL);
-      Serial.printf("[RELAY] Relay 1 auto-off in %d seconds\n", autoOffSeconds);
       setLcdOverride("STOP KONTAK 1", "KIPAS ON 1 MENIT", 3000);
     } else {
       relay1AutoOffActive = false;
@@ -1686,7 +1534,6 @@ void handleRelayCommand(JsonObject data, const char *cmdId, const char *type) {
     if (state && autoOffSeconds > 0) {
       relay2AutoOffActive = true;
       relay2AutoOffAt = millis() + (autoOffSeconds * 1000UL);
-      Serial.printf("[RELAY] Relay 2 auto-off in %d seconds\n", autoOffSeconds);
       setLcdOverride("STOP KONTAK 2", "CHARGER 1 MENIT", 3000);
     } else {
       relay2AutoOffActive = false;
@@ -1747,7 +1594,6 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
   JsonObject data = doc["payload"].as<JsonObject>();
   if (data.isNull()) data = doc.as<JsonObject>();
 
-  // Detect type from topic if empty (for direct MQTT publishes)
   if (strlen(type) == 0) {
     if (topic.endsWith("/buzzer/set")) type = "buzzer.set";
     else if (topic.endsWith("/relay/set")) type = "relay.set";
@@ -1766,8 +1612,6 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
     int track = data["track"] | -1;
     const char *reason = data["reason"] | "dashboard_voice_test";
     if (track >= 1 && track <= 13) {
-      Serial.println("[CMD] voice.play received");
-      Serial.printf("[DFPLAYER] Play track: %d reason: %s\n", track, reason);
       playVoice((uint8_t)track, reason);
       publishAck(cmdId, type, true, "DFPlayer play command received.");
     } else {
@@ -1919,6 +1763,53 @@ void calibrateMQ2(int samples) {
   saveSettings();
 }
 
+// Dummy kalibrasi overload (tanpa parameter untuk KWS)
+void calibrateMQ2() {
+  Serial.println("[AI ACTION] calibrateMQ2() dummy dipanggil.");
+  calibrateMQ2(100);
+}
+
+// Dummy toggle relay 1 untuk KWS
+void toggleRelay1() {
+  Serial.println("[AI ACTION] toggleRelay1() dipanggil.");
+  setRelay(1, !relay1State, false);
+}
+
+int timeToMinutes(int hour, int minute) {
+  return hour * 60 + minute;
+}
+
+bool isNowInTimeRange(int nowHour, int nowMinute, int startHour, int startMinute, int endHour, int endMinute) {
+  int nowValue = timeToMinutes(nowHour, nowMinute);
+  int startValue = timeToMinutes(startHour, startMinute);
+  int endValue = timeToMinutes(endHour, endMinute);
+
+  if (startValue <= endValue) {
+    return nowValue >= startValue && nowValue <= endValue;
+  }
+
+  return nowValue >= startValue || nowValue <= endValue;
+}
+
+bool parseTimeToHourMinute(const char* timeStr, int &hour, int &minute) {
+  if (timeStr == NULL || strlen(timeStr) != 5 || timeStr[2] != ':') {
+    return false;
+  }
+
+  int parsedHour = -1;
+  int parsedMinute = -1;
+  if (sscanf(timeStr, "%2d:%2d", &parsedHour, &parsedMinute) != 2) {
+    return false;
+  }
+  if (parsedHour < 0 || parsedHour > 23 || parsedMinute < 0 || parsedMinute > 59) {
+    return false;
+  }
+
+  hour = parsedHour;
+  minute = parsedMinute;
+  return true;
+}
+
 String getIsoTimestamp() {
   DateTime now = rtc.now();
   char buf[32];
@@ -1979,30 +1870,23 @@ void sendTelemetryNow() {
   publishTelemetry(gas, temp, isGas || isSmoke, false, pir, gasLevel, obstacle);
 }
 
-void sendTelemetryHttp(int gasRaw, float tempC, bool gasWarning, bool tempWarning, bool pirDetected, bool obstacleNear) {
-  WiFiClientSecure client; client.setInsecure();
-  HTTPClient http;
-  http.begin(client, "https://smartbox-asisten.vercel.app/api/telemetry");
-  http.addHeader("Content-Type", "application/json");
-  StaticJsonDocument<512> doc;
-  doc["gasRaw"] = gasRaw;
-  String body; serializeJson(doc, body);
-  http.POST(body);
-  http.end();
-}
-
 void checkWarnings(int gasRaw, float tempC, bool anyGasWarning, bool tempWarning, bool pirDetected) {
   bool isGas = gasEnabled && gasRaw >= gasThreshold;
   bool isSmoke = gasEnabled && gasRaw >= smokeThreshold && gasRaw < gasThreshold;
   bool gasWarning = isGas || isSmoke;
-  bool triggerBuzzer = (gasWarning && pirDetected) || (gasEnabled && gasRaw >= 1300);
+  bool triggerBuzzer = (gasWarning && pirDetected) || isGas || (gasEnabled && gasRaw >= 1300);
 
   if (isGas) {
     setBluetoothAudio(true);
     setRgb(255, 0, 0);
     if (!relay1State) setRelay(1, true, false);
     relay1ForcedByGas = true;
-    playGasWarningVoice("gas");
+
+    // Putar sapaan peringatan gas HANYA SEKALI
+    if (!isGasWarningPlayed) {
+      isGasWarningPlayed = true;
+      playVoice(TRACK_GAS_DETECTED, "gas_detected");
+    }
 
     if (!lastGasWarning) {
       lastGasWarning = true;
@@ -2017,12 +1901,17 @@ void checkWarnings(int gasRaw, float tempC, bool anyGasWarning, bool tempWarning
     setBluetoothAudio(true);
     setRgb(255, 80, 0);
 
+    // Putar sapaan peringatan asap HANYA SEKALI
+    if (!isSmokeWarningPlayed) {
+      isSmokeWarningPlayed = true;
+      playVoice(TRACK_SMOKE_DETECTED, "smoke_detected");
+    }
+
     if (!lastSmokeWarning) {
       lastSmokeWarning = true;
       lastGasWarning = false;
       smokeStatusStr = "detected";
       gasStatusStr = "normal";
-      playGasWarningVoice("smoke");
       publishEvent("WARNING", "smoke.detected", "Asap terdeteksi!");
       setLcdOverride("ASAP TERDETEKSI", "SEGERA PERIKSA!", 5000);
     }
@@ -2034,6 +1923,8 @@ void checkWarnings(int gasRaw, float tempC, bool anyGasWarning, bool tempWarning
       }
       lastGasWarning = false;
       lastSmokeWarning = false;
+      isGasWarningPlayed = false;
+      isSmokeWarningPlayed = false;
       gasStatusStr = "normal";
       smokeStatusStr = "normal";
       if (relay1ForcedByGas) {
@@ -2104,7 +1995,6 @@ void updateLcd(int gasRaw, float tempC, bool gasWarning, bool tempWarning, bool 
     snprintf(line1, sizeof(line1), "GERAKAN");
     snprintf(line2, sizeof(line2), "TERDETEKSI");
   } else {
-    Serial.println("[LCD] Update status normal.");
     if (rtcReady) {
       DateTime now = rtc.now();
       snprintf(line1, sizeof(line1), "SMARTBOX %02d:%02d", now.hour(), now.minute());
@@ -2119,20 +2009,10 @@ void updateLcd(int gasRaw, float tempC, bool gasWarning, bool tempWarning, bool 
   printLcdLine(1, line2);
 }
 
-void checkClaps() {
-  if (!voiceMode || !clapEnabled) return;
-  size_t bytesRead = 0;
-  i2s_read(MIC_I2S_PORT, sampleBuffer, sizeof(sampleBuffer), &bytesRead, 0);
-  if (bytesRead > 0) {
-    clapCount++; lastClapTime = millis();
-  }
-}
-
 void checkBlackButton() {
   bool reading = digitalRead(BLACK_BTN_PIN);
   unsigned long now = millis();
 
-  // Debounce logic
   if (reading != blackBtnLastReading) {
     blackBtnLastChangeAt = now;
   }
@@ -2152,15 +2032,12 @@ void checkBlackButton() {
           unsigned long pressDuration = now - blackBtnPressedAt;
           if (pressDuration < 800) {
             handleBlackButtonQuickPress();
-          } else {
-            Serial.printf("[BUTTON] Pressed for %d ms (not quick, not long enough, or already handled)\n", (int)pressDuration);
           }
         }
       }
     }
   }
 
-  // Handle long press while button is still pressed down
   if (blackBtnStableState == LOW && !blackLongPressHandled) {
     if (now - blackBtnPressedAt >= BLACK_BUTTON_LONG_PRESS_MS) {
       blackLongPressHandled = true;
@@ -2193,174 +2070,396 @@ void handleBlackButtonQuickPress() {
 }
 
 void handleBlackButtonLongPress() {
-  Serial.println("[BUTTON] Black long press - AI voice question");
+  Serial.println("[BUTTON] Black long press - Trigger AI voice recording flow");
 
-  setLcdOverride("AI MENDENGAR", "SILAKAN BICARA", 3000);
-  publishEvent("INFO", "button.black.long", "Tombol hitam tahan: mode tanya AI.");
+  if (systemState != STATE_KWS) {
+    Serial.println("[BUTTON] Alur AI sedang berjalan. Mengabaikan penekanan tombol.");
+    return;
+  }
 
-  bool ok = recordAndSendVoiceToAI();
+  // ===========================================================================
+  // PERALIHAN DARI EDGE IMPULSE (KWS) KE PEREKAM WEB (GEMINI)
+  // ===========================================================================
+  // Langkah 1: Ubah status sistem ke STATE_RECORDING. Ini secara otomatis akan
+  //            menghentikan pemanggilan klasifikasi Edge Impulse pada loop().
+  systemState = STATE_RECORDING;
 
-  if (ok) {
-    setLcdOverride("AI MENJAWAB", "CEK WEBSITE", 4000);
+  // Langkah 2: Reset index buffer rekaman dan catat waktu mulai perekaman.
+  recordBufferIdx = 0;
+  recordingStartMillis = millis();
+
+  // Langkah 3: Tampilkan feedback ke LCD dan kirim event.
+  setLcdOverride("AI MENDENGAR", "SILAKAN BICARA", 4000);
+  publishEvent("INFO", "button.black.long", "Tombol hitam ditahan: Memulai perekaman Gemini AI.");
+
+  Serial.println("[I2S SWITCH] Proses KWS (Edge Impulse) ditangguhkan. Perekaman audio ke PSRAM dimulai...");
+}
+
+void handleSendingState() {
+  setLcdOverride("AI MEMPROSES", "MENGIRIM KE AI", 5000);
+  Serial.println("[AI] Mengirim audio WAV ke backend...");
+
+  WavHeader header;
+  header.chunkSize = 36 + recordBufferIdx;
+  header.subchunk2Size = recordBufferIdx;
+  memcpy(recordBuffer, &header, 44);
+
+  WiFiClient client;
+  HTTPClient http;
+
+  if (http.begin(client, AI_BACKEND_URL)) {
+    http.addHeader("Content-Type", "audio/wav");
+    http.addHeader("x-device-id", DEVICE_ID);
+    http.addHeader("x-source", "black_button_long_press");
+    http.setTimeout(25000);
+
+    int httpResponseCode = http.POST(recordBuffer, 44 + recordBufferIdx);
+
+    if (httpResponseCode == 200) {
+      String response = http.getString();
+      Serial.printf("[AI] Response received: %s\n", response.c_str());
+
+      StaticJsonDocument<512> doc;
+      DeserializationError error = deserializeJson(doc, response);
+      if (!error && doc["success"]) {
+        const char* audioUrl = doc["audioUrl"] | "";
+        const char* aiText = doc["text"] | "Success";
+        setLcdOverride("AI JAWABAN:", aiText, 5000);
+
+        if (strlen(audioUrl) > 0) {
+          aiResponseUrl = "http://192.168.1.10:3000" + String(audioUrl);
+          systemState = STATE_DOWNLOADING;
+          http.end();
+          return;
+        }
+      }
+    } else {
+      Serial.printf("[AI] HTTP POST gagal, code: %d, error: %s\n",
+                    httpResponseCode, http.errorToString(httpResponseCode).c_str());
+    }
+    http.end();
+  }
+
+  setLcdOverride("AI ERROR", "KIRIM GAGAL", 3000);
+  systemState = STATE_KWS; // Kembali ke KWS jika gagal
+}
+
+void handleDownloadingState() {
+  setLcdOverride("MENGUNDUH JAWABAN", "MOHON TUNGGU", 5000);
+  Serial.printf("[AI] Mengunduh MP3 dari: %s\n", aiResponseUrl.c_str());
+
+  WiFiClient client;
+  HTTPClient http;
+
+  if (http.begin(client, aiResponseUrl)) {
+    http.setTimeout(15000);
+    int httpResponseCode = http.GET();
+
+    if (httpResponseCode == 200) {
+      File file = LittleFS.open("/response.mp3", "w");
+      if (file) {
+        WiFiClient* stream = http.getStreamPtr();
+        int len = http.getSize();
+        uint8_t buff[512];
+        int written = 0;
+
+        while (http.connected() && (len > 0 || len == -1)) {
+          size_t size = stream->available();
+          if (size) {
+            int c = stream->readBytes(buff, ((size > sizeof(buff)) ? sizeof(buff) : size));
+            file.write(buff, c);
+            written += c;
+            if (len > 0) {
+              len -= c;
+              if (len <= 0) break;
+            }
+          }
+          yield();
+        }
+        file.close();
+        Serial.printf("[AI] Berhasil mengunduh %d bytes ke /response.mp3\n", written);
+        systemState = STATE_PLAYING;
+        isPlayingResponse = false;
+      } else {
+        Serial.println("[AI] Gagal membuka file /response.mp3 untuk menulis.");
+        systemState = STATE_KWS;
+      }
+    } else {
+      Serial.printf("[AI] Unduh MP3 gagal, code: %d\n", httpResponseCode);
+      systemState = STATE_KWS;
+    }
+    http.end();
   } else {
-    setLcdOverride("AI ERROR", "CEK KONEKSI", 4000);
+    Serial.println("[AI] Koneksi HTTP gagal untuk unduh.");
+    systemState = STATE_KWS;
   }
 }
 
-bool recordAudioWavToBuffer(uint8_t** wavData, size_t* wavSize, int seconds) {
-  Serial.printf("[AI] Starting recording: %d seconds\n", seconds);
-  
-  size_t rawSize = 16000 * 2 * seconds;
-  size_t totalSize = 44 + rawSize;
-  
-  uint8_t* buffer = NULL;
-  if (psramFound()) {
-    buffer = (uint8_t*)ps_malloc(totalSize);
-    if (buffer == NULL) {
-      Serial.println("[AI] Failed allocating with ps_malloc, trying malloc");
-      buffer = (uint8_t*)malloc(totalSize);
-    }
-  } else {
-    Serial.println("[AI] PSRAM tidak tersedia / buffer tidak cukup");
-    buffer = (uint8_t*)malloc(totalSize);
+void handlePlayingState() {
+  if (!isPlayingResponse) {
+    isPlayingResponse = true;
+    Serial.println("[AI] Memulai pemutaran audio MP3 via PT8211...");
+    setLcdOverride("AI MENJAWAB", "MEMUTAR AUDIO...", 10000);
+
+    // Aktifkan amplifier audio
+    setBluetoothAudio(true);
+    delay(200);
+
+    audioFile = new AudioFileSourceLittleFS("/response.mp3");
+    // Gunakan I2S_NUM_0 untuk DAC PT8211
+    audioOut = new AudioOutputI2S(0, AudioOutputI2S::EXTERNAL_I2S);
+    audioOut->SetPinout(PT_BCLK, PT_LRC, PT_DOUT);
+    audioMp3 = new AudioGeneratorMP3();
+
+    audioMp3->begin(audioFile, audioOut);
   }
-  
-  if (buffer == NULL) {
-    Serial.printf("[AI] Memory allocation failed for size %d\n", (int)totalSize);
-    return false;
-  }
-  
-  WavHeader header;
-  header.chunkSize = 36 + rawSize;
-  header.subchunk2Size = rawSize;
-  memcpy(buffer, &header, 44);
-  
-  size_t bytesRecorded = 0;
-  unsigned long startMillis = millis();
-  unsigned long durationMs = seconds * 1000;
-  
-  int32_t i2sSamples[64];
-  
-  while (millis() - startMillis < durationMs) {
-    size_t bytesRead = 0;
-    esp_err_t err = i2s_read(MIC_I2S_PORT, i2sSamples, sizeof(i2sSamples), &bytesRead, 0);
-    if (err == ESP_OK && bytesRead > 0) {
-      size_t numSamples = bytesRead / 4;
-      for (size_t i = 0; i < numSamples; i++) {
-        if (bytesRecorded + 2 <= rawSize) {
-          int16_t sample16 = (int16_t)(i2sSamples[i] >> 14);
-          buffer[44 + bytesRecorded] = sample16 & 0xFF;
-          buffer[44 + bytesRecorded + 1] = (sample16 >> 8) & 0xFF;
-          bytesRecorded += 2;
-        }
+
+  if (audioMp3 && audioMp3->isRunning()) {
+    if (!audioMp3->loop()) {
+      audioMp3->stop();
+      Serial.println("[AI] Selesai memutar MP3.");
+
+      delete audioMp3;   audioMp3 = nullptr;
+      delete audioOut;   audioOut = nullptr;
+      delete audioFile;  audioFile = nullptr;
+
+      if (!bluetoothAktif) {
+        setBluetoothAudio(false);
       }
+
+      // ===========================================================================
+      // PERALIHAN KEMBALI DARI PEMUTARAN AUDIO KE EDGE IMPULSE (KWS)
+      // ===========================================================================
+      // Langkah 1: Ubah status kembali ke STATE_KWS agar Edge Impulse aktif kembali.
+      systemState = STATE_KWS;
+      isPlayingResponse = false;
+
+      Serial.println("[I2S SWITCH] Pemutaran selesai. Mengaktifkan kembali KWS (Edge Impulse)...");
+      setLcdOverride("AI SELESAI", "KWS AKTIF KEMBALI", 3000);
     }
-    yield();
   }
-  
-  Serial.printf("[AI] Recorded %d bytes of raw PCM audio (%d bytes total with WAV header)\n", (int)bytesRecorded, (int)(44 + bytesRecorded));
-  
-  *wavData = buffer;
-  *wavSize = 44 + bytesRecorded;
+}
+
+// ==========================================================
+// EDGE IMPULSE GET DATA CALLBACK
+// ==========================================================
+int microphone_audio_signal_get_data(size_t offset, size_t length, float *out_ptr) {
+  numpy::int16_to_float(&audio_buffer[offset], out_ptr, length);
+  return 0;
+}
+
+// ==========================================================
+// INIT I2S INMP441 (I2S_NUM_1)
+// ==========================================================
+void initI2SMic() {
+  Serial.println("[I2S] Init INMP441 pada I2S_NUM_1...");
+
+  i2s_channel_fmt_t channelFormat = I2S_CHANNEL_FMT_ONLY_LEFT;
+
+  i2s_config_t i2s_config = {
+    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
+    .sample_rate = SAMPLE_RATE,
+    .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
+    .channel_format = channelFormat,
+    .communication_format = I2S_COMM_FORMAT_I2S,
+    .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+    .dma_buf_count = 8,
+    .dma_buf_len = 512,
+    .use_apll = false,
+    .tx_desc_auto_clear = false,
+    .fixed_mclk = 0
+  };
+
+  i2s_pin_config_t pin_config = {
+    .bck_io_num = MIC_SCK,
+    .ws_io_num = MIC_WS,
+    .data_out_num = I2S_PIN_NO_CHANGE,
+    .data_in_num = MIC_SD
+  };
+
+  esp_err_t err;
+
+  err = i2s_driver_install(MIC_I2S_PORT, &i2s_config, 0, NULL);
+  if (err != ESP_OK) {
+    Serial.printf("[I2S ERROR] i2s_driver_install gagal: %d\n", err);
+    while (true) { delay(1000); }
+  }
+
+  err = i2s_set_pin(MIC_I2S_PORT, &pin_config);
+  if (err != ESP_OK) {
+    Serial.printf("[I2S ERROR] i2s_set_pin gagal: %d\n", err);
+    while (true) { delay(1000); }
+  }
+
+  err = i2s_zero_dma_buffer(MIC_I2S_PORT);
+  if (err != ESP_OK) {
+    Serial.printf("[I2S ERROR] i2s_zero_dma_buffer gagal: %d\n", err);
+  }
+
+  Serial.println("[I2S] INMP441 siap.");
+}
+
+// Merekam slice audio untuk Edge Impulse (Continuous mode)
+bool recordAudioSlice(float *outRms, int *outPeak, float *outAvgAbs) {
+  uint32_t samples_read = 0;
+  int peakAbs = 0;
+  uint64_t sumAbs = 0;
+  uint64_t sumSquares = 0;
+  unsigned long startMs = millis();
+  unsigned long timeoutMs = 5000;
+
+  while (samples_read < EI_CLASSIFIER_SLICE_SIZE) {
+    if (millis() - startMs > timeoutMs) {
+      Serial.println("[MIC ERROR] Timeout membaca audio untuk KWS.");
+      return false;
+    }
+
+    size_t bytes_read = 0;
+    int32_t raw_samples[128];
+
+    esp_err_t err = i2s_read(
+      MIC_I2S_PORT,
+      raw_samples,
+      sizeof(raw_samples),
+      &bytes_read,
+      pdMS_TO_TICKS(100)
+    );
+
+    if (err != ESP_OK) {
+      return false;
+    }
+
+    if (bytes_read == 0) {
+      continue;
+    }
+
+    int count = bytes_read / sizeof(int32_t);
+
+    for (int i = 0; i < count; i++) {
+      if (samples_read >= EI_CLASSIFIER_SLICE_SIZE) {
+        break;
+      }
+
+      int32_t shifted = raw_samples[i] >> I2S_SHIFT;
+      float gained = shifted * AUDIO_GAIN;
+
+      if (gained > 32767) gained = 32767;
+      if (gained < -32768) gained = -32768;
+
+      int16_t sample16 = (int16_t)gained;
+
+      audio_buffer[samples_read] = sample16;
+
+      int absValue = abs((int)sample16);
+      if (absValue > peakAbs) peakAbs = absValue;
+      sumAbs += absValue;
+      sumSquares += (int64_t)sample16 * (int64_t)sample16;
+
+      samples_read++;
+    }
+  }
+
+  float avgAbs = (float)sumAbs / (float)EI_CLASSIFIER_SLICE_SIZE;
+  float rms = sqrt((float)sumSquares / (float)EI_CLASSIFIER_SLICE_SIZE);
+
+  *outRms = rms;
+  *outPeak = peakAbs;
+  *outAvgAbs = avgAbs;
+
   return true;
 }
 
-bool sendVoiceToAIBackend(uint8_t* wavData, size_t wavSize) {
-  if (wavData == NULL || wavSize <= 44) {
-    Serial.println("[AI] Invalid audio data to send.");
-    return false;
-  }
-
-  Serial.println("[AI] Preparing WAV buffer...");
-  Serial.printf("[AI] WAV size: %d bytes\n", (int)wavSize);
-  Serial.printf("[AI] Sending to backend: %s\n", AI_BACKEND_URL);
-
-  WiFiClientSecure clientSecure;
-  WiFiClient clientHttp;
-  HTTPClient http;
-  
-  bool isHttps = String(AI_BACKEND_URL).startsWith("https://");
-  bool beginSuccess = false;
-  
-  if (isHttps) {
-    clientSecure.setInsecure();
-    beginSuccess = http.begin(clientSecure, AI_BACKEND_URL);
-  } else {
-    beginSuccess = http.begin(clientHttp, AI_BACKEND_URL);
-  }
-
-  if (!beginSuccess) {
-    Serial.println("[AI] HTTP begin failed.");
-    return false;
-  }
-
-  http.setTimeout(20000);
-  http.addHeader("Content-Type", "audio/wav");
-  http.addHeader("x-device-id", DEVICE_ID);
-  http.addHeader("x-source", "black_button_long_press");
-
-  int httpCode = http.POST(wavData, wavSize);
-  Serial.printf("[AI] HTTP code: %d\n", httpCode);
-
-  bool success = false;
-  if (httpCode == 200) {
-    String response = http.getString();
-    Serial.printf("[AI] Response: %s\n", response.c_str());
-    
-    StaticJsonDocument<512> doc;
-    DeserializationError error = deserializeJson(doc, response);
-    if (!error && doc["success"]) {
-      success = true;
-    } else {
-      Serial.println("[AI] Response parse failed or success is false.");
-    }
-  } else {
-    Serial.println("[AI] Connection failed");
-    Serial.println("[AI] Backend URL salah / WiFi putus / HTTPS gagal");
-    if (httpCode > 0) {
-      String response = http.getString();
-      Serial.println(response);
+// Mendapatkan nilai score dari label tertentu
+float getLabelScore(ei_impulse_result_t *result, const char *targetLabel) {
+  for (size_t ix = 0; ix < EI_CLASSIFIER_LABEL_COUNT; ix++) {
+    String label = result->classification[ix].label;
+    if (label == targetLabel) {
+      return result->classification[ix].value;
     }
   }
-
-  http.end();
-  return success;
+  return 0.0f;
 }
 
-bool recordAndSendVoiceToAI() {
-  uint8_t* wavData = NULL;
-  size_t wavSize = 0;
-  int seconds = 4;
-  
-  bool success = recordAudioWavToBuffer(&wavData, &wavSize, seconds);
-  
-  if (!success) {
-    seconds = 3;
-    success = recordAudioWavToBuffer(&wavData, &wavSize, seconds);
+// Mendapatkan label terbaik dengan score tertinggi
+void getBestLabel(ei_impulse_result_t *result, String *bestLabel, float *bestScore) {
+  *bestLabel = "";
+  *bestScore = 0.0f;
+  for (size_t ix = 0; ix < EI_CLASSIFIER_LABEL_COUNT; ix++) {
+    float score = result->classification[ix].value;
+    String label = result->classification[ix].label;
+    if (score > *bestScore) {
+      *bestScore = score;
+      *bestLabel = label;
+    }
   }
-  
-  if (!success) {
-    Serial.println("[AI] Gagal merekam audio.");
-    return false;
-  }
-  
-  setLcdOverride("AI MEMPROSES", "MOHON TUNGGU", 3000);
-  setLcdOverride("MENGIRIM AI", "KE SERVER", 3000);
-  
-  bool sent = sendVoiceToAIBackend(wavData, wavSize);
-  
-  if (wavData != NULL) {
-    free(wavData);
-  }
-  
-  return sent;
+}
+
+// Event handlers ketika keyword terdeteksi
+void onHaloAeroDetected(float score, float rms, int peak) {
+  smartboxAwake = true;
+
+  Serial.println();
+  Serial.println("==================================================");
+  Serial.println(">>> COMMAND DETECTED: Halo_Aero");
+  Serial.printf(">>> Score: %.2f%% | RMS: %.1f | Peak: %d\n", score * 100.0f, rms, peak);
+  Serial.println(">>> Aksi: Membangunkan asisten, memutar Track 14.");
+  Serial.println("==================================================");
+
+  playVoice(TRACK_HALO_AERO, "wake_word");
+  setLcdOverride("HALLO AERO", "ADA YANG BISA BANTU", 4000);
+}
+
+void onCalibrationDetected(float score, float rms, int peak) {
+  Serial.println();
+  Serial.println("==================================================");
+  Serial.println(">>> COMMAND DETECTED: calibration");
+  Serial.printf(">>> Score: %.2f%% | RMS: %.1f | Peak: %d\n", score * 100.0f, rms, peak);
+  Serial.println(">>> Aksi: Memulai kalibrasi sensor MQ-2.");
+  Serial.println("==================================================");
+
+  calibrateMQ2();
+  setLcdOverride("KALIBRASI SUARA", "MQ2 CALIBRATING", 4000);
+}
+
+void onOneClapDetected(float score, float rms, int peak) {
+  Serial.println();
+  Serial.println("==================================================");
+  Serial.println(">>> COMMAND DETECTED: 1_tepukan");
+  Serial.printf(">>> Score: %.2f%% | RMS: %.1f | Peak: %d\n", score * 100.0f, rms, peak);
+  Serial.println(">>> Aksi: Mengubah status stop kontak/relay 1.");
+  Serial.println("==================================================");
+
+  toggleRelay1();
+}
+
+// Mencetak hasil klasifikasi Edge Impulse ke serial untuk debug
+void printDebugResult(
+  ei_impulse_result_t *result,
+  float micRms,
+  int micPeak,
+  float micAvgAbs,
+  String bestLabel,
+  float bestScore,
+  float haloScore,
+  float calibrationScore,
+  float clapScore
+) {
+  Serial.println();
+  Serial.println("================ VOICE DEBUG ================");
+  Serial.printf("[MIC] RMS: %.1f | Peak: %d | AvgAbs: %.1f | MinRMS: %.1f\n",
+                micRms, micPeak, micAvgAbs, MIC_RMS_MIN);
+  Serial.printf("[BEST] %s = %.2f%%\n", bestLabel.c_str(), bestScore * 100.0f);
+  Serial.printf("  Halo_Aero   : %.2f%%\n", haloScore * 100.0f);
+  Serial.printf("  calibration : %.2f%%\n", calibrationScore * 100.0f);
+  Serial.printf("  1_tepukan   : %.2f%%\n", clapScore * 100.0f);
+  Serial.println("=============================================");
 }
 
 void checkButtons() {
   unsigned long now = millis();
   const unsigned long DEBOUNCE_DELAY_MS = 50;
 
-  // 2. White Button Logic (Short: Assistant Intro)
+  // 2. White Button Logic (Short: Play Track 1 - Assistant Intro/Ready)
   static unsigned long whiteBtnPressTime = 0;
   static bool whiteBtnWasPressed = false;
   bool whiteBtnState = (digitalRead(WHITE_BTN_PIN) == LOW);
@@ -2375,7 +2474,6 @@ void checkButtons() {
       unsigned long pressDuration = now - whiteBtnPressTime;
       whiteBtnWasPressed = false;
       if (pressDuration >= DEBOUNCE_DELAY_MS) {
-        Serial.println("[BUTTON] White intro");
         handleWhiteButtonQuickPress();
       }
     }
@@ -2408,6 +2506,9 @@ void checkButtons() {
   }
 }
 
+// ==========================================================
+// SETUP
+// ==========================================================
 void setup() {
   Serial.begin(115200);
   delay(1000);
@@ -2415,6 +2516,7 @@ void setup() {
   Serial.println();
   Serial.println("========== SMARTBOX BOOT ==========");
 
+  // Inisialisasi GPIO
   pinMode(RELAY_1_PIN, OUTPUT_OPEN_DRAIN);
   pinMode(RELAY_2_PIN, OUTPUT_OPEN_DRAIN);
   pinMode(BUZZER_PIN, OUTPUT);
@@ -2473,7 +2575,43 @@ void setup() {
   }
   delay(1500);
 
-  setupMicI2S();
+  // Inisialisasi LittleFS (Sesuai kebutuhan arsitektur)
+  if (!LittleFS.begin(true)) {
+    Serial.println("[LittleFS] Gagal inisialisasi LittleFS!");
+  } else {
+    Serial.println("[LittleFS] LittleFS berhasil diinisialisasi.");
+  }
+
+  // Inisialisasi PSRAM (Sesuai kebutuhan arsitektur)
+  if (psramInit()) {
+    Serial.println("[PSRAM] PSRAM terdeteksi dan diinisialisasi.");
+  } else {
+    Serial.println("[PSRAM] PSRAM tidak terdeteksi!");
+  }
+
+  // Alokasi record buffer di PSRAM
+  recordBuffer = (uint8_t *)ps_malloc(RECORD_BUFFER_SIZE + 44);
+  if (recordBuffer == NULL) {
+    Serial.println("[MEM] Gagal alokasi recordBuffer di PSRAM, mencoba RAM internal...");
+    recordBuffer = (uint8_t *)malloc(RECORD_BUFFER_SIZE + 44);
+  }
+  if (recordBuffer != NULL) {
+    Serial.println("[MEM] recordBuffer siap.");
+  }
+
+  // Alokasi Edge Impulse audio buffer
+  audio_buffer = (int16_t *)malloc(EI_CLASSIFIER_SLICE_SIZE * sizeof(int16_t));
+  if (audio_buffer == NULL) {
+    Serial.println("[MEM] Gagal alokasi audio_buffer untuk KWS!");
+    while (true) { delay(1000); }
+  }
+
+  // Inisialisasi I2S Mic INMP441
+  initI2SMic();
+
+  // Inisialisasi Classifier Edge Impulse
+  run_classifier_init();
+  Serial.println("[EI] Edge Impulse classifier siap.");
 
   secureClient.setInsecure();
   mqttClient.setServer(MQTT_HOST, MQTT_PORT);
@@ -2493,6 +2631,10 @@ void setup() {
 
   Serial.println("========== SMARTBOX READY ==========");
 }
+
+// ==========================================================
+// LOOP
+// ==========================================================
 void loop() {
   if (WiFi.status() != WL_CONNECTED) {
     connectWiFi();
@@ -2512,6 +2654,102 @@ void loop() {
   checkBluetoothTimer();
   serviceVoiceQueue();
 
+  // ===========================================================================
+  // STATE MACHINE AUDIO AI & SWITCHING I2S
+  // ===========================================================================
+  if (systemState == STATE_RECORDING) {
+    // Sedang dalam proses merekam suara mic untuk dikirim ke Gemini.
+    // Edge Impulse KWS sedang dihentikan sementara secara otomatis karena state tidak STATE_KWS.
+    int32_t i2sSamples[64];
+    size_t bytesRead = 0;
+    
+    // Membaca data mic secara non-blocking dari MIC_I2S_PORT (I2S_NUM_1)
+    esp_err_t err = i2s_read(MIC_I2S_PORT, i2sSamples, sizeof(i2sSamples), &bytesRead, 0);
+    if (err == ESP_OK && bytesRead > 0) {
+      size_t numSamples = bytesRead / sizeof(int32_t);
+      for (size_t i = 0; i < numSamples; i++) {
+        if (recordBufferIdx + 2 <= RECORD_BUFFER_SIZE) {
+          int32_t shifted = i2sSamples[i] >> I2S_SHIFT;
+          float gained = shifted * AUDIO_GAIN;
+          if (gained > 32767) gained = 32767;
+          if (gained < -32768) gained = -32768;
+          int16_t sample16 = (int16_t)gained;
+          
+          recordBuffer[44 + recordBufferIdx] = sample16 & 0xFF;
+          recordBuffer[44 + recordBufferIdx + 1] = (sample16 >> 8) & 0xFF;
+          recordBufferIdx += 2;
+        }
+      }
+    }
+    
+    if (millis() - recordingStartMillis >= 4000) {
+      Serial.println("[AI] Perekaman 4 detik selesai.");
+      systemState = STATE_SENDING;
+    }
+  } 
+  else if (systemState == STATE_SENDING) {
+    // Mengunggah file WAV ke Next.js API
+    handleSendingState();
+  } 
+  else if (systemState == STATE_DOWNLOADING) {
+    // Mengunduh output audio MP3 dari Gemini ke LittleFS
+    handleDownloadingState();
+  } 
+  else if (systemState == STATE_PLAYING) {
+    // Memutar MP3 dari LittleFS ke PT8211 DAC (I2S_NUM_0)
+    handlePlayingState();
+  } 
+  else if (systemState == STATE_KWS) {
+    // State default (Edge Impulse Active). Menjalankan classifier.
+    float micRms = 0.0f;
+    float micAvgAbs = 0.0f;
+    int micPeak = 0;
+
+    bool ok = recordAudioSlice(&micRms, &micPeak, &micAvgAbs);
+
+    if (ok) {
+      signal_t signal;
+      signal.total_length = EI_CLASSIFIER_SLICE_SIZE;
+      signal.get_data = &microphone_audio_signal_get_data;
+
+      ei_impulse_result_t result = { 0 };
+      EI_IMPULSE_ERROR err = run_classifier_continuous(&signal, &result, false);
+
+      if (err == EI_IMPULSE_OK) {
+        String bestLabel = "";
+        float bestScore = 0.0f;
+        getBestLabel(&result, &bestLabel, &bestScore);
+
+        float haloScore = getLabelScore(&result, "Halo_Aero");
+        float calibrationScore = getLabelScore(&result, "calibration");
+        float clapScore = getLabelScore(&result, "1_tepukan");
+
+        bool micValid = micRms >= MIC_RMS_MIN;
+
+        if (millis() - lastDebugTime >= DEBUG_INTERVAL_MS) {
+          lastDebugTime = millis();
+          printDebugResult(&result, micRms, micPeak, micAvgAbs, bestLabel, bestScore, haloScore, calibrationScore, clapScore);
+        }
+
+        if (micValid && (millis() - lastCommandTime >= COMMAND_COOLDOWN_MS)) {
+          if (haloScore >= SCORE_THRESHOLD_HALO) {
+            lastCommandTime = millis();
+            onHaloAeroDetected(haloScore, micRms, micPeak);
+          } else if (calibrationScore >= SCORE_THRESHOLD_CALIBRATION) {
+            lastCommandTime = millis();
+            onCalibrationDetected(calibrationScore, micRms, micPeak);
+          } else if (clapScore >= SCORE_THRESHOLD_CLAP) {
+            lastCommandTime = millis();
+            onOneClapDetected(clapScore, micRms, micPeak);
+          }
+        }
+      }
+    }
+  }
+
+  // ===========================================================================
+  // REAL-TIME SENSOR MONITORING
+  // ===========================================================================
   int gasRaw = getFilteredGas();
   float tempC = rtcReady ? rtc.getTemperature() + tempOffset : 0.0;
 
