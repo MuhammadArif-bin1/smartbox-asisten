@@ -433,6 +433,46 @@ setInterval(async () => {
 const lastRelayTrigger = new Map<string, string>();
 const lastAlarmTrigger = new Map<string, string>();
 
+// Cache arrays to prevent database spamming when checking every second
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let cachedRelaySchedules: any[] = [];
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let cachedAlarmSchedules: any[] = [];
+let lastCacheFetchTime = 0;
+const CACHE_TTL_MS = 30 * 1000; // 30 seconds
+
+async function refreshSchedulesCacheIfNeeded() {
+  const now = Date.now();
+  if (now - lastCacheFetchTime < CACHE_TTL_MS && cachedRelaySchedules.length > 0) {
+    return;
+  }
+  try {
+    const relaySchedules = await retryQuery(() => prisma.relaySchedule.findMany({
+      where: { enabled: true },
+    })).catch((err) => {
+      console.error("[Worker Schedule] Error fetching schedules for cache:", err);
+      return null;
+    });
+
+    const alarmSchedules = await retryQuery(() => prisma.alarmSchedule.findMany({
+      where: { active: true },
+    })).catch((err) => {
+      console.error("[Worker Alarm] Error fetching alarm schedules for cache:", err);
+      return null;
+    });
+
+    if (relaySchedules !== null) {
+      cachedRelaySchedules = relaySchedules;
+    }
+    if (alarmSchedules !== null) {
+      cachedAlarmSchedules = alarmSchedules;
+    }
+    lastCacheFetchTime = now;
+  } catch (err) {
+    console.error("[Worker Cache] Unhandled error during cache refresh:", err);
+  }
+}
+
 function getJakartaDateTime() {
   const options: Intl.DateTimeFormatOptions = {
     timeZone: "Asia/Jakarta",
@@ -465,16 +505,11 @@ function getJakartaDateTime() {
 
 async function checkRelaySchedules() {
   try {
+    await refreshSchedulesCacheIfNeeded();
     const { weekday, hour, minute, date } = getJakartaDateTime();
     const timeStr = `${hour}:${minute}`;
     
-    // Fetch all enabled relay schedules
-    const schedules = await retryQuery(() => prisma.relaySchedule.findMany({
-      where: { enabled: true },
-    })).catch((err) => {
-      console.error("[Worker Schedule] Error fetching schedules:", err);
-      return [];
-    });
+    const schedules = cachedRelaySchedules;
 
     const targetDeviceId = process.env.NEXT_PUBLIC_DEVICE_ID || "smartbox-001";
     const topic = `smartbox/${targetDeviceId}/cmd`;
@@ -581,17 +616,12 @@ async function checkRelaySchedules() {
 }
 
 async function checkAlarmSchedules() {
-  console.log("[Worker] Alarm schedule check running");
   try {
-    const { weekday, hour, minute, date } = getJakartaDateTime();
+    await refreshSchedulesCacheIfNeeded();
+    const { hour, minute, date } = getJakartaDateTime();
     const timeStr = `${hour}:${minute}`;
 
-    const schedules = await retryQuery(() => prisma.alarmSchedule.findMany({
-      where: { active: true },
-    })).catch((err) => {
-      console.error("[Worker Alarm] Error fetching alarm schedules:", err);
-      return [];
-    });
+    const schedules = cachedAlarmSchedules;
 
     const targetDeviceId = process.env.NEXT_PUBLIC_DEVICE_ID || "smartbox-001";
     const topic = `smartbox/${targetDeviceId}/cmd`;
@@ -637,6 +667,9 @@ async function checkAlarmSchedules() {
         data: { lastRunAt: new Date() },
       })).catch((err) => console.error("[Worker Alarm] Error updating lastRunAt:", err));
 
+      // Update local memory cache object too
+      schedule.lastRunAt = new Date();
+
       const command = {
         id: "cmd_alarm_voice_play",
         type: "voice.play",
@@ -677,7 +710,7 @@ async function runSchedulers() {
   await Promise.all([checkRelaySchedules(), checkAlarmSchedules()]);
 }
 
-// Run schedules every 30 seconds. Date is included in each trigger key so
+// Run schedules every 1 second. Date is included in each trigger key so
 // schedules can run again on the next active day without repeating per minute.
-setInterval(runSchedulers, 30 * 1000);
-setTimeout(runSchedulers, 3000);
+setInterval(runSchedulers, 1000);
+setTimeout(runSchedulers, 1000);

@@ -3,7 +3,6 @@
 export function DetailedSensorCard({
   title,
   value,
-  status,
   lastSeen,
   online,
   accent,
@@ -11,7 +10,6 @@ export function DetailedSensorCard({
 }: {
   title: string;
   value: string;
-  status: string;
   lastSeen: string;
   online: boolean;
   accent: "blue" | "emerald" | "orange";

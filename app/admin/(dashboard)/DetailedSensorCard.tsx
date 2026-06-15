@@ -38,14 +38,31 @@ export function DetailedSensorCard({
         </div>
       </div>
       <div className="mt-4">
-        <h3 className="text-2xl font-black text-slate-900 break-all">{value}</h3>
+        <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
+          <h3 className="text-2xl font-black text-slate-900 break-words">{value}</h3>
+          {status && status !== "Offline" && status !== "Tidak Terhubung" && (
+            <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-bold border ${
+              status === "Bahaya" || status === "Ada Gerakan" || status === "Peringatan"
+                ? "bg-red-50 text-red-600 border-red-200 animate-pulse"
+                : status === "Waspada"
+                ? "bg-amber-50 text-amber-600 border-amber-200"
+                : status === "Aman" || status === "normal"
+                ? "bg-emerald-50 text-emerald-600 border-emerald-200"
+                : "bg-slate-50 text-slate-600 border-slate-200"
+            }`}>
+              {status}
+            </span>
+          )}
+        </div>
         <div className="mt-3 flex justify-between items-center flex-wrap gap-2">
           <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-bold border ${
             online ? "bg-emerald-50 text-emerald-600 border-emerald-200" : "bg-red-50 text-red-600 border-red-200"
           }`}>
             {online ? "ONLINE" : "OFFLINE"}
           </span>
-          <span className="text-xs text-slate-400 font-semibold font-mono">{lastSeen !== "-" ? `Update: ${lastSeen}` : "Belum terhubung"}</span>
+          <span className="text-xs text-slate-400 font-semibold font-mono">
+            {lastSeen && lastSeen !== "-" ? `Update: ${lastSeen}` : (online ? "Update: Baru saja" : "Belum terhubung")}
+          </span>
         </div>
       </div>
     </div>

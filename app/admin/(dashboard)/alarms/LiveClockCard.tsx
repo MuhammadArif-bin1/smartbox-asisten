@@ -6,6 +6,7 @@ export function LiveClockCard({ online, rtcReady }: { online: boolean; rtcReady:
   const [currentTime, setCurrentTime] = useState<Date | null>(null);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setCurrentTime(new Date());
     const interval = setInterval(() => { setCurrentTime(new Date()); }, 1000);
     return () => clearInterval(interval);

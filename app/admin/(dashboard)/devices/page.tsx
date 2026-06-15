@@ -1,4 +1,5 @@
 "use client";
+/* eslint-disable react-hooks/set-state-in-effect */
 
 import { useEffect, useState } from "react";
 import { useSmartbox } from "@/lib/smartbox-context";
@@ -27,11 +28,19 @@ export default function DevicesPage() {
       setSchRelay(editingSchedule.relayNumber);
       setSchStart(editingSchedule.startTime);
       setSchEnd(editingSchedule.endTime);
-      try { setSchDays(JSON.parse(editingSchedule.days)); } catch { setSchDays(["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]); }
+      try {
+        setSchDays(JSON.parse(editingSchedule.days));
+      } catch {
+        setSchDays(["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]);
+      }
       setSchEnabled(editingSchedule.enabled);
     } else {
-      setSchName(""); setSchRelay(1); setSchStart("08:00"); setSchEnd("18:00");
-      setSchDays(["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]); setSchEnabled(true);
+      setSchName("");
+      setSchRelay(1);
+      setSchStart("08:00");
+      setSchEnd("18:00");
+      setSchDays(["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]);
+      setSchEnabled(true);
     }
   }, [editingSchedule]);
 

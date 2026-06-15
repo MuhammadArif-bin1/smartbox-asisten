@@ -10,7 +10,7 @@ import { DetailedSensorCard } from "./DetailedSensorCard";
 export default function MonitoringPage() {
   const ctx = useSmartbox();
   const isOnline = ctx.deviceStatuses.esp32;
-  const lastUpdate = isOnline ? (ctx.deviceStatuses.lastSeen || "Baru saja") : "-";
+  const lastUpdate = isOnline ? (ctx.deviceStatuses.lastSeen && ctx.deviceStatuses.lastSeen !== "-" ? ctx.deviceStatuses.lastSeen : "Baru saja") : "-";
 
   return (
     <div className="grid gap-6 lg:grid-cols-[3fr_2fr]">
@@ -19,7 +19,7 @@ export default function MonitoringPage() {
           <div className="grid gap-4 md:grid-cols-3">
             <DetailedSensorCard
               title="Suhu Ruangan"
-              value={isOnline && ctx.visibleTempEstimate > 0 ? `${ctx.visibleTempEstimate.toFixed(1)}°C` : "Menunggu data..."}
+              value={isOnline ? (ctx.visibleTempEstimate > 0 ? `${ctx.visibleTempEstimate.toFixed(1)}°C` : "Menunggu data...") : "Tidak Terhubung"}
               status={ctx.tempState}
               lastSeen={lastUpdate}
               online={isOnline}
@@ -111,6 +111,22 @@ export default function MonitoringPage() {
               ctx.sendDeviceCommand("buzzer.set", { state: next }, `Buzzer ${next ? "aktif" : "mati"}`);
             }}
           />
+          <div className={`flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-4 transition-all duration-200 hover:border-slate-300 ${!isOnline ? "opacity-50" : ""}`}>
+            <div>
+              <p className="text-base font-bold text-slate-900">Kalibrasi Sensor Gas</p>
+              <p className="mt-1 text-sm text-slate-500 font-semibold text-slate-400">Mulai kalibrasi baseline sensor MQ-2.</p>
+            </div>
+            <button
+              onClick={() => {
+                ctx.sendDeviceCommand("sensor.calibrate", { samples: 100 }, "Kalibrasi MQ-2", "Kalibrasi dimulai", "Gagal mengirim kalibrasi");
+              }}
+              disabled={!isOnline}
+              className="h-10 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm px-4 shadow-md transition active:scale-95 disabled:bg-slate-400 disabled:cursor-not-allowed shrink-0"
+              type="button"
+            >
+              Kalibrasi
+            </button>
+          </div>
         </div>
       </Panel>
     </div>

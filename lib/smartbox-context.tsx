@@ -1,4 +1,5 @@
 "use client";
+/* eslint-disable react-hooks/set-state-in-effect */
 
 import { createContext, type FormEvent, type ReactNode, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { Alarm, AlarmSchedule, CommandStatus, DeviceStatuses, EventLogEntry, RelayId, RelaySchedule, SmartboxContextValue, Toast } from "./smartbox-types";
@@ -856,14 +857,12 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!isAuthenticated) return;
     if (telemetrySource === "Offline" || !temperatureEnabled) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setTempHistory((current) => [...current.slice(1), visibleTempEstimate]);
   }, [isAuthenticated, telemetrySource, temperatureEnabled, visibleTempEstimate]);
 
   useEffect(() => {
     if (!isAuthenticated) return;
     if (telemetrySource === "Offline" || !gasEnabled) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setGasHistory((current) => [...current.slice(1), visibleGasEstimate]);
   }, [isAuthenticated, telemetrySource, gasEnabled, visibleGasEstimate]);
 

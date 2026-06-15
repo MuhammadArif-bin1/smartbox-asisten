@@ -1633,6 +1633,7 @@ void connectMqtt() {
     mqttClient.subscribe("smartbox/sensor/temperature");
 
     publishOnlineStatus(true);
+    sendTelemetryNow();
 
     publishEvent("INFO", "mqtt.connected", "ESP32 tersambung ke MQTT Cloud.");
 
@@ -1821,6 +1822,11 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
       matikanBluetooth();
       publishAck(cmdId, type, true, "Bluetooth dimatikan.");
     }
+  } else if (strcmp(type, "sensor.calibrate") == 0) {
+    int samples = data["samples"] | 100;
+    setLcdOverride("KALIBRASI SENSOR", "MOHON TUNGGU", 5000);
+    calibrateMQ2(samples);
+    publishAck(cmdId, type, true, "Sensor gas MQ-2 berhasil dikalibrasi.");
   } else if (strcmp(type, "temperatureSensor.set") == 0 || strcmp(type, "tempSensor.set") == 0) {
     tempEnabled = data["enabled"] | true;
     lastTempWarning = false;
