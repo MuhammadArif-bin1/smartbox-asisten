@@ -2,7 +2,6 @@ import type { TelemetryPayload } from "./smartbox-types";
 
 /* ─── API helpers ─── */
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 export async function sendMqttCommand(topic: string, payload: Record<string, unknown>) {
   const response = await fetch("/api/mqtt", {
     method: "POST",
@@ -41,7 +40,7 @@ export function parseTelemetry(message: string): TelemetryPayload {
     return {
       gasEnabled: readBoolean(payload.gasSensorEnabled) ?? readBoolean(payload.gasEnabled),
       gasRaw: readNumber(payload.gasRaw),
-      tempEnabled: readBoolean(payload.rtcReady) ?? readBoolean(payload.tempEnabled),
+      tempEnabled: readBoolean(payload.tempEnabled) ?? readBoolean(payload.temperatureEnabled) ?? readBoolean(payload.rtcReady),
       temperatureC: readFirstNumber(payload, ["temperature", "temperatureC", "tempC", "temp", "suhuC", "suhu"]),
       flameDetected: readBoolean(payload.flameDetected),
       pirDetected: readBoolean(payload.pirDetected) ?? readBoolean(payload.motionDetected) ?? readBoolean(payload.motion),

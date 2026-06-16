@@ -299,6 +299,7 @@ bool gasEnabled = true;
 bool tempEnabled = true;
 bool voiceMode = true;
 bool buzzerManual = false;
+bool buzzerAutoWarningActive = false;
 
 bool relay1State = false;
 bool relay2State = false;
@@ -375,6 +376,7 @@ bool ledState = false;
 #define LED_OFF LOW
 
 #define MAX_RELAY_SCHEDULES 5
+#define RELAY_SCHEDULE_ALL_DAYS 0x7F
 struct RelaySchedule {
   char id[16];
   int startHour;
@@ -387,6 +389,7 @@ struct RelaySchedule {
   int lastTriggeredEndDay;
 };
 RelaySchedule relaySchedules[MAX_RELAY_SCHEDULES];
+uint8_t relayScheduleDaysMask[MAX_RELAY_SCHEDULES];
 int relayScheduleCount = 0;
 
 struct AlarmConfig {
@@ -521,6 +524,19 @@ void publishEvent(const char *level, const char *type, const char *message) {
   publishJson(topicEvent(), doc, false);
 }
 
+void publishBuzzerUpdated(bool state, const char *reason) {
+  StaticJsonDocument<256> doc;
+  doc["deviceId"] = DEVICE_ID;
+  doc["level"] = "INFO";
+  doc["type"] = "buzzer.updated";
+  doc["message"] = state ? "Buzzer dinyalakan otomatis" : "Buzzer dimatikan otomatis";
+  doc["millis"] = millis();
+  JsonObject payload = doc.createNestedObject("payload");
+  payload["state"] = state;
+  payload["reason"] = reason;
+  publishJson(topicEvent(), doc, false);
+}
+
 void publishAck(const char *id, const char *type, bool ok, const char *message) {
   StaticJsonDocument<256> doc;
   doc["deviceId"] = DEVICE_ID;
@@ -626,6 +642,10 @@ void loadSchedules() {
     char key[16];
     snprintf(key, sizeof(key), "sch_%d", i);
     preferences.getBytes(key, &relaySchedules[i], sizeof(RelaySchedule));
+    char daysKey[16];
+    snprintf(daysKey, sizeof(daysKey), "days_%d", i);
+    relayScheduleDaysMask[i] = preferences.getUChar(daysKey, RELAY_SCHEDULE_ALL_DAYS);
+    if (relayScheduleDaysMask[i] == 0) relayScheduleDaysMask[i] = RELAY_SCHEDULE_ALL_DAYS;
     relaySchedules[i].lastTriggeredStartDay = -1;
     relaySchedules[i].lastTriggeredEndDay = -1;
   }
@@ -640,6 +660,9 @@ void saveSchedules() {
     char key[16];
     snprintf(key, sizeof(key), "sch_%d", i);
     preferences.putBytes(key, &relaySchedules[i], sizeof(RelaySchedule));
+    char daysKey[16];
+    snprintf(daysKey, sizeof(daysKey), "days_%d", i);
+    preferences.putUChar(daysKey, relayScheduleDaysMask[i] == 0 ? RELAY_SCHEDULE_ALL_DAYS : relayScheduleDaysMask[i]);
   }
   preferences.end();
   Serial.println("[SCHEDULE] Saved schedules to NVS.");
@@ -905,7 +928,7 @@ void playSystemReady() {
     return;
   }
 
-  setLcdOverride("SMARTBOX READY", "SIAP DIGUNAKAN", 4000);
+  setLcdOverride("SMARTBOX", "SIAP DIGUNAKAN", 4000);
 
   if (!dfPlayerReady) {
     Serial.println("[DFPLAYER] Startup voice gagal: DFPlayer belum ready.");
@@ -1030,22 +1053,36 @@ void playPirGreeting(String motionType) {
 }
 
 void handleWhiteButtonQuickPress() {
-  Serial.println("[BUTTON] White button pressed - playing track 1 ready");
-  playVoice(TRACK_STARTUP_READY, "white_button_ready");
-  setLcdOverride("SMARTBOX", "ASSISTANT SIAP", 3000);
-  publishEvent("INFO", "assistant_ready", "Smartbox Assistant siap digunakan.");
+  Serial.println("[BUTTON] White button pressed - time/temp display");
+
+  if (rtcReady) {
+    DateTime now = rtc.now();
+    float tempC = rtc.getTemperature() + tempOffset;
+
+    char line1[17];
+    char line2[17];
+    snprintf(line1, sizeof(line1), "WAKTU %02d:%02d:%02d", now.hour(), now.minute(), now.second());
+    snprintf(line2, sizeof(line2), "SUHU %4.1f C", tempC);
+
+    setLcdOverride(line1, line2, 10000);
+    playVoice(TRACK_TIME_TEMP_REALTIME, "time_temp_display");
+    publishEvent("INFO", "button.white.quick", "Tombol putih tekan cepat: tampil jam dan suhu.");
+  } else {
+    setLcdOverride("RTC ERROR", "CEK DS3231", 4000);
+    publishEvent("ERROR", "button.white.quick", "RTC belum siap untuk menampilkan jam dan suhu.");
+  }
 }
 
 void checkPirGreeting() {
-  if (!pirGreetingEnabled) return;
   if (!pirEnabled) return;
 
   bool pirDetected = (digitalRead(PIR_PIN) == HIGH);
   if (!pirDetected) return;
 
   unsigned long currentMillis = millis();
-  // PIR Cooldown Check (10 Detik sesuai kebutuhan arsitektur)
-  if (lastPirGreetingTime > 0 && (currentMillis - lastPirGreetingTime < 10000)) {
+  unsigned long cooldownMs = pirGreetingEnabled ? PIR_GREETING_COOLDOWN : 10000;
+  if (cooldownMs < 10000) cooldownMs = 10000;
+  if (lastPirGreetingTime > 0 && (currentMillis - lastPirGreetingTime < cooldownMs)) {
     return;
   }
 
@@ -1055,11 +1092,15 @@ void checkPirGreeting() {
   // Pilih track secara acak antara 10, 11, atau 12
   int selectedTrack = random(10, 13); // random(10, 13) menghasilkan 10, 11, atau 12
 
+  if (selectedTrack == TRACK_GESTURE_WALK) {
+    setLcdOverride("GERAKAN JALAN", "TERDETEKSI", 4000);
+  } else if (selectedTrack == TRACK_GESTURE_JUMP) {
+    setLcdOverride("GERAKAN LOMPAT", "TERDETEKSI", 4000);
+  } else {
+    setLcdOverride("GERAKAN LAMBAI", "TERDETEKSI", 4000);
+  }
+
   playVoice((uint8_t)selectedTrack, "pir_greeting");
-  
-  char trackMsg[16];
-  snprintf(trackMsg, sizeof(trackMsg), "TRACK %04d", selectedTrack);
-  setLcdOverride("GERAKAN", trackMsg, 4000);
 
   StaticJsonDocument<384> doc;
   doc["deviceId"] = DEVICE_ID;
@@ -1067,8 +1108,58 @@ void checkPirGreeting() {
   doc["type"] = "pir.greeting.played";
   doc["message"] = "Greeting Wakeup PIR diputar secara acak.";
   JsonObject payload = doc.createNestedObject("payload");
+  payload["pirDetected"] = true;
   payload["track"] = selectedTrack;
+  payload["cooldownSeconds"] = cooldownMs / 1000UL;
   publishJson(topicEvent(), doc, false);
+}
+
+uint8_t relayScheduleDayBit(const char *day) {
+  if (day == NULL) return 0;
+  if (strcmp(day, "sunday") == 0 || strcmp(day, "minggu") == 0 || strcmp(day, "min") == 0) return (1 << 0);
+  if (strcmp(day, "monday") == 0 || strcmp(day, "senin") == 0 || strcmp(day, "sen") == 0) return (1 << 1);
+  if (strcmp(day, "tuesday") == 0 || strcmp(day, "selasa") == 0 || strcmp(day, "sel") == 0) return (1 << 2);
+  if (strcmp(day, "wednesday") == 0 || strcmp(day, "rabu") == 0 || strcmp(day, "rab") == 0) return (1 << 3);
+  if (strcmp(day, "thursday") == 0 || strcmp(day, "kamis") == 0 || strcmp(day, "kam") == 0) return (1 << 4);
+  if (strcmp(day, "friday") == 0 || strcmp(day, "jumat") == 0 || strcmp(day, "jum") == 0) return (1 << 5);
+  if (strcmp(day, "saturday") == 0 || strcmp(day, "sabtu") == 0 || strcmp(day, "sab") == 0) return (1 << 6);
+  return 0;
+}
+
+uint8_t parseRelayScheduleDaysMask(JsonObject data) {
+  if (data["daysMask"].is<int>()) {
+    uint8_t mask = (uint8_t)(data["daysMask"].as<int>() & RELAY_SCHEDULE_ALL_DAYS);
+    return mask == 0 ? RELAY_SCHEDULE_ALL_DAYS : mask;
+  }
+
+  if (data["days"].is<JsonArray>()) {
+    uint8_t mask = 0;
+    JsonArray days = data["days"].as<JsonArray>();
+    for (JsonVariant dayValue : days) {
+      mask |= relayScheduleDayBit(dayValue.as<const char*>());
+    }
+    return mask == 0 ? RELAY_SCHEDULE_ALL_DAYS : mask;
+  }
+
+  const char *daysText = data["days"] | "";
+  if (strlen(daysText) > 0) {
+    uint8_t mask = 0;
+    if (strstr(daysText, "sunday") || strstr(daysText, "minggu") || strstr(daysText, "min")) mask |= (1 << 0);
+    if (strstr(daysText, "monday") || strstr(daysText, "senin") || strstr(daysText, "sen")) mask |= (1 << 1);
+    if (strstr(daysText, "tuesday") || strstr(daysText, "selasa") || strstr(daysText, "sel")) mask |= (1 << 2);
+    if (strstr(daysText, "wednesday") || strstr(daysText, "rabu") || strstr(daysText, "rab")) mask |= (1 << 3);
+    if (strstr(daysText, "thursday") || strstr(daysText, "kamis") || strstr(daysText, "kam")) mask |= (1 << 4);
+    if (strstr(daysText, "friday") || strstr(daysText, "jumat") || strstr(daysText, "jum")) mask |= (1 << 5);
+    if (strstr(daysText, "saturday") || strstr(daysText, "sabtu") || strstr(daysText, "sab")) mask |= (1 << 6);
+    return mask == 0 ? RELAY_SCHEDULE_ALL_DAYS : mask;
+  }
+
+  return RELAY_SCHEDULE_ALL_DAYS;
+}
+
+bool isRelayScheduleDayActive(uint8_t daysMask, DateTime now) {
+  uint8_t mask = daysMask == 0 ? RELAY_SCHEDULE_ALL_DAYS : daysMask;
+  return (mask & (1 << now.dayOfTheWeek())) != 0;
 }
 
 void handleRelayScheduleCommand(JsonObject data, const char *cmdId, const char *type) {
@@ -1078,15 +1169,26 @@ void handleRelayScheduleCommand(JsonObject data, const char *cmdId, const char *
     return;
   }
 
-  int relayNum = data["relay"] | 1;
-  const char *startStr = data["start"] | "00:00";
-  const char *endStr = data["end"] | "00:00";
+  int relayNum = data["relay"] | (data["relayNumber"] | 1);
+  const char *startStr = data["start"] | "";
+  if (strlen(startStr) == 0) startStr = data["startTime"] | "00:00";
+  const char *endStr = data["end"] | "";
+  if (strlen(endStr) == 0) endStr = data["endTime"] | "00:00";
   bool enabled = data["enabled"] | true;
+  uint8_t daysMask = parseRelayScheduleDaysMask(data);
+
+  if (relayNum < 1 || relayNum > 2) {
+    publishAck(cmdId, type, false, "Relay jadwal tidak valid.");
+    return;
+  }
 
   int startHour = 0, startMinute = 0;
   int endHour = 0, endMinute = 0;
-  sscanf(startStr, "%d:%d", &startHour, &startMinute);
-  sscanf(endStr, "%d:%d", &endHour, &endMinute);
+  if (!parseTimeToHourMinute(startStr, startHour, startMinute) ||
+      !parseTimeToHourMinute(endStr, endHour, endMinute)) {
+    publishAck(cmdId, type, false, "Format waktu jadwal harus HH:MM.");
+    return;
+  }
 
   int idx = -1;
   for (int i = 0; i < relayScheduleCount; i++) {
@@ -1114,12 +1216,46 @@ void handleRelayScheduleCommand(JsonObject data, const char *cmdId, const char *
   relaySchedules[idx].enabled = enabled;
   relaySchedules[idx].lastTriggeredStartDay = -1;
   relaySchedules[idx].lastTriggeredEndDay = -1;
+  relayScheduleDaysMask[idx] = daysMask;
 
   saveSchedules();
-  Serial.printf("[SCHEDULE] Set schedule %s: %02d:%02d to %02d:%02d for Relay %d (enabled=%d)\n",
-                schId, startHour, startMinute, endHour, endMinute, relayNum, enabled);
+  Serial.printf("[SCHEDULE] Set schedule %s: %02d:%02d to %02d:%02d for Relay %d (enabled=%d, daysMask=%u)\n",
+                schId, startHour, startMinute, endHour, endMinute, relayNum, enabled, daysMask);
 
   publishAck(cmdId, type, true, "Schedule saved.");
+
+  StaticJsonDocument<384> doc;
+  doc["deviceId"] = DEVICE_ID;
+  doc["level"] = "INFO";
+  doc["type"] = "relay.schedule.saved";
+  doc["message"] = "Jadwal otomatis stop kontak disimpan.";
+  JsonObject payload = doc.createNestedObject("payload");
+  payload["id"] = schId;
+  payload["relay"] = relayNum;
+  payload["start"] = startStr;
+  payload["end"] = endStr;
+  payload["enabled"] = enabled;
+  payload["daysMask"] = daysMask;
+  publishJson(topicEvent(), doc, false);
+
+  if (rtcReady && enabled) {
+    DateTime now = rtc.now();
+    int nowValue = timeToMinutes(now.hour(), now.minute());
+    int startValue = timeToMinutes(startHour, startMinute);
+    int endValue = timeToMinutes(endHour, endMinute);
+    bool insideActiveWindow = startValue <= endValue
+                                ? (nowValue >= startValue && nowValue < endValue)
+                                : (nowValue >= startValue || nowValue < endValue);
+
+    if (insideActiveWindow && isRelayScheduleDayActive(daysMask, now)) {
+      relaySchedules[idx].lastTriggeredStartDay = now.day();
+      if (relayNum == 1) relay1AutoOffActive = false;
+      if (relayNum == 2) relay2AutoOffActive = false;
+      setRelay(relayNum, true, false);
+      setLcdOverride(relayNum == 1 ? "JADWAL KONTAK 1" : "JADWAL KONTAK 2", "MENYALA", 3000);
+      publishEvent("INFO", "relay.schedule.synced", "Jadwal aktif sekarang, stop kontak langsung menyala.");
+    }
+  }
 }
 
 void deleteRelaySchedule(const char *schId) {
@@ -1138,8 +1274,12 @@ void deleteRelaySchedule(const char *schId) {
 
   for (int i = idx; i < relayScheduleCount - 1; i++) {
     relaySchedules[i] = relaySchedules[i + 1];
+    relayScheduleDaysMask[i] = relayScheduleDaysMask[i + 1];
   }
   relayScheduleCount--;
+  if (relayScheduleCount >= 0 && relayScheduleCount < MAX_RELAY_SCHEDULES) {
+    relayScheduleDaysMask[relayScheduleCount] = RELAY_SCHEDULE_ALL_DAYS;
+  }
   saveSchedules();
   Serial.printf("[SCHEDULE] Deleted schedule %s.\n", schId);
 }
@@ -1150,6 +1290,7 @@ void checkRelaySchedules() {
 
   for (int i = 0; i < relayScheduleCount; i++) {
     if (!relaySchedules[i].enabled) continue;
+    if (!isRelayScheduleDayActive(relayScheduleDaysMask[i], now)) continue;
 
     // Check Start Time (Turn ON)
     if (now.hour() == relaySchedules[i].startHour && 
@@ -1159,7 +1300,23 @@ void checkRelaySchedules() {
       relaySchedules[i].lastTriggeredStartDay = now.day();
       Serial.printf("[SCHEDULE] Trigger START for Relay %d (Schedule: %s)\n", 
                     relaySchedules[i].relayNum, relaySchedules[i].id);
+      if (relaySchedules[i].relayNum == 1) relay1AutoOffActive = false;
+      if (relaySchedules[i].relayNum == 2) relay2AutoOffActive = false;
       setRelay(relaySchedules[i].relayNum, true, false);
+      setLcdOverride(relaySchedules[i].relayNum == 1 ? "JADWAL KONTAK 1" : "JADWAL KONTAK 2", "MENYALA", 3000);
+
+      StaticJsonDocument<384> doc;
+      doc["deviceId"] = DEVICE_ID;
+      doc["level"] = "INFO";
+      doc["type"] = "relay.schedule.on";
+      doc["message"] = "Jadwal otomatis menyalakan stop kontak.";
+      JsonObject payload = doc.createNestedObject("payload");
+      payload["id"] = relaySchedules[i].id;
+      payload["relay"] = relaySchedules[i].relayNum;
+      payload["state"] = true;
+      payload["hour"] = now.hour();
+      payload["minute"] = now.minute();
+      publishJson(topicEvent(), doc, false);
     }
 
     // Check End Time (Turn OFF)
@@ -1170,7 +1327,23 @@ void checkRelaySchedules() {
       relaySchedules[i].lastTriggeredEndDay = now.day();
       Serial.printf("[SCHEDULE] Trigger END for Relay %d (Schedule: %s)\n", 
                     relaySchedules[i].relayNum, relaySchedules[i].id);
+      if (relaySchedules[i].relayNum == 1) relay1AutoOffActive = false;
+      if (relaySchedules[i].relayNum == 2) relay2AutoOffActive = false;
       setRelay(relaySchedules[i].relayNum, false, false);
+      setLcdOverride(relaySchedules[i].relayNum == 1 ? "JADWAL KONTAK 1" : "JADWAL KONTAK 2", "MATI", 3000);
+
+      StaticJsonDocument<384> doc;
+      doc["deviceId"] = DEVICE_ID;
+      doc["level"] = "INFO";
+      doc["type"] = "relay.schedule.off";
+      doc["message"] = "Jadwal otomatis mematikan stop kontak.";
+      JsonObject payload = doc.createNestedObject("payload");
+      payload["id"] = relaySchedules[i].id;
+      payload["relay"] = relaySchedules[i].relayNum;
+      payload["state"] = false;
+      payload["hour"] = now.hour();
+      payload["minute"] = now.minute();
+      publishJson(topicEvent(), doc, false);
     }
   }
 }
@@ -1507,8 +1680,11 @@ void handleRelayCommand(JsonObject data, const char *cmdId, const char *type) {
   int relayNumber = data["relay"] | 1;
   int autoOffSeconds = data["autoOffSeconds"] | 0;
   const char *source = data["source"] | "";
+  bool fromSchedule = strcmp(source, "schedule") == 0 ||
+                      strcmp(source, "relay_schedule") == 0 ||
+                      data.containsKey("scheduleId");
 
-  if (state && autoOffSeconds == 0 && strcmp(source, "schedule") != 0) {
+  if (state && autoOffSeconds <= 0 && !fromSchedule) {
     autoOffSeconds = 60;
   }
 
@@ -1823,6 +1999,10 @@ void publishTelemetry(int gasRaw, float tempC, bool gasWarning, bool tempWarning
   doc["temperatureC"] = tempC;
   doc["gasRaw"] = gasRaw;
   doc["gasLevel"] = gasLevel;
+  doc["gasEnabled"] = gasEnabled;
+  doc["gasSensorEnabled"] = gasEnabled;
+  doc["tempEnabled"] = tempEnabled;
+  doc["gasDetected"] = gasWarning;
   doc["smokeDetected"] = lastSmokeWarning;
   doc["temperatureHigh"] = tempWarning;
   doc["pirDetected"] = pirDetected;
@@ -1874,46 +2054,44 @@ void checkWarnings(int gasRaw, float tempC, bool anyGasWarning, bool tempWarning
   bool isGas = gasEnabled && gasRaw >= gasThreshold;
   bool isSmoke = gasEnabled && gasRaw >= smokeThreshold && gasRaw < gasThreshold;
   bool gasWarning = isGas || isSmoke;
-  bool triggerBuzzer = (gasWarning && pirDetected) || isGas || (gasEnabled && gasRaw >= 1300);
+  bool triggerBuzzer = gasWarning;
 
   if (isGas) {
     setBluetoothAudio(true);
     setRgb(255, 0, 0);
     if (!relay1State) setRelay(1, true, false);
     relay1ForcedByGas = true;
-
-    // Putar sapaan peringatan gas HANYA SEKALI
-    if (!isGasWarningPlayed) {
-      isGasWarningPlayed = true;
-      playVoice(TRACK_GAS_DETECTED, "gas_detected");
-    }
+    setBuzzer(true, false);
 
     if (!lastGasWarning) {
       lastGasWarning = true;
       lastSmokeWarning = false;
+      isGasWarningPlayed = true;
+      buzzerAutoWarningActive = true;
       gasStatusStr = "detected";
       smokeStatusStr = "normal";
-      publishEvent("WARNING", "gas.detected", "Gas terdeteksi!");
+      publishBuzzerUpdated(true, "gas_detected");
       setLcdOverride("GAS TERDETEKSI", "SEGERA PERIKSA!", 5000);
+      playVoice(TRACK_GAS_DETECTED, "gas_detected");
+      publishEvent("WARNING", "gas.detected", "Gas terdeteksi!");
     }
   } 
   else if (isSmoke) {
     setBluetoothAudio(true);
     setRgb(255, 80, 0);
-
-    // Putar sapaan peringatan asap HANYA SEKALI
-    if (!isSmokeWarningPlayed) {
-      isSmokeWarningPlayed = true;
-      playVoice(TRACK_SMOKE_DETECTED, "smoke_detected");
-    }
+    setBuzzer(true, false);
 
     if (!lastSmokeWarning) {
       lastSmokeWarning = true;
       lastGasWarning = false;
+      isSmokeWarningPlayed = true;
+      buzzerAutoWarningActive = true;
       smokeStatusStr = "detected";
       gasStatusStr = "normal";
-      publishEvent("WARNING", "smoke.detected", "Asap terdeteksi!");
+      publishBuzzerUpdated(true, "smoke_detected");
       setLcdOverride("ASAP TERDETEKSI", "SEGERA PERIKSA!", 5000);
+      playVoice(TRACK_SMOKE_DETECTED, "smoke_detected");
+      publishEvent("WARNING", "smoke.detected", "Asap terdeteksi!");
     }
   } 
   else {
@@ -1938,8 +2116,14 @@ void checkWarnings(int gasRaw, float tempC, bool anyGasWarning, bool tempWarning
   if (triggerBuzzer) {
     setBuzzer(true, false);
   } else {
-    if (gasRaw < resetThreshold || (!pirDetected && gasRaw < 1300)) {
-      if (!buzzerManual) {
+    if (gasRaw < resetThreshold) {
+      if (buzzerAutoWarningActive) {
+        buzzerAutoWarningActive = false;
+        if (!buzzerManual) {
+          setBuzzer(false, false);
+          publishBuzzerUpdated(false, "gas_clear");
+        }
+      } else if (!buzzerManual) {
         setBuzzer(false, false);
       }
     }
@@ -1947,9 +2131,9 @@ void checkWarnings(int gasRaw, float tempC, bool anyGasWarning, bool tempWarning
 
   if (tempWarning && !lastTempWarning) {
     lastTempWarning = true;
-    playTemperatureWarningVoice();
+    setLcdOverride("SUHU TINGGI", "CEK RUANGAN", 5000);
+    playVoice(TRACK_TEMP_DETECTED, "temperature_warning");
     publishEvent("WARNING", "temperature.high", "Suhu terdeteksi melebihi ambang batas");
-    setLcdOverride("SUHU TERDETEKSI", "CEK RUANGAN", 5000);
   }
 
   if (!tempWarning) {
@@ -2405,8 +2589,8 @@ void onHaloAeroDetected(float score, float rms, int peak) {
   Serial.println(">>> Aksi: Membangunkan asisten, memutar Track 14.");
   Serial.println("==================================================");
 
-  playVoice(TRACK_HALO_AERO, "wake_word");
   setLcdOverride("HALLO AERO", "ADA YANG BISA BANTU", 4000);
+  playVoice(TRACK_HALO_AERO, "wake_word");
 }
 
 void onCalibrationDetected(float score, float rms, int peak) {
@@ -2758,6 +2942,9 @@ void loop() {
   bool gasWarning = isGas || isSmoke;
   bool tempWarning = tempEnabled && tempC >= tempThreshold;
   bool pirDetected = pirEnabled && digitalRead(PIR_PIN) == HIGH;
+  String gasLevel = "normal";
+  if (isGas) gasLevel = "gas";
+  else if (isSmoke) gasLevel = "smoke";
 
   if (pirDetected != lastPirDetectedState) {
     lastMotionDetectedTime = millis();
@@ -2771,6 +2958,17 @@ void loop() {
     JsonObject payload = doc.createNestedObject("payload");
     payload["pirDetected"] = pirDetected;
     publishJson(topicEvent(), doc, false);
+
+    publishTelemetry(
+      gasRaw,
+      tempC,
+      gasWarning,
+      tempWarning,
+      pirDetected,
+      gasLevel,
+      digitalRead(IR_PIN) == HIGH
+    );
+    lastTelemetryAt = millis();
   }
   lastPirDetectedState = pirDetected;
 
@@ -2782,10 +2980,6 @@ void loop() {
 
   if (millis() - lastTelemetryAt >= TELEMETRY_INTERVAL_MS) {
     lastTelemetryAt = millis();
-
-    String gasLevel = "normal";
-    if (isGas) gasLevel = "gas";
-    else if (isSmoke) gasLevel = "smoke";
 
     publishTelemetry(
       gasRaw,

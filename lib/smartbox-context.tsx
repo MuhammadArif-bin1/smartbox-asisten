@@ -342,6 +342,14 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
           if (isEdit) return current.map((item) => (item.id === sch.id ? saved : item));
           return [...current, saved];
         });
+        const rawDays = typeof saved.days === "string" ? saved.days : sch.days;
+        let syncDays: string[] = [];
+        try {
+          const parsedDays = JSON.parse(rawDays);
+          syncDays = Array.isArray(parsedDays) ? parsedDays : [];
+        } catch {
+          syncDays = [];
+        }
 
         // Sync schedule to ESP32 hardware over MQTT!
         await sendDeviceCommand(
@@ -351,6 +359,7 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
             relay: saved.relayNumber,
             start: saved.startTime,
             end: saved.endTime,
+            days: syncDays,
             enabled: saved.enabled,
           },
           `Sync Jadwal ${saved.name}`
@@ -484,13 +493,21 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
 
             if (typeof telemetry.gasEnabled === "boolean") setGasEnabled(telemetry.gasEnabled);
             if (typeof telemetry.tempEnabled === "boolean") setTemperatureEnabled(telemetry.tempEnabled);
-            if (typeof telemetry.gasRaw === "number") setGasEstimate(Math.max(0, Math.min(4095, Math.round(telemetry.gasRaw))));
+            if (typeof telemetry.gasRaw === "number") {
+              const nextGas = Math.max(0, Math.min(4095, Math.round(telemetry.gasRaw)));
+              setGasEstimate(nextGas);
+              setGasHistory((current) => [...current.slice(-23), nextGas]);
+            }
             if (typeof telemetry.gasLevel === "string") {
               const rawLevel = telemetry.gasLevel.toLowerCase();
               const mappedLevel = rawLevel === "gas" ? "bahaya" : (rawLevel === "smoke" ? "waspada" : rawLevel);
               setGasLevel(mappedLevel);
             }
-            if (typeof telemetry.temperatureC === "number") setTempEstimate(roundTemperature(telemetry.temperatureC));
+            if (typeof telemetry.temperatureC === "number") {
+              const nextTemp = roundTemperature(telemetry.temperatureC);
+              setTempEstimate(nextTemp);
+              setTempHistory((current) => [...current.slice(-23), nextTemp]);
+            }
             if (typeof telemetry.flameDetected === "boolean") setFlameDetected(telemetry.flameDetected);
             if (typeof telemetry.pirDetected === "boolean") setPirDetected(telemetry.pirDetected);
             if (typeof telemetry.obstacleNear === "boolean") setObstacleNear(telemetry.obstacleNear);
@@ -588,12 +605,15 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
             } else if (data.type === "gas.detected") {
               setGasLevel("bahaya");
               setGasEstimate((prev) => Math.max(prev, GAS_WARNING_RAW));
+              setGasHistory((current) => [...current.slice(-23), Math.max(current[current.length - 1] ?? 0, GAS_WARNING_RAW)]);
             } else if (data.type === "smoke.detected") {
               setGasLevel("waspada");
               setGasEstimate((prev) => Math.max(prev, 1250));
+              setGasHistory((current) => [...current.slice(-23), Math.max(current[current.length - 1] ?? 0, 1250)]);
             } else if (data.type === "gas.cleared") {
               setGasLevel("normal");
               setGasEstimate(120);
+              setGasHistory((current) => [...current.slice(-23), 120]);
             }
 
             // Autoplay AI voice response
@@ -718,6 +738,7 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!isAuthenticated) return;
+    if (telemetrySource === "ESP32 telemetry") return;
     let active = true;
     const deviceId = process.env.NEXT_PUBLIC_DEVICE_ID || "smartbox-001";
 
@@ -866,18 +887,6 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
   /* ═══════════════════════════════════════════════════════════════
      EFFECTS — History series update
      ═══════════════════════════════════════════════════════════════ */
-
-  useEffect(() => {
-    if (!isAuthenticated) return;
-    if (telemetrySource === "Offline" || !temperatureEnabled) return;
-    setTempHistory((current) => [...current.slice(1), visibleTempEstimate]);
-  }, [isAuthenticated, telemetrySource, temperatureEnabled, visibleTempEstimate]);
-
-  useEffect(() => {
-    if (!isAuthenticated) return;
-    if (telemetrySource === "Offline" || !gasEnabled) return;
-    setGasHistory((current) => [...current.slice(1), visibleGasEstimate]);
-  }, [isAuthenticated, telemetrySource, gasEnabled, visibleGasEstimate]);
 
   /* ═══════════════════════════════════════════════════════════════
      EFFECTS — Relay auto-off timers
