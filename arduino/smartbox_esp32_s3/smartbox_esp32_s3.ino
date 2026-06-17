@@ -281,7 +281,7 @@ WiFiClientSecure secureClient;
 PubSubClient mqttClient(secureClient);
 
 RTC_DS3231 rtc;
-LiquidCrystal_I2C lcd(0x27, 16, 2);
+LiquidCrystal_I2C *lcd = nullptr;
 Adafruit_NeoPixel rgbLed(NUM_PIXELS, RGB_PIN, NEO_GRB + NEO_KHZ800);
 
 HardwareSerial dfSerial(1);
@@ -412,7 +412,7 @@ int lastScheduledAlarmTrack = -1;
 // FORWARD DECLARATIONS
 // ==========================================================
 void printLcdLine(uint8_t row, const char *text);
-void scanI2C();
+uint8_t scanI2C();
 void initLCD();
 void updateLcd(int gasRaw, float tempC, bool gasWarning, bool tempWarning, bool pirDetected);
 void setLcdOverride(const char *l1, const char *l2, unsigned long durationMs);
@@ -1449,16 +1449,20 @@ void printLcdLine(uint8_t row, const char *text) {
   char buffer[17];
   snprintf(buffer, sizeof(buffer), "%-16.16s", text);
 
-  lcd.setCursor(0, row);
-  lcd.print(buffer);
+  lcd->setCursor(0, row);
+  lcd->print(buffer);
 }
 
-void scanI2C() {
+uint8_t scanI2C() {
   Serial.println("[I2C] Scan alamat I2C...");
   byte count = 0;
-  uint8_t foundAddr = 0x27;
+  uint8_t lcdAddr = 0;
 
   for (byte address = 1; address < 127; address++) {
+    // Abaikan alamat RTC DS3231 (0x68) dan EEPROM AT24C32 (0x57) agar tidak salah deteksi sebagai LCD
+    if (address == 0x68 || address == 0x57) {
+      continue;
+    }
     Wire.beginTransmission(address);
     byte error = Wire.endTransmission();
 
@@ -1467,19 +1471,17 @@ void scanI2C() {
       if (address < 16) Serial.print("0");
       Serial.println(address, HEX);
       count++;
-      if (address == 0x27 || address == 0x3F) {
-        foundAddr = address;
+      // standard PCF8574 I2C LCD addresses (biasanya 0x27, 0x3F, 0x38, atau 0x20)
+      if (address == 0x27 || address == 0x3F || address == 0x38 || address == 0x20) {
+        lcdAddr = address;
       }
     }
   }
 
   if (count == 0) {
     Serial.println("[I2C] Tidak ada device terdeteksi. Cek kabel SDA/SCL/VCC/GND.");
-  } else {
-    if (foundAddr == 0x3F) {
-      lcd = LiquidCrystal_I2C(0x3F, 16, 2);
-    }
   }
+  return lcdAddr;
 }
 
 void initLCD() {
@@ -1489,19 +1491,30 @@ void initLCD() {
   Wire.setClock(100000);
   delay(300);
 
-  scanI2C();
+  uint8_t lcdAddr = scanI2C();
 
-  lcd.init();
-  lcd.backlight();
-  lcd.clear();
+  if (lcdAddr != 0) {
+    Serial.printf("[LCD] LCD terdeteksi di alamat 0x%02X. Menginisialisasi...\n", lcdAddr);
+    if (lcd != nullptr) {
+      delete lcd;
+    }
+    lcd = new LiquidCrystal_I2C(lcdAddr, 16, 2);
+    lcd->init();
+    lcd->backlight();
+    lcd->clear();
 
-  lcdReady = true;
-  lcdBacklightOn = true;
+    lcdReady = true;
+    lcdBacklightOn = true;
 
-  printLcdLine(0, "SMARTBOX");
-  printLcdLine(1, "LCD AKTIF");
+    printLcdLine(0, "SMARTBOX");
+    printLcdLine(1, "LCD AKTIF");
 
-  Serial.println("[LCD] LCD I2C aktif.");
+    Serial.println("[LCD] LCD I2C aktif.");
+  } else {
+    Serial.println("[LCD] LCD I2C tidak ditemukan! LCD dinonaktifkan.");
+    lcdReady = false;
+    lcdBacklightOn = false;
+  }
 }
 
 void setLcdOverride(const char *l1, const char *l2, unsigned long durationMs) {
