@@ -17,10 +17,10 @@ export async function PATCH(
     if (
       (name !== undefined && (typeof name !== "string" || !name.trim())) ||
       (time !== undefined && !TIME_PATTERN.test(time)) ||
-      (track !== undefined && (typeof track !== "number" || track < 1 || track > 13))
+      (track !== undefined && (typeof track !== "number" || track < 1 || track > 15))
     ) {
       return NextResponse.json(
-        { error: "Perubahan tidak valid. Waktu harus format HH:MM dan track harus 1-13." },
+        { error: "Perubahan tidak valid. Waktu harus format HH:MM dan track harus 1-15." },
         { status: 400 }
       );
     }

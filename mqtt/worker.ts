@@ -671,19 +671,18 @@ async function checkAlarmSchedules() {
       schedule.lastRunAt = new Date();
 
       const command = {
-        id: "cmd_alarm_voice_play",
-        type: "voice.play",
+        id: `cmd_alarm_trigger_${Date.now()}`,
+        type: "alarm.trigger",
         payload: {
           track: schedule.track,
-          reason: "schedule_alarm",
-          label: schedule.name,
+          time: timeStr,
         },
       };
 
       client.publish(topic, JSON.stringify(command), { qos: 1 });
       
       console.log(`[Worker] Alarm schedule triggered: ${schedule.name}`);
-      console.log(`[Worker] Publish voice.play to smartbox/${targetDeviceId}/cmd`);
+      console.log(`[Worker] Publish alarm.trigger to smartbox/${targetDeviceId}/cmd`);
       console.log(`[Worker] Track DFPlayer: ${String(schedule.track).padStart(4, "0")}`);
 
       await retryQuery(() => prisma.eventLog.create({

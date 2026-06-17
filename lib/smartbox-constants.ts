@@ -32,6 +32,8 @@ export const audioTracks = [
   { id: 11, name: "0011.mp3", label: "Gerakan melompat", use: "Sensor PIR" },
   { id: 12, name: "0012.mp3", label: "Gerakan melambaikan tangan", use: "Sensor PIR" },
   { id: 13, name: "0013.mp3", label: "Bluetooth Smartbox Assistant dimatikan", use: "Bluetooth/audio" },
+  { id: 14, name: "0014.mp3", label: "Halo Aero", use: "KWS/Sistem" },
+  { id: 15, name: "0015.mp3", label: "Perkenalan diri (Aero)", use: "Sistem utama" },
 ];
 
 /* ─── Board pin profiles ─── */

@@ -33,10 +33,10 @@ export async function POST(request: Request) {
       !TIME_PATTERN.test(time) ||
       typeof track !== "number" ||
       track < 1 ||
-      track > 13
+      track > 15
     ) {
       return NextResponse.json(
-        { error: "Jadwal alarm tidak valid. Nama wajib diisi, waktu harus format HH:MM, dan track harus 1-13." },
+        { error: "Jadwal alarm tidak valid. Nama wajib diisi, waktu harus format HH:MM, dan track harus 1-15." },
         { status: 400 }
       );
     }

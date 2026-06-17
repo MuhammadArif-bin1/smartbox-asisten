@@ -9,9 +9,9 @@ export async function POST(request: Request) {
     const body = await request.json();
     const { track, reason } = body;
 
-    if (typeof track !== "number" || track < 1 || track > 13) {
+    if (typeof track !== "number" || track < 1 || track > 15) {
       return NextResponse.json(
-        { error: "Track audio tidak valid. Harus angka 1-13." },
+        { error: "Track audio tidak valid. Harus angka 1-15." },
         { status: 400 }
       );
     }
