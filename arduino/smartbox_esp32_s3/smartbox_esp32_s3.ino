@@ -906,6 +906,37 @@ void startVoiceNow(uint8_t track, const char *reason, uint8_t priority) {
   Serial.print(" reason: ");
   Serial.println(reason);
 
+  // Update LCD to match the track's spoken voice!
+  if (track == TRACK_STARTUP_READY) {
+    setLcdOverride("SMARTBOX", "SIAP DIGUNAKAN", 4000);
+  } else if (track == TRACK_BLUETOOTH_ACTIVE) {
+    setLcdOverride("BLUETOOTH", "DIAKTIFKAN", 4000);
+  } else if (track == TRACK_ALARM_MORNING) {
+    setLcdOverride("SELAMAT PAGI", "ASISTEN PRIBADI", 4000);
+  } else if (track == TRACK_ALARM_AFTERNOON) {
+    setLcdOverride("SELAMAT SIANG", "ASISTEN PRIBADI", 4000);
+  } else if (track == TRACK_ALARM_EVENING) {
+    setLcdOverride("SELAMAT SORE", "ASISTEN PRIBADI", 4000);
+  } else if (track == TRACK_SMOKE_DETECTED) {
+    setLcdOverride("ASAP TERDETEKSI", "SEGERA PERIKSA!", 5000);
+  } else if (track == TRACK_GAS_DETECTED) {
+    setLcdOverride("GAS TERDETEKSI", "SEGERA PERIKSA!", 5000);
+  } else if (track == TRACK_TEMP_DETECTED) {
+    setLcdOverride("SUHU TINGGI", "CEK RUANGAN", 5000);
+  } else if (track == TRACK_GESTURE_WALK) {
+    setLcdOverride("GERAKAN JALAN", "TERDETEKSI", 4000);
+  } else if (track == TRACK_GESTURE_JUMP) {
+    setLcdOverride("GERAKAN LOMPAT", "TERDETEKSI", 4000);
+  } else if (track == TRACK_GESTURE_WAVE) {
+    setLcdOverride("GERAKAN LAMBAIAN", "TERDETEKSI", 4000);
+  } else if (track == TRACK_BLUETOOTH_OFF) {
+    setLcdOverride("BLUETOOTH", "DIMATIKAN", 4000);
+  } else if (track == TRACK_HALO_AERO) {
+    setLcdOverride("HALLO TUAN", "SENANG BERBICARA", 4000);
+  } else if (track == TRACK_INTRO) {
+    setLcdOverride("PERKENALKAN SAYA", "AERO ASISTEN AI", 6000);
+  }
+
   dfPlayer.play(track);
   lastVoiceMillis = millis();
   dfplayerBusy = true;
@@ -1148,7 +1179,6 @@ void playPirGreeting(String motionType) {
 
 void handleWhiteButtonQuickPress() {
   Serial.println("[BUTTON] White quick press - Introduction");
-  setLcdOverride("HALLO TUAN", "SAYA AERO", 6000);
   playVoice(TRACK_HALO_AERO, "white_btn_intro");
   publishEvent("INFO", "button.white.quick",
                "Tombol putih ditekan cepat: Suara perkenalan.");

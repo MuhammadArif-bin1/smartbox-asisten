@@ -79,6 +79,24 @@ function SidebarStatusCards() {
           </div>
         </div>
       </div>
+      <div className="rounded-2xl border border-amber-100 bg-amber-50/50 p-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <span className={`h-3 w-3 rounded-full ${ctx.isDemoMode ? "bg-amber-500 animate-pulse" : "bg-slate-400"}`} />
+            <div>
+              <p className="text-sm font-bold text-amber-900">Simulasi Alat</p>
+              <p className="text-xs text-amber-600">{ctx.isDemoMode ? "Aktif (Mock Data)" : "Nonaktif (Real Alat)"}</p>
+            </div>
+          </div>
+          <button
+            onClick={() => ctx.setIsDemoMode(!ctx.isDemoMode)}
+            className={`h-6 w-11 rounded-full p-0.5 transition-colors duration-200 focus:outline-none ${ctx.isDemoMode ? "bg-amber-500" : "bg-slate-300"}`}
+            type="button"
+          >
+            <div className={`h-5 w-5 rounded-full bg-white shadow-md transform transition-transform duration-200 ${ctx.isDemoMode ? "translate-x-5" : "translate-x-0"}`} />
+          </button>
+        </div>
+      </div>
     </>
   );
 }

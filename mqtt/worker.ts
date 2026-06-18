@@ -128,9 +128,8 @@ client.on("connect", () => {
   client.subscribe("smartbox/+/event", { qos: 1 });
   client.subscribe("smartbox/+/ack", { qos: 1 });
   client.subscribe("smartbox/+/status", { qos: 1 });
-  client.subscribe("smartbox/+/cmd", { qos: 1 });
   
-  console.log("[Worker] Subscribed to wildcard topics: smartbox/+/telemetry, event, ack, status, cmd");
+  console.log("[Worker] Subscribed to wildcard topics: smartbox/+/telemetry, event, ack, status");
 
   // Automatically sync local Next.js IP address to the ESP32
   try {
@@ -166,11 +165,7 @@ client.on("message", async (topic, message) => {
     const messageType = parts[2];
     const data = JSON.parse(payloadStr);
 
-    if (messageType === "cmd") {
-      console.log(`[Worker] Command published to ${topic}`);
-    }
-
-    else if (messageType === "status") {
+    if (messageType === "status") {
       const isOnline = data.online === true;
       console.log(`[Worker] Device ${deviceId} status changed to: ${isOnline ? "ONLINE" : "OFFLINE"}`);
       await ensureDevice(deviceId, isOnline);
@@ -451,7 +446,6 @@ const DB_KEEP_ALIVE_INTERVAL_MS = 4 * 60 * 1000; // 4 menit
 setInterval(async () => {
   try {
     await prisma.$queryRaw`SELECT 1`;
-    console.log("[Worker] Database keep-alive ping berhasil (Neon DB tetap aktif).");
   } catch (err) {
     console.warn("[Worker] Database keep-alive ping gagal:", err);
   }
@@ -473,7 +467,7 @@ const CACHE_TTL_MS = 30 * 1000; // 30 seconds
 
 async function refreshSchedulesCacheIfNeeded() {
   const now = Date.now();
-  if (now - lastCacheFetchTime < CACHE_TTL_MS && cachedRelaySchedules.length > 0) {
+  if (now - lastCacheFetchTime < CACHE_TTL_MS) {
     return;
   }
   try {
@@ -543,7 +537,6 @@ async function checkRelaySchedules() {
 
     const targetDeviceId = process.env.NEXT_PUBLIC_DEVICE_ID || "smartbox-001";
     const topic = `smartbox/${targetDeviceId}/cmd`;
-    await ensureDevice(targetDeviceId, true);
 
     for (const schedule of schedules) {
       let activeDays: string[] = [];
@@ -655,7 +648,6 @@ async function checkAlarmSchedules() {
 
     const targetDeviceId = process.env.NEXT_PUBLIC_DEVICE_ID || "smartbox-001";
     const topic = `smartbox/${targetDeviceId}/cmd`;
-    await ensureDevice(targetDeviceId, true);
 
     for (const schedule of schedules) {
       if (schedule.time !== timeStr) {

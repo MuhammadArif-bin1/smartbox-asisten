@@ -202,4 +202,6 @@ export type SmartboxContextValue = {
   onToggleScheduleActive: (id: string, currentActive: boolean) => Promise<void>;
   onTestPlayVoice: (track: number) => Promise<void>;
   setToast: (toast: Toast | null) => void;
+  isDemoMode: boolean;
+  setIsDemoMode: (value: boolean) => void;
 };

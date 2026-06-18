@@ -23,6 +23,21 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
   const [passwordInput, setPasswordInput] = useState("");
   const [loginError, setLoginError] = useState("");
 
+  const [isDemoMode, setIsDemoMode] = useState<boolean>(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("smartbox_demo") === "1";
+    }
+    return false;
+  });
+
+  const toggleDemoMode = (val: boolean) => {
+    setIsDemoMode(val);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("smartbox_demo", val ? "1" : "0");
+    }
+    notify(val ? "Mode simulasi diaktifkan" : "Mode simulasi dinonaktifkan", "info");
+  };
+
   /* ── Sensor state ── */
   const [gasEnabled, setGasEnabled] = useState(true);
   const [temperatureEnabled, setTemperatureEnabled] = useState(true);
@@ -80,8 +95,23 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
   const [toast, setToast] = useState<Toast | null>(null);
 
   /* ─── Computed values ─── */
-  const hasTempSensor = deviceStatus.esp32 && deviceStatus.rtc;
-  const hasGasSensor = deviceStatus.esp32;
+  const effectiveDeviceStatus = useMemo<DeviceStatuses>(() => {
+    if (isDemoMode) {
+      return {
+        esp32: true,
+        rtc: true,
+        lcd: true,
+        dfPlayer: true,
+        ip: "192.168.1.55 (Simulasi)",
+        rssi: -55,
+        lastSeen: "Simulasi",
+      };
+    }
+    return deviceStatus;
+  }, [deviceStatus, isDemoMode]);
+
+  const hasTempSensor = effectiveDeviceStatus.esp32 && effectiveDeviceStatus.rtc;
+  const hasGasSensor = effectiveDeviceStatus.esp32;
 
   const visibleGasEstimate = (hasGasSensor && gasEnabled) ? gasEstimate : 0;
   const visibleTempEstimate = (hasTempSensor && temperatureEnabled) ? tempEstimate : 0;
@@ -107,6 +137,11 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
   async function sendDeviceCommand(type: string, payload: Record<string, unknown>, label: string, successMsg?: string, errorMsg?: string) {
     setStatus("sending");
     setLastCommand(label);
+    if (isDemoMode) {
+      setStatus("sent");
+      notify(successMsg || `Simulasi: ${label} berhasil`, "success");
+      return true;
+    }
     try {
       const devId = process.env.NEXT_PUBLIC_DEVICE_ID || "smartbox-001";
       await sendDeviceCommandApi(devId, type, payload);
@@ -273,6 +308,12 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
     relayPendingRef.current[relayId] = Date.now();
     if (relayId !== "ampli") {
       setRelayAutoOffAt((current) => ({ ...current, [relayId]: next ? Date.now() + 60_000 : null }));
+    }
+
+    if (isDemoMode) {
+      notify(`Simulasi: ${relayId === "ampli" ? "Relay Bluetooth" : (relayId === "socket2" ? "Stop Kontak 2" : "Stop Kontak 1")} berhasil ${next ? "diaktifkan" : "dimatikan"}`, "success");
+      relayPendingRef.current[relayId] = 0;
+      return;
     }
 
     let ok: boolean;
@@ -839,6 +880,45 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
   }, [isAuthenticated, telemetrySource]);
 
   /* ═══════════════════════════════════════════════════════════════
+     EFFECTS — Live telemetry simulation for Demo Mode
+     ═══════════════════════════════════════════════════════════════ */
+  useEffect(() => {
+    if (!isDemoMode) return;
+
+    // Set initial values
+    setTempEstimate(28.2);
+    setGasEstimate(7200);
+    setGasLevel("normal");
+    setPirDetected(false);
+    setTelemetrySource("Simulasi Hardware");
+
+    const interval = setInterval(() => {
+      // Simulate temperature around 27.5 - 29.0 C
+      const baseTemp = 28.2;
+      const tRandom = (Math.random() - 0.5) * 1.2;
+      const nextTemp = roundTemperature(baseTemp + tRandom);
+      setTempEstimate(nextTemp);
+      setTempHistory((current) => [...current.slice(-23), nextTemp]);
+
+      // Simulate gas PPM around 110 - 140 (raw 6600 - 8400)
+      const baseGasRaw = 7200;
+      const gRandom = Math.round((Math.random() - 0.5) * 800);
+      const nextGasRaw = baseGasRaw + gRandom;
+      setGasEstimate(nextGasRaw);
+      setGasLevel("normal");
+      setGasHistory((current) => [...current.slice(-23), nextGasRaw]);
+
+      // Randomly trigger PIR motion detection once in a while (e.g. 15% chance)
+      const motion = Math.random() < 0.15;
+      setPirDetected(motion);
+
+      setTelemetrySource("Simulasi Hardware");
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [isDemoMode]);
+
+  /* ═══════════════════════════════════════════════════════════════
      EFFECTS — Event logs polling from Neon DB
      ═══════════════════════════════════════════════════════════════ */
 
@@ -926,7 +1006,7 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
     isAuthenticated, authChecked, passwordInput, loginError, setPasswordInput, submitLogin,
     gasEnabled, temperatureEnabled, visibleGasEstimate, visibleTempEstimate, gasPpm, gasPercent, tempPercent, gasWarning, tempWarning, gasState, tempState, flameDetected, pirDetected, obstacleNear, pirEnabled, sleepModeEnabled,
     pirGreetingEnabled, pirGreetingTrack, pirGreetingStart, pirGreetingEnd, pirGreetingCooldown, pirGreetingDays, pirGreetingPlayMode,
-    deviceStatuses: deviceStatus, dfTrackCount, telemetrySource, tempHistory, gasHistory,
+    deviceStatuses: effectiveDeviceStatus, dfTrackCount, telemetrySource, tempHistory, gasHistory,
     relayState, relayAutoOffAt, relayActiveCount, relaySchedules,
     alarms, alarmSchedules, activeAlarms,
     mqttOnline, status, lastCommand, voiceMode, buzzerEnabled, boardLedScheduleEnabled,
@@ -935,6 +1015,7 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
     updateAlarm, setBuzzerEnabled, setBoardLedScheduleEnabled, setVoiceMode, updatePirGreetingConfig,
     saveRelaySchedule, deleteRelaySchedule,
     onSaveSchedule: saveAlarmSchedule, onDeleteSchedule: deleteAlarmSchedule, onToggleScheduleActive: toggleAlarmScheduleActive, onTestPlayVoice: testPlayVoice,
+    isDemoMode, setIsDemoMode: toggleDemoMode,
   };
 
   return <SmartboxContext.Provider value={value}>{children}</SmartboxContext.Provider>;
