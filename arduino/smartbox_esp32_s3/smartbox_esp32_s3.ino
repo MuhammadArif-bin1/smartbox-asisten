@@ -2057,6 +2057,7 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
   } else if (strcmp(type, "voice.play") == 0) {
     int track = data["track"] | -1;
     const char *reason = data["reason"] | "dashboard_voice_test";
+    Serial.printf("[DFPLAYER] Play track: %d reason: %s\n", track, reason);
     if (track >= 1 && track <= DFPLAYER_MAX_TRACK) {
       playVoice((uint8_t)track, reason);
       publishAck(cmdId, type, true, "DFPlayer play command received.");

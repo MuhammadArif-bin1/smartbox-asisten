@@ -10,7 +10,8 @@ import { ToastMessage } from "@/components/ui/Toast";
 
 /* ─── View title resolver ─── */
 const titleMap: Record<string, string> = {
-  "/admin": "Monitoring",
+  "/admin": "SmartBox Assistant Dashboard",
+  "/admin/monitoring": "Monitoring",
   "/admin/devices": "Devices Control",
   "/admin/ai": "AI Assistant",
   "/admin/alarms": "Alarm Jadwal",
@@ -112,7 +113,7 @@ function Header() {
         <div>
           <p className="text-xs font-bold uppercase tracking-[0.22em] text-blue-600 lg:hidden">SmartBox Assistant</p>
           <h1 className="text-2xl font-black tracking-normal text-slate-950 sm:text-3xl">
-            {title === "Monitoring" ? "SmartBox Assistant Monitoring" : title}
+            {title}
           </h1>
         </div>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">

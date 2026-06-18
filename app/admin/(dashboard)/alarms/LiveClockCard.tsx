@@ -6,19 +6,30 @@ export function LiveClockCard({ online, rtcReady }: { online: boolean; rtcReady:
   const [currentTime, setCurrentTime] = useState<Date | null>(null);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setCurrentTime(new Date());
-    const interval = setInterval(() => { setCurrentTime(new Date()); }, 1000);
+    const interval = setInterval(() => {
+      setCurrentTime(new Date());
+    }, 1000);
     return () => clearInterval(interval);
   }, []);
 
   if (!currentTime) return null;
 
-  const timeFormatter = new Intl.DateTimeFormat("id-ID", {
-    timeZone: "Asia/Jakarta", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+  // Formatting time in Asia/Jakarta timezone
+  const timeFormatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Jakarta",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
   });
+
   const dateFormatter = new Intl.DateTimeFormat("id-ID", {
-    timeZone: "Asia/Jakarta", weekday: "long", day: "numeric", month: "long", year: "numeric",
+    timeZone: "Asia/Jakarta",
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
   });
 
   const timeString = timeFormatter.format(currentTime);
@@ -26,35 +37,38 @@ export function LiveClockCard({ online, rtcReady }: { online: boolean; rtcReady:
   const isSync = online && rtcReady;
 
   return (
-    <div className="rounded-3xl bg-blue-600 border-4 border-blue-700 p-8 text-black font-mono shadow-2xl relative overflow-hidden flex flex-col items-center justify-center min-h-[220px] transition-all hover:border-blue-500">
-      {/* Decorative Radial Background and Glowing Orbs */}
-      <div className="absolute inset-0 opacity-[0.08] pointer-events-none bg-[radial-gradient(#ffffff_1px,transparent_1px)] [background-size:16px_16px]" />
-      <div className="absolute -left-20 -top-20 w-48 h-48 rounded-full bg-white/10 blur-[80px] pointer-events-none" />
-      <div className="absolute -right-20 -bottom-20 w-48 h-48 rounded-full bg-white/10 blur-[80px] pointer-events-none" />
-
-      <div className="z-10 flex flex-col items-center">
-        {/* Status Badge */}
-        <div className={`mb-4 flex items-center gap-2 self-center text-xs border px-4 py-1.5 rounded-full transition-all duration-300 ${
-          isSync 
-            ? "border-black/20 bg-black/10 text-black" 
-            : "border-amber-900/20 bg-amber-500/20 text-amber-950"
-        }`}>
-          <span className={`h-2.5 w-2.5 rounded-full ${
-            isSync ? "bg-black shadow-[0_0_8px_rgba(0,0,0,0.3)] animate-pulse" : "bg-amber-700 shadow-[0_0_8px_rgba(180,83,9,0.3)] animate-pulse"
-          }`} />
-          <span className="text-xs uppercase font-extrabold tracking-widest">
-            {isSync ? "RTC / LCD I2C Terhubung" : "Menggunakan Waktu Sistem Web"}
+    <div className="rounded-3xl bg-slate-950 border-4 border-slate-800 p-6 shadow-2xl relative overflow-hidden flex flex-col items-center justify-center min-h-[220px]">
+      {/* LCD Backlight Glow Effect */}
+      <div className="absolute inset-0 bg-blue-950/20 opacity-40 pointer-events-none" />
+      <div className="absolute inset-0 bg-[linear-gradient(to_bottom,rgba(255,255,255,0.05)_50%,transparent_50%)] bg-[length:100%_4px] pointer-events-none" />
+      
+      {/* LCD Header */}
+      <div className="z-10 w-full flex items-center justify-between px-4 mb-4 border-b border-slate-800 pb-3">
+        <div className="flex items-center gap-2">
+          <div className="h-2 w-2 rounded-full bg-blue-500 animate-pulse" />
+          <span className="text-xs font-bold tracking-widest text-blue-400 uppercase font-mono">LCD 16X2 SIMULATOR</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className={`h-2 w-2 rounded-full ${isSync ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" : "bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.5)]"}`} />
+          <span className={`text-[10px] font-bold tracking-wider font-mono uppercase ${isSync ? "text-emerald-400" : "text-amber-400"}`}>
+            {isSync ? "RTC / LCD I2C Sync" : "Menggunakan waktu sistem web"}
           </span>
         </div>
+      </div>
 
-        {/* Digital Time */}
-        <h2 className="text-5xl sm:text-7xl font-black tracking-widest text-black drop-shadow-[0_0_15px_rgba(0,0,0,0.1)] transition-all">
+      {/* Main Display screen */}
+      <div className="z-10 flex flex-col items-center bg-slate-900/90 border border-slate-800 rounded-2xl py-6 px-10 w-full max-w-xl shadow-inner relative">
+        {/* Glow border */}
+        <div className="absolute inset-0 rounded-2xl border border-blue-500/10 pointer-events-none" />
+        
+        {/* Digital Time digits with digital/LCD style font */}
+        <h2 className="text-5xl sm:text-7xl font-bold font-mono tracking-widest text-cyan-400 drop-shadow-[0_0_12px_rgba(34,211,238,0.4)] select-none">
           {timeString}
         </h2>
 
         {/* Date Display */}
-        <p className="mt-4 text-base sm:text-lg font-bold text-black text-center tracking-wide">
-          {dateString} <span className="text-black/60 font-semibold">•</span> Asia/Jakarta (WIB)
+        <p className="mt-4 text-sm sm:text-base font-medium text-slate-400 font-mono tracking-wide select-none text-center">
+          {dateString} <span className="text-slate-600 font-semibold">•</span> Asia/Jakarta (WIB)
         </p>
       </div>
     </div>
