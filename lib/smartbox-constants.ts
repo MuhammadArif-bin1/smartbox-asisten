@@ -21,20 +21,20 @@ export const initialAlarms: Alarm[] = [
 /* ─── Audio tracks (DFPlayer) ─── */
 export const audioTracks = [
   { id: 1, name: "0001.mp3", label: "Smartbox siap digunakan", use: "Sistem utama" },
-  { id: 2, name: "0002.mp3", label: "Jam dan suhu", use: "Sistem utama" },
+  { id: 2, name: "0002.mp3", label: "Jam dan suhu real-time", use: "Sistem utama" },
   { id: 3, name: "0003.mp3", label: "Bluetooth diaktifkan", use: "Bluetooth/audio" },
-  { id: 4, name: "0004.mp3", label: "Selamat pagi", use: "Alarm" },
-  { id: 5, name: "0005.mp3", label: "Selamat siang", use: "Alarm" },
-  { id: 6, name: "0006.mp3", label: "Selamat sore", use: "Alarm" },
+  { id: 4, name: "0004.mp3", label: "Selamat pagi tuan", use: "Alarm" },
+  { id: 5, name: "0005.mp3", label: "Selamat siang tuan", use: "Alarm" },
+  { id: 6, name: "0006.mp3", label: "Selamat sore tuan", use: "Alarm" },
   { id: 7, name: "0007.mp3", label: "Asap terdeteksi", use: "Sensor MQ-2" },
   { id: 8, name: "0008.mp3", label: "Gas terdeteksi", use: "Sensor MQ-2" },
   { id: 9, name: "0009.mp3", label: "Suhu terdeteksi", use: "Sensor DS3231" },
   { id: 10, name: "0010.mp3", label: "Gerakan berjalan", use: "Sensor PIR" },
   { id: 11, name: "0011.mp3", label: "Gerakan melompat", use: "Sensor PIR" },
   { id: 12, name: "0012.mp3", label: "Gerakan melambaikan tangan", use: "Sensor PIR" },
-  { id: 13, name: "0013.mp3", label: "Bluetooth Smartbox Assistant dimatikan", use: "Bluetooth/audio" },
-  { id: 14, name: "0014.mp3", label: "Halo Aero", use: "KWS/Sistem" },
-  { id: 15, name: "0015.mp3", label: "Perkenalan diri (Aero)", use: "Sistem utama" },
+  { id: 13, name: "0013.mp3", label: "Bluetooth dimatikan", use: "Bluetooth/audio" },
+  { id: 14, name: "0014.mp3", label: "Hallo Aero", use: "KWS/Sistem" },
+  { id: 15, name: "0015.mp3", label: "Perkenalan Aero", use: "Sistem utama" },
 ];
 
 /* ─── Board pin profiles ─── */
