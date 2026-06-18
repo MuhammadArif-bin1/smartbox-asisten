@@ -442,6 +442,20 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
           client?.subscribe(`smartbox/${deviceId}/status`);
           client?.subscribe(`smartbox/${deviceId}/event`);
           client?.subscribe(`smartbox/${deviceId}/ack`);
+
+          // Sync backend URL to the ESP32
+          if (typeof window !== "undefined") {
+            const origin = window.location.origin;
+            const syncCmd = {
+              id: `sync_backend_browser_${Date.now()}`,
+              type: "backend.set",
+              payload: {
+                url: origin,
+              },
+            };
+            client?.publish(`smartbox/${deviceId}/cmd`, JSON.stringify(syncCmd), { qos: 1 });
+            console.log(`[Dashboard] Sent backend sync command with URL: ${origin}`);
+          }
         });
 
         client.on("message", (topic, payload) => {

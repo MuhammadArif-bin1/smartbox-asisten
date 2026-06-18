@@ -1,6 +1,19 @@
 import "dotenv/config";
 import mqtt from "mqtt";
 import { prisma } from "../lib/prisma.js";
+import os from "os";
+
+function getLocalIp(): string {
+  const interfaces = os.networkInterfaces();
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name] || []) {
+      if (iface.family === "IPv4" && !iface.internal) {
+        return iface.address;
+      }
+    }
+  }
+  return "127.0.0.1";
+}
 
 const brokerUrl = process.env.MQTT_URL || process.env.MQTT_BROKER_URL || "mqtt://localhost:1883";
 const username = process.env.MQTT_USERNAME || process.env.NEXT_PUBLIC_MQTT_USERNAME;
@@ -118,6 +131,23 @@ client.on("connect", () => {
   client.subscribe("smartbox/+/cmd", { qos: 1 });
   
   console.log("[Worker] Subscribed to wildcard topics: smartbox/+/telemetry, event, ack, status, cmd");
+
+  // Automatically sync local Next.js IP address to the ESP32
+  try {
+    const localIp = getLocalIp();
+    const targetDeviceId = process.env.NEXT_PUBLIC_DEVICE_ID || "smartbox-001";
+    const syncCmd = {
+      id: `sync_backend_${Date.now()}`,
+      type: "backend.set",
+      payload: {
+        url: `http://${localIp}:3000`,
+      },
+    };
+    client.publish(`smartbox/${targetDeviceId}/cmd`, JSON.stringify(syncCmd), { qos: 1 });
+    console.log(`[Worker] Sent backend sync command: http://${localIp}:3000 to device ${targetDeviceId}`);
+  } catch (err) {
+    console.error("[Worker] Failed to send backend sync command:", err);
+  }
 });
 
 client.on("message", async (topic, message) => {

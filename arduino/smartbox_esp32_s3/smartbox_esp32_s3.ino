@@ -238,8 +238,9 @@ uint8_t *recordBuffer = NULL;
 size_t recordBufferIdx = 0;
 unsigned long recordingStartMillis = 0;
 
-// Next.js API URL
-const char *AI_BACKEND_URL = "http://192.168.1.10:3000/api/gemini/chat-audio";
+// Next.js API URL (dynamic, updated via MQTT and stored in NVS)
+String aiBackendUrl = "http://192.168.1.10:3000/api/gemini/chat-audio";
+String aiResponseHost = "http://192.168.1.10:3000";
 
 // Black Button Debounce & State Variables
 const unsigned long BLACK_BUTTON_DEBOUNCE_MS = 50;
@@ -649,6 +650,8 @@ void loadSettings() {
   gasDangerThreshold = gasThreshold;
   tempThreshold = preferences.getFloat("tempThreshold", 35.0);
   tempOffset = preferences.getFloat("tempOffset", 0.0);
+  aiBackendUrl = preferences.getString("backendUrl", "http://192.168.1.10:3000/api/gemini/chat-audio");
+  aiResponseHost = preferences.getString("responseHost", "http://192.168.1.10:3000");
   preferences.end();
   Serial.println("[SETTINGS] Loaded settings from NVS.");
 }
@@ -676,6 +679,8 @@ void saveSettings() {
   preferences.putInt("gasDanger", gasThreshold);
   preferences.putFloat("tempThreshold", tempThreshold);
   preferences.putFloat("tempOffset", tempOffset);
+  preferences.putString("backendUrl", aiBackendUrl);
+  preferences.putString("responseHost", aiResponseHost);
   preferences.end();
   Serial.println("[SETTINGS] Saved settings to NVS.");
 }
@@ -2040,6 +2045,17 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
       matikanBluetooth();
       publishAck(cmdId, type, true, "Bluetooth dimatikan.");
     }
+  } else if (strcmp(type, "backend.set") == 0) {
+    const char *url = data["url"] | "";
+    if (strlen(url) > 0) {
+      aiResponseHost = String(url);
+      aiBackendUrl = aiResponseHost + "/api/gemini/chat-audio";
+      saveSettings();
+      publishAck(cmdId, type, true, "Backend URL synchronized successfully.");
+      Serial.printf("[SETTINGS] Synced backend host: %s, URL: %s\n", aiResponseHost.c_str(), aiBackendUrl.c_str());
+    } else {
+      publishAck(cmdId, type, false, "Invalid backend URL.");
+    }
   } else if (strcmp(type, "sensor.calibrate") == 0) {
     int samples = data["samples"] | 100;
     setLcdOverride("KALIBRASI SENSOR", "MOHON TUNGGU", 5000);
@@ -2538,7 +2554,7 @@ void handleSendingState() {
   WiFiClient client;
   HTTPClient http;
 
-  if (http.begin(client, AI_BACKEND_URL)) {
+  if (http.begin(client, aiBackendUrl)) {
     http.addHeader("Content-Type", "audio/wav");
     http.addHeader("x-device-id", DEVICE_ID);
     http.addHeader("x-source", "black_button_long_press");
@@ -2558,7 +2574,7 @@ void handleSendingState() {
         setLcdOverride("AI JAWABAN:", aiText, 5000);
 
         if (strlen(audioUrl) > 0) {
-          aiResponseUrl = "http://192.168.1.10:3000" + String(audioUrl);
+          aiResponseUrl = aiResponseHost + String(audioUrl);
           systemState = STATE_DOWNLOADING;
           http.end();
           return;
