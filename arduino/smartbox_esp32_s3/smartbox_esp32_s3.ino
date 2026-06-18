@@ -131,8 +131,8 @@ const char *DEVICE_ID = "smartbox-001";
     // frontend next.js lalu kirim ke neon db lalu nanti ai akan membalas
     // printah suara user dengan menggunakan model pada gemini tts (text to
     // speech) dan sts (speak to speech)
-#define WHITE_BTN_PIN 19 // Tombol Putih (Ditambahkan sesuai permintaan)
-#define RED_BTN_PIN 20   // Tombol Merah (Tekan Cepat = Nyala/Mati Bluetooth)
+#define WHITE_BTN_PIN 19 // Tombol Putih (Tekan Cepat = Suara Perkenalan)
+#define RED_BTN_PIN 20   // Tombol Merah (Tekan Cepat = Nyala/Mati Bluetooth, Tahan = Kalibrasi MQ-2)
 
 #define PIR_PIN 9
 #define IR_PIN 42
@@ -263,7 +263,7 @@ const unsigned long MQTT_RETRY_GAP_MS = 3000;
 // Edge Impulse configuration
 #define SAMPLE_RATE EI_CLASSIFIER_FREQUENCY
 #define I2S_SHIFT 14
-#define AUDIO_GAIN 2.0f
+#define AUDIO_GAIN 5.0f
 #define MIC_RMS_MIN 10.0f
 
 #define SCORE_THRESHOLD_HALO 0.70f
@@ -281,6 +281,8 @@ unsigned long lastCommandTime = 0;
 unsigned long lastDebugTime = 0;
 const unsigned long DEBUG_INTERVAL_MS = 700;
 bool smartboxAwake = false;
+unsigned long awakeStartTime = 0;
+const unsigned long AWAKE_TIMEOUT_MS = 10000; // 10 seconds wake timeout
 
 // ==========================================================
 // I2S & MEMORY STATES (STATE MACHINE)
@@ -378,7 +380,7 @@ Preferences preferences;
 
 bool sleepModeEnabled = false;
 bool pirEnabled = true;
-bool pirGreetingEnabled = false;
+bool pirGreetingEnabled = true;
 int pirGreetingTrack = TRACK_GESTURE_WALK;
 int pirGreetingStartHour = 7;
 int pirGreetingStartMinute = 0;
@@ -455,7 +457,7 @@ void playVoice(uint8_t track, const char *reason);
 void serviceVoiceQueue();
 void stopDfTrack();
 void setRelay(uint8_t relayNumber, bool state, bool withVoice,
-              bool publishStatus = true);
+              bool publishStatus = true, int autoOffSeconds = -1);
 void checkRelayAutoOff();
 void setBuzzer(bool state, bool manualMode);
 void handleRelayScheduleCommand(JsonObject data, const char *cmdId,
@@ -1145,16 +1147,26 @@ void playPirGreeting(String motionType) {
 }
 
 void handleWhiteButtonQuickPress() {
-  Serial.println("[BUTTON] White button pressed - Aero self introduction");
-
-  setLcdOverride("HALLO TUAN", "SAYA AERO", 10000);
-  playVoice(TRACK_INTRO, "white_btn_intro");
+  Serial.println("[BUTTON] White quick press - Introduction");
+  setLcdOverride("HALLO TUAN", "SAYA AERO", 6000);
+  playVoice(TRACK_HALO_AERO, "white_btn_intro");
   publishEvent("INFO", "button.white.quick",
-               "Tombol putih tekan cepat: Aero memperkenalkan diri.");
+               "Tombol putih ditekan cepat: Suara perkenalan.");
+}
+
+void handleRedButtonQuickPress() {
+  Serial.println("[BUTTON] Red quick press - Toggle Bluetooth");
+  if (bluetoothAktif) {
+    matikanBluetooth();
+  } else {
+    nyalakanBluetooth();
+  }
+  publishEvent("INFO", "button.red.quick",
+               "Tombol merah ditekan cepat: Toggle Bluetooth.");
 }
 
 void checkPirGreeting() {
-  if (!pirEnabled)
+  if (!pirEnabled || !pirGreetingEnabled)
     return;
 
   bool pirDetected = (digitalRead(PIR_PIN) == HIGH);
@@ -1162,20 +1174,29 @@ void checkPirGreeting() {
     return;
 
   unsigned long currentMillis = millis();
-  unsigned long cooldownMs = pirGreetingEnabled ? PIR_GREETING_COOLDOWN : 10000;
-  if (cooldownMs < 10000)
-    cooldownMs = 10000;
+  
+  // Random cooldown between 60 to 120 seconds
+  unsigned long cooldownMs = random(60000, 120000);
+  
   if (lastPirGreetingTime > 0 &&
       (currentMillis - lastPirGreetingTime < cooldownMs)) {
     return;
   }
 
+  // Check Schedule via RTC (07:00-08:00, 12:00-13:00, 17:00-18:00)
+  if (rtcReady) {
+    DateTime now = rtc.now();
+    int h = now.hour();
+    if (h != 7 && h != 12 && h != 17) {
+      // Not in the specific hour
+      return;
+    }
+  }
+
   lastPirGreetingTime = currentMillis;
   lastMotionDetectedTime = currentMillis;
 
-  // Pilih track secara acak antara 10, 11, atau 12
-  int selectedTrack =
-      random(10, 13); // random(10, 13) menghasilkan 10, 11, atau 12
+  int selectedTrack = random(10, 13); 
 
   if (selectedTrack == TRACK_GESTURE_WALK) {
     setLcdOverride("GERAKAN JALAN", "TERDETEKSI", 4000);
@@ -1374,7 +1395,7 @@ void handleRelayScheduleCommand(JsonObject data, const char *cmdId,
         relay1AutoOffActive = false;
       if (relayNum == 2)
         relay2AutoOffActive = false;
-      setRelay(relayNum, true, false);
+      setRelay(relayNum, true, false, true, 0);
       setLcdOverride(relayNum == 1 ? "JADWAL KONTAK 1" : "JADWAL KONTAK 2",
                      "MENYALA", 3000);
       publishEvent("INFO", "relay.schedule.synced",
@@ -1432,7 +1453,7 @@ void checkRelaySchedules() {
         relay1AutoOffActive = false;
       if (relaySchedules[i].relayNum == 2)
         relay2AutoOffActive = false;
-      setRelay(relaySchedules[i].relayNum, true, false);
+      setRelay(relaySchedules[i].relayNum, true, false, true, 0);
       setLcdOverride(relaySchedules[i].relayNum == 1 ? "JADWAL KONTAK 1"
                                                      : "JADWAL KONTAK 2",
                      "MENYALA", 3000);
@@ -1463,7 +1484,7 @@ void checkRelaySchedules() {
         relay1AutoOffActive = false;
       if (relaySchedules[i].relayNum == 2)
         relay2AutoOffActive = false;
-      setRelay(relaySchedules[i].relayNum, false, false);
+      setRelay(relaySchedules[i].relayNum, false, false, true, 0);
       setLcdOverride(relaySchedules[i].relayNum == 1 ? "JADWAL KONTAK 1"
                                                      : "JADWAL KONTAK 2",
                      "MATI", 3000);
@@ -1541,10 +1562,6 @@ void matikanBluetooth() {
   if (bleSudahDibuat) {
     BLEDevice::getAdvertising()->stop();
   }
-
-  setBluetoothAudio(false);
-
-  setRgb(255, 0, 0);
 
   setLcdOverride("BLUETOOTH", "DIMATIKAN", 4000);
 
@@ -1728,21 +1745,65 @@ void stopDfTrack() {
 }
 
 void setRelay(uint8_t relayNumber, bool state, bool withVoice,
-              bool publishStatus) {
+              bool publishStatus, int autoOffSeconds) {
   if (relayNumber == 1) {
     relay1State = state;
     digitalWrite(RELAY_1_PIN, state ? RELAY_ON : RELAY_OFF);
+    if (state) {
+      if (autoOffSeconds > 0) {
+        relay1AutoOffActive = true;
+        relay1AutoOffAt = millis() + (autoOffSeconds * 1000UL);
+      } else if (autoOffSeconds == 0) {
+        relay1AutoOffActive = false;
+      } else {
+        // Default (-1): check if gas warning is active
+        if (!relay1ForcedByGas) {
+          relay1AutoOffActive = true;
+          relay1AutoOffAt = millis() + 60000UL; // 1 minute
+        }
+      }
+    } else {
+      relay1AutoOffActive = false;
+    }
   }
   if (relayNumber == 2) {
     relay2State = state;
     digitalWrite(RELAY_2_PIN, state ? RELAY_ON : RELAY_OFF);
+    if (state) {
+      if (autoOffSeconds > 0) {
+        relay2AutoOffActive = true;
+        relay2AutoOffAt = millis() + (autoOffSeconds * 1000UL);
+      } else if (autoOffSeconds == 0) {
+        relay2AutoOffActive = false;
+      } else {
+        // Default (-1)
+        relay2AutoOffActive = true;
+        relay2AutoOffAt = millis() + 60000UL; // 1 minute
+      }
+    } else {
+      relay2AutoOffActive = false;
+    }
   }
   Serial.printf("[RELAY] Relay %d %s\n", relayNumber, state ? "ON" : "OFF");
 
   if (relayNumber == 1) {
-    setLcdOverride("STOP KONTAK 1", state ? "KIPAS ON" : "KIPAS OFF", 3000);
+    if (state && relay1AutoOffActive) {
+      unsigned long secs = (relay1AutoOffAt - millis() + 999UL) / 1000UL;
+      char lcdMsg[17];
+      snprintf(lcdMsg, sizeof(lcdMsg), "KIPAS ON %lu MENIT", (secs + 59UL) / 60UL);
+      setLcdOverride("STOP KONTAK 1", lcdMsg, 3000);
+    } else {
+      setLcdOverride("STOP KONTAK 1", state ? "KIPAS ON" : "KIPAS OFF", 3000);
+    }
   } else if (relayNumber == 2) {
-    setLcdOverride("STOP KONTAK 2", state ? "CHARGER ON" : "CHARGER OFF", 3000);
+    if (state && relay2AutoOffActive) {
+      unsigned long secs = (relay2AutoOffAt - millis() + 999UL) / 1000UL;
+      char lcdMsg[17];
+      snprintf(lcdMsg, sizeof(lcdMsg), "CHARGER %lu MENIT", (secs + 59UL) / 60UL);
+      setLcdOverride("STOP KONTAK 2", lcdMsg, 3000);
+    } else {
+      setLcdOverride("STOP KONTAK 2", state ? "CHARGER ON" : "CHARGER OFF", 3000);
+    }
   }
 
   if (publishStatus) {
@@ -1886,31 +1947,7 @@ void handleRelayCommand(JsonObject data, const char *cmdId, const char *type) {
     return;
   }
 
-  setRelay(relayNumber, state, false, false);
-
-  if (relayNumber == 1) {
-    if (state && autoOffSeconds > 0) {
-      relay1AutoOffActive = true;
-      relay1AutoOffAt = millis() + (autoOffSeconds * 1000UL);
-      setLcdOverride("STOP KONTAK 1", "KIPAS ON 1 MENIT", 3000);
-    } else {
-      relay1AutoOffActive = false;
-      if (!state)
-        setLcdOverride("STOP KONTAK 1", "KIPAS OFF", 3000);
-    }
-  }
-
-  if (relayNumber == 2) {
-    if (state && autoOffSeconds > 0) {
-      relay2AutoOffActive = true;
-      relay2AutoOffAt = millis() + (autoOffSeconds * 1000UL);
-      setLcdOverride("STOP KONTAK 2", "CHARGER 1 MENIT", 3000);
-    } else {
-      relay2AutoOffActive = false;
-      if (!state)
-        setLcdOverride("STOP KONTAK 2", "CHARGER OFF", 3000);
-    }
-  }
+  setRelay(relayNumber, state, false, false, fromSchedule ? 0 : autoOffSeconds);
 
   publishAck(cmdId, type, true, "Relay updated.");
 
@@ -1922,7 +1959,7 @@ void handleRelayCommand(JsonObject data, const char *cmdId, const char *type) {
   JsonObject payload = doc.createNestedObject("payload");
   payload["relay"] = relayNumber;
   payload["state"] = state;
-  payload["autoOffSeconds"] = autoOffSeconds;
+  payload["autoOffSeconds"] = fromSchedule ? 0 : autoOffSeconds;
   payload["millis"] = millis();
 
   publishJson(topicEvent(), doc, false);
@@ -2310,9 +2347,11 @@ void checkWarnings(int gasRaw, float tempC, bool anyGasWarning,
     setBluetoothAudio(true);
     setRgb(255, 0, 0);
     if (!relay1State)
-      setRelay(1, true, false);
+      setRelay(1, true, false, true, 0);
     relay1ForcedByGas = true;
     setBuzzer(true, false);
+
+    playGasWarningVoice("gas");
 
     if (!lastGasWarning) {
       lastGasWarning = true;
@@ -2323,13 +2362,14 @@ void checkWarnings(int gasRaw, float tempC, bool anyGasWarning,
       smokeStatusStr = "normal";
       publishBuzzerUpdated(true, "gas_detected");
       setLcdOverride("GAS TERDETEKSI", "SEGERA PERIKSA!", 5000);
-      playVoice(TRACK_GAS_DETECTED, "gas_detected");
       publishEvent("WARNING", "gas.detected", "Gas terdeteksi!");
     }
   } else if (isSmoke) {
     setBluetoothAudio(true);
     setRgb(255, 80, 0);
     setBuzzer(true, false);
+
+    playGasWarningVoice("smoke");
 
     if (!lastSmokeWarning) {
       lastSmokeWarning = true;
@@ -2340,7 +2380,6 @@ void checkWarnings(int gasRaw, float tempC, bool anyGasWarning,
       gasStatusStr = "normal";
       publishBuzzerUpdated(true, "smoke_detected");
       setLcdOverride("ASAP TERDETEKSI", "SEGERA PERIKSA!", 5000);
-      playVoice(TRACK_SMOKE_DETECTED, "smoke_detected");
       publishEvent("WARNING", "smoke.detected", "Asap terdeteksi!");
     }
   } else {
@@ -2355,7 +2394,7 @@ void checkWarnings(int gasRaw, float tempC, bool anyGasWarning,
       gasStatusStr = "normal";
       smokeStatusStr = "normal";
       if (relay1ForcedByGas) {
-        setRelay(1, false, false);
+        setRelay(1, false, false, true, 0);
         relay1ForcedByGas = false;
       }
     }
@@ -2854,6 +2893,7 @@ void getBestLabel(ei_impulse_result_t *result, String *bestLabel,
 // Event handlers ketika keyword terdeteksi
 void onHaloAeroDetected(float score, float rms, int peak) {
   smartboxAwake = true;
+  awakeStartTime = millis();
 
   Serial.println();
   Serial.println("==================================================");
@@ -2894,6 +2934,53 @@ void onOneClapDetected(float score, float rms, int peak) {
   playVoice(TRACK_HALO_AERO, "1_tepukan");
 }
 
+void onTwoClapDetected(float score, float rms, int peak) {
+  Serial.println(">>> COMMAND DETECTED: 2_tepukan");
+  setRelay(2, !relay2State, false, true);
+  playVoice(TRACK_HALO_AERO, "2_tepukan");
+}
+
+void onPortSatuOnDetected(float score, float rms, int peak) {
+  Serial.println(">>> COMMAND DETECTED: Port_satu_on");
+  setRelay(1, true, false, true);
+}
+
+void onPortSatuOffDetected(float score, float rms, int peak) {
+  Serial.println(">>> COMMAND DETECTED: port_satu_off");
+  setRelay(1, false, false, true);
+}
+
+void onPortDuaOnDetected(float score, float rms, int peak) {
+  Serial.println(">>> COMMAND DETECTED: Port_dua_on");
+  setRelay(2, true, false, true);
+}
+
+void onPortDuaOffDetected(float score, float rms, int peak) {
+  Serial.println(">>> COMMAND DETECTED: port_dua_off");
+  setRelay(2, false, false, true);
+}
+
+void onBluetoothModeDetected(float score, float rms, int peak) {
+  Serial.println(">>> COMMAND DETECTED: bluetooth_mode");
+  nyalakanBluetooth();
+}
+
+void onBluetoothOffDetected(float score, float rms, int peak) {
+  Serial.println(">>> COMMAND DETECTED: bluetooth_off");
+  matikanBluetooth();
+}
+
+void onAiModeDetected(float score, float rms, int peak) {
+  Serial.println(">>> COMMAND DETECTED: ai_mode");
+  handleBlackButtonLongPress();
+}
+
+void onAiModeOffDetected(float score, float rms, int peak) {
+  Serial.println(">>> COMMAND DETECTED: ai_mode_off");
+  systemState = STATE_KWS;
+  setLcdOverride("AI MODE", "DIMATIKAN", 4000);
+}
+
 // Mencetak hasil klasifikasi Edge Impulse ke serial untuk debug
 void printDebugResult(ei_impulse_result_t *result, float micRms, int micPeak,
                       float micAvgAbs, String bestLabel, float bestScore,
@@ -2914,7 +3001,7 @@ void checkButtons() {
   unsigned long now = millis();
   const unsigned long DEBOUNCE_DELAY_MS = 50;
 
-  // 2. White Button Logic (Short: Play Track 1 - Assistant Intro/Ready)
+  // 2. White Button Logic (Short: Play Intro Track 14 & 15)
   static unsigned long whiteBtnPressTime = 0;
   static bool whiteBtnWasPressed = false;
   bool whiteBtnState = (digitalRead(WHITE_BTN_PIN) == LOW);
@@ -2934,28 +3021,30 @@ void checkButtons() {
     }
   }
 
-  // 3. Red Button Logic (Toggle BLE Bluetooth)
+  // 3. Red Button Logic (Quick = Toggle BT, Long = Calibrate MQ2)
   static unsigned long redBtnPressTime = 0;
   static bool redBtnWasPressed = false;
+  static bool redLongPressHandled = false;
   bool redBtnState = (digitalRead(RED_BTN_PIN) == LOW);
 
   if (redBtnState) {
     if (!redBtnWasPressed) {
       redBtnWasPressed = true;
       redBtnPressTime = now;
+      redLongPressHandled = false;
+    } else if (!redLongPressHandled && (now - redBtnPressTime >= 1500)) {
+      redLongPressHandled = true;
+      Serial.println("[BUTTON] Red button long press - MQ2 Calibration");
+      calibrateMQ2();
+      setLcdOverride("KALIBRASI SENSOR", "MQ2 CALIBRATING", 4000);
+      publishEvent("INFO", "button.red.long", "Tombol merah ditahan: Kalibrasi MQ-2.");
     }
   } else {
     if (redBtnWasPressed) {
       unsigned long pressDuration = now - redBtnPressTime;
       redBtnWasPressed = false;
-      if (pressDuration >= DEBOUNCE_DELAY_MS) {
-        Serial.println("[BUTTON] Red button pressed");
-        if (bluetoothAktif) {
-          matikanBluetooth();
-        } else {
-          nyalakanBluetooth();
-        }
-        publishEvent("INFO", "button.red", "Tombol merah ditekan.");
+      if (!redLongPressHandled && pressDuration >= DEBOUNCE_DELAY_MS) {
+        handleRedButtonQuickPress();
       }
     }
   }
@@ -3092,9 +3181,17 @@ void setup() {
 }
 
 // ==========================================================
-// LOOP
+// MAIN LOOP
 // ==========================================================
 void loop() {
+  if (smartboxAwake && (millis() - awakeStartTime >= AWAKE_TIMEOUT_MS)) {
+    smartboxAwake = false;
+    Serial.println(">>> WAKE TIMEOUT: Smartbox kembali tidur.");
+    setLcdOverride("SMARTBOX TIDUR", "Zzz...", 3000);
+  }
+
+  unsigned long currentMillis = millis();
+
   if (WiFi.status() != WL_CONNECTED) {
     connectWiFi();
   }
@@ -3182,6 +3279,15 @@ void loop() {
         float haloScore = getLabelScore(&result, "Halo_Aero");
         float calibrationScore = getLabelScore(&result, "calibration");
         float clapScore = getLabelScore(&result, "1_tepukan");
+        float clap2Score = getLabelScore(&result, "2_tepukan");
+        float p1onScore = getLabelScore(&result, "Port_satu_on");
+        float p1offScore = getLabelScore(&result, "port_satu_off");
+        float p2onScore = getLabelScore(&result, "Port_dua_on");
+        float p2offScore = getLabelScore(&result, "port_dua_off");
+        float btOnScore = getLabelScore(&result, "bluetooth_mode");
+        float btOffScore = getLabelScore(&result, "bluetooth_off");
+        float aiOnScore = getLabelScore(&result, "ai_mode");
+        float aiOffScore = getLabelScore(&result, "ai_mode_off");
 
         bool micValid = micRms >= MIC_RMS_MIN;
 
@@ -3195,12 +3301,41 @@ void loop() {
           if (haloScore >= SCORE_THRESHOLD_HALO) {
             lastCommandTime = millis();
             onHaloAeroDetected(haloScore, micRms, micPeak);
-          } else if (calibrationScore >= SCORE_THRESHOLD_CALIBRATION) {
-            lastCommandTime = millis();
-            onCalibrationDetected(calibrationScore, micRms, micPeak);
           } else if (clapScore >= SCORE_THRESHOLD_CLAP) {
             lastCommandTime = millis();
             onOneClapDetected(clapScore, micRms, micPeak);
+          } else if (clap2Score >= SCORE_THRESHOLD_CLAP) {
+            lastCommandTime = millis();
+            onTwoClapDetected(clap2Score, micRms, micPeak);
+          } else if (smartboxAwake) {
+            if (calibrationScore >= SCORE_THRESHOLD_CALIBRATION) {
+              lastCommandTime = millis();
+              onCalibrationDetected(calibrationScore, micRms, micPeak);
+            } else if (p1onScore >= SCORE_THRESHOLD_HALO) {
+              lastCommandTime = millis();
+              onPortSatuOnDetected(p1onScore, micRms, micPeak);
+            } else if (p1offScore >= SCORE_THRESHOLD_HALO) {
+              lastCommandTime = millis();
+              onPortSatuOffDetected(p1offScore, micRms, micPeak);
+            } else if (p2onScore >= SCORE_THRESHOLD_HALO) {
+              lastCommandTime = millis();
+              onPortDuaOnDetected(p2onScore, micRms, micPeak);
+            } else if (p2offScore >= SCORE_THRESHOLD_HALO) {
+              lastCommandTime = millis();
+              onPortDuaOffDetected(p2offScore, micRms, micPeak);
+            } else if (btOnScore >= SCORE_THRESHOLD_HALO) {
+              lastCommandTime = millis();
+              onBluetoothModeDetected(btOnScore, micRms, micPeak);
+            } else if (btOffScore >= SCORE_THRESHOLD_HALO) {
+              lastCommandTime = millis();
+              onBluetoothOffDetected(btOffScore, micRms, micPeak);
+            } else if (aiOnScore >= SCORE_THRESHOLD_HALO) {
+              lastCommandTime = millis();
+              onAiModeDetected(aiOnScore, micRms, micPeak);
+            } else if (aiOffScore >= SCORE_THRESHOLD_HALO) {
+              lastCommandTime = millis();
+              onAiModeOffDetected(aiOffScore, micRms, micPeak);
+            }
           }
         }
       }
