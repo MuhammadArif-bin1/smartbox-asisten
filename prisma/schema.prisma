@@ -1,6 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -12,54 +9,50 @@ datasource db {
 }
 
 model Device {
-  id          String          @id @default(cuid())
-  deviceId    String          @unique
-  name        String
-  status      String          @default("offline")
-  lastSeenAt  DateTime?
-  createdAt   DateTime        @default(now())
-  updatedAt   DateTime        @updatedAt
-  
-  // Relations
-  readings    SensorReading[]
-  events      EventLog[]
-  commands    DeviceCommand[]
-
-  // Keep existing relations to avoid breaking old pages
+  id           String           @id @default(cuid())
+  name         String
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+  deviceId     String           @unique
+  lastSeenAt   DateTime?
+  status       String           @default("offline")
   alarms       Alarm[]
   audioTracks  AudioTrack[]
-  snapshots    SensorSnapshot[]
+  commands     DeviceCommand[]
   deviceEvents DeviceEvent[]
+  events       EventLog[]
+  readings     SensorReading[]
+  snapshots    SensorSnapshot[]
 }
 
 model Alarm {
-  id          String   @id @default(cuid())
-  deviceId    String
-  label       String
-  time        String
-  timezone    String   @default("Asia/Jakarta")
-  greeting    String
-  dfTrack     Int
-  enabled     Boolean  @default(true)
-  repeatDays  String[] @default(["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"])
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  device      Device   @relation(fields: [deviceId], references: [deviceId], onDelete: Cascade)
+  id         String   @id @default(cuid())
+  deviceId   String
+  label      String
+  time       String
+  timezone   String   @default("Asia/Jakarta")
+  greeting   String
+  dfTrack    Int
+  enabled    Boolean  @default(true)
+  repeatDays String[] @default(["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"])
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  device     Device   @relation(fields: [deviceId], references: [deviceId], onDelete: Cascade)
 }
 
 model AudioTrack {
   id          String   @id @default(cuid())
   deviceId    String
-  track       Int
   fileName    String
   label       String
-  feature     String
-  description String?
   createdAt   DateTime @default(now())
+  description String?
+  feature     String
+  track       Int
   device      Device   @relation(fields: [deviceId], references: [deviceId], onDelete: Cascade)
 
-  @@index([deviceId])
   @@unique([deviceId, track])
+  @@index([deviceId])
 }
 
 model SensorSnapshot {
@@ -109,14 +102,13 @@ model SensorReading {
   gasLevel         String
   temperatureHigh  Boolean
   pirDetected      Boolean
-  obstacleNear     Boolean  @default(false)
   relay1           Boolean
   relay2           Boolean
   bluetoothRelay   Boolean
   buzzer           Boolean
   gasSensorEnabled Boolean
   createdAt        DateTime @default(now())
-
+  obstacleNear     Boolean  @default(false)
   device           Device   @relation(fields: [deviceId], references: [deviceId], onDelete: Cascade)
 }
 
@@ -128,7 +120,6 @@ model EventLog {
   message   String
   payload   Json
   createdAt DateTime @default(now())
-
   device    Device   @relation(fields: [deviceId], references: [deviceId], onDelete: Cascade)
 }
 
@@ -141,35 +132,23 @@ model DeviceCommand {
   ack       Json?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-
   device    Device   @relation(fields: [deviceId], references: [deviceId], onDelete: Cascade)
 }
 
-// ==========================================================
-// MODEL BARU: SmartboxEvent & SmartboxStatus
-// Standalone (tidak ada relasi ke Device) agar mudah
-// digunakan tanpa perlu Device seed.
-// ==========================================================
-
 /// Log event suara, sensor, tombol dari ESP32 maupun browser.
 model SmartboxEvent {
-  id        String   @id @default(cuid())
-  deviceId  String
-  level     String   @default("INFO")   // INFO | WARNING | ERROR
-  type      String                       // voice.played | gas.detected | assistant_intro | dll
-  message   String
-  source    String   @default("esp32")  // esp32 | browser | api
-  payload   Json?
-
-  // Untuk voice events
-  track     Int?
-  trackName String?
-
-  // Untuk sensor events
+  id          String   @id @default(cuid())
+  deviceId    String
+  level       String   @default("INFO")
+  type        String
+  message     String
+  source      String   @default("esp32")
+  payload     Json?
+  track       Int?
+  trackName   String?
   sensorValue Float?
-  sensorType  String?  // gas | smoke | temperature | pir | obstacle
-
-  createdAt DateTime @default(now())
+  sensorType  String?
+  createdAt   DateTime @default(now())
 
   @@index([deviceId])
   @@index([type])
@@ -179,46 +158,33 @@ model SmartboxEvent {
 /// Status singleton terkini dari Smartbox.
 /// Di-update oleh MQTT worker atau API setiap kali ada telemetry masuk.
 model SmartboxStatus {
-  id              String   @id @default(cuid())
-  deviceId        String   @unique
-
-  // Konektivitas
-  online          Boolean  @default(false)
-  lastSeenAt      DateTime @default(now())
-
-  // Sensor status
+  id              String    @id @default(cuid())
+  deviceId        String    @unique
+  online          Boolean   @default(false)
+  lastSeenAt      DateTime  @default(now())
   gasRaw          Int?
-  gasLevel        String   @default("normal")  // normal | waspada | bahaya
-  smokeDetected   Boolean  @default(false)
-  gasDetected     Boolean  @default(false)
+  gasLevel        String    @default("normal")
+  smokeDetected   Boolean   @default(false)
+  gasDetected     Boolean   @default(false)
   temperatureC    Float?
-  temperatureHigh Boolean  @default(false)
-  pirDetected     Boolean  @default(false)
-  obstacleNear    Boolean  @default(false)
-
-  // Aktuator status
-  relay1          Boolean  @default(false)
-  relay2          Boolean  @default(false)
-  bluetoothAudio  Boolean  @default(false)
-  buzzer          Boolean  @default(false)
-
-  // Kalibrasi MQ-2
+  temperatureHigh Boolean   @default(false)
+  pirDetected     Boolean   @default(false)
+  obstacleNear    Boolean   @default(false)
+  relay1          Boolean   @default(false)
+  relay2          Boolean   @default(false)
+  bluetoothAudio  Boolean   @default(false)
+  buzzer          Boolean   @default(false)
   mq2Baseline     Int?
   smokeThreshold  Int?
   gasThreshold    Int?
-
-  // DFPlayer status
-  dfPlayerReady   Boolean  @default(false)
+  dfPlayerReady   Boolean   @default(false)
   lastTrackPlayed Int?
   lastVoiceAt     DateTime?
-
-  // AI Assistant
   lastAiQuery     String?
   lastAiResponse  String?
   lastAiAt        DateTime?
-
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   @@index([deviceId])
 }
@@ -226,13 +192,13 @@ model SmartboxStatus {
 model VoiceInteraction {
   id         String   @id @default(cuid())
   deviceId   String
-  source     String?
   transcript String?
   replyText  String?
   audioUrl   String?
   status     String   @default("success")
-  error      String?
   createdAt  DateTime @default(now())
+  error      String?
+  source     String?
 }
 
 model RelaySchedule {
@@ -241,7 +207,7 @@ model RelaySchedule {
   relayNumber Int
   startTime   String
   endTime     String
-  days        String   // JSON stringified array of days, e.g. ["monday","tuesday"]
+  days        String
   enabled     Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -249,14 +215,14 @@ model RelaySchedule {
 
 model AlarmSchedule {
   id        String    @id @default(cuid())
-  deviceId  String    @default("smartbox-001")
   name      String
   time      String
   track     Int
-  active    Boolean   @default(true)
-  lastRunAt DateTime?
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
+  active    Boolean   @default(true)
+  deviceId  String    @default("smartbox-001")
+  lastRunAt DateTime?
 }
 
 model PirGreetingSetting {
@@ -271,4 +237,3 @@ model PirGreetingSetting {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 }
-
