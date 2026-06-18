@@ -456,7 +456,9 @@ void setLcdOverride(const char *l1, const char *l2, unsigned long durationMs);
 void setBluetoothAudio(bool state);
 void playDfTrack(int track);
 void getDfPlayerLcdText(uint8_t track, const char* &line1, const char* &line2);
-void playDfPlayerWithLcd(uint8_t track, const char *reason);
+void playDFTrack(uint8_t track, const char *reason);
+void lcdShow(const char *line1, const char *line2);
+void setAudioPower(bool state);
 void playVoice(uint8_t track, const char *reason);
 void serviceVoiceQueue();
 void stopDfTrack();
@@ -1085,16 +1087,30 @@ void getDfPlayerLcdText(uint8_t track, const char* &line1, const char* &line2) {
   }
 }
 
-void playDfPlayerWithLcd(uint8_t track, const char *reason) {
+void setAudioPower(bool state) {
+  setBluetoothAudio(state);
+}
+
+void lcdShow(const char *line1, const char *line2) {
+  setLcdOverride(line1, line2, 4000);
+}
+
+void playDFTrack(uint8_t track, const char *reason) {
+  Serial.println();
+  Serial.println("========== DFPLAYER REQUEST ==========");
+  Serial.printf("Track : %d\n", track);
+  Serial.printf("Reason: %s\n", reason);
+  Serial.printf("Ready : %s\n", dfPlayerReady ? "YES" : "NO");
+
   if (!dfPlayerReady) {
-    Serial.println("[DFPLAYER ERROR] DFPlayer belum ready.");
-    setLcdOverride("DFPLAYER ERROR", "CEK RX TX SD", 4000);
+    Serial.println("[DFPLAYER] Tidak ready.");
+    lcdShow("DFPLAYER ERROR", "BELUM READY");
     return;
   }
 
-  if (track < 1 || track > 15) {
-    Serial.println("[DFPLAYER ERROR] Track di luar rentang 1-15.");
-    setLcdOverride("TRACK ERROR", "CEK NOMOR MP3", 3000);
+  if (track < 1 || track > DFPLAYER_MAX_TRACK) {
+    Serial.println("[DFPLAYER] Track invalid.");
+    lcdShow("TRACK ERROR", "1 SAMPAI 15");
     return;
   }
 
@@ -1103,20 +1119,21 @@ void playDfPlayerWithLcd(uint8_t track, const char *reason) {
 
   getDfPlayerLcdText(track, line1, line2);
 
-  Serial.println();
-  Serial.println("========== [DFPLAYER + LCD] ==========");
-  Serial.printf("[DFPLAYER] Track : %d\n", track);
-  Serial.printf("[DFPLAYER] Reason: %s\n", reason);
-  Serial.printf("[LCD] Line 1      : %s\n", line1);
-  Serial.printf("[LCD] Line 2      : %s\n", line2);
+  Serial.printf("[LCD] Line 1: %s\n", line1);
+  Serial.printf("[LCD] Line 2: %s\n", line2);
+
+  setAudioPower(true);
+  delay(400);
+
+  dfPlayer.play(track);
+
+  lcdShow(line1, line2);
+
+  Serial.println("[DFPLAYER] Command play dikirim.");
   Serial.println("======================================");
-
-  setLcdOverride(line1, line2, 4000);
-
-  playVoice(track, reason);
 }
 
-void playVoiceTrack(int track) { playDfPlayerWithLcd((uint8_t)track, "manual"); }
+void playVoiceTrack(int track) { playDFTrack((uint8_t)track, "manual"); }
 
 void publishVoicePlayedEvent(int track, const char *source) {
   StaticJsonDocument<256> doc;
@@ -1139,12 +1156,12 @@ void playSystemReady() {
 
   systemReadyPlayed = true;
 
-  playDfPlayerWithLcd(TRACK_STARTUP_READY, "system_boot");
+  playDFTrack(TRACK_STARTUP_READY, "startup");
   publishEvent("INFO", "system.ready", "Smartbox Assistant siap digunakan.");
 }
 
 void playTimeTemperatureVoice() {
-  playDfPlayerWithLcd(TRACK_TIME_TEMP_REALTIME, "time_temp_display");
+  playDFTrack(TRACK_TIME_TEMP_REALTIME, "time_temp_display");
   if (rtcReady) {
     DateTime now = rtc.now();
     float tempC = rtc.getTemperature() + tempOffset;
@@ -1161,7 +1178,7 @@ void playTimeTemperatureVoice() {
 void playBluetoothGreeting() {
   setBluetoothAudio(true);
   delay(250);
-  playDfPlayerWithLcd(TRACK_BLUETOOTH_ACTIVE, "bluetooth_on");
+  playDFTrack(TRACK_BLUETOOTH_ACTIVE, "bluetooth_on");
   publishEvent("INFO", "bluetooth.on",
                "Bluetooth/audio aktif dan sapaan diputar");
 }
@@ -1177,7 +1194,7 @@ void playAlarmVoice(String alarmType) {
   if (track != -1) {
     char reason[32];
     snprintf(reason, sizeof(reason), "alarm_%s", alarmType.c_str());
-    playDfPlayerWithLcd((uint8_t)track, reason);
+    playDFTrack((uint8_t)track, reason);
     publishEvent("INFO", ("alarm." + alarmType).c_str(),
                  ("Alarm " + alarmType + " aktif.").c_str());
   }
@@ -1203,7 +1220,7 @@ void playScheduledAlarm(int track, const char *timeStr) {
     lastScheduledAlarmTrack = track;
   }
 
-  playDfPlayerWithLcd((uint8_t)track, "alarm_schedule");
+  playDFTrack((uint8_t)track, "alarm_schedule");
 
   StaticJsonDocument<384> doc;
   doc["deviceId"] = DEVICE_ID;
@@ -1231,7 +1248,7 @@ void playGasWarningVoice(String gasType) {
     reason = "smoke_detected";
   }
   if (track != -1) {
-    playDfPlayerWithLcd((uint8_t)track, reason);
+    playDFTrack((uint8_t)track, reason);
   }
 }
 
@@ -1240,7 +1257,7 @@ void playTemperatureWarningVoice() {
   if (now - lastTempAudioTime < TEMP_VOICE_COOLDOWN_MS)
     return;
   lastTempAudioTime = now;
-  playDfPlayerWithLcd(TRACK_TEMP_DETECTED, "temperature_warning");
+  playDFTrack(TRACK_TEMP_DETECTED, "temperature_warning");
 }
 
 void playPirGreeting(String motionType) {
@@ -1258,12 +1275,12 @@ void playPirGreeting(String motionType) {
     reason = "pir_walk";
   }
 
-  playDfPlayerWithLcd((uint8_t)track, reason);
+  playDFTrack((uint8_t)track, reason);
 }
 
 void handleWhiteButtonQuickPress() {
   Serial.println("[BUTTON] White quick press - Introduction");
-  playDfPlayerWithLcd(TRACK_HALO_AERO, "white_btn_intro");
+  playDFTrack(TRACK_HALO_AERO, "white_btn_intro");
   publishEvent("INFO", "button.white.quick",
                "Tombol putih ditekan cepat: Suara perkenalan.");
 }
@@ -1312,7 +1329,7 @@ void checkPirGreeting() {
 
   int selectedTrack = random(10, 13); 
 
-  playDfPlayerWithLcd((uint8_t)selectedTrack, "pir_greeting");
+  playDFTrack((uint8_t)selectedTrack, "pir_greeting");
 
   StaticJsonDocument<384> doc;
   doc["deviceId"] = DEVICE_ID;
@@ -1646,7 +1663,7 @@ void nyalakanBluetooth() {
   setBluetoothAudio(true);
   delay(300);
 
-  playDfPlayerWithLcd(TRACK_BLUETOOTH_ACTIVE, "bluetooth_active");
+  playDFTrack(TRACK_BLUETOOTH_ACTIVE, "bluetooth_active");
 
   waktuBluetoothMulai = millis();
 
@@ -1667,7 +1684,7 @@ void matikanBluetooth() {
     BLEDevice::getAdvertising()->stop();
   }
 
-  playDfPlayerWithLcd(TRACK_BLUETOOTH_OFF, "bluetooth_off");
+  playDFTrack(TRACK_BLUETOOTH_OFF, "bluetooth_off");
   bluetoothAudioOffAfterVoice = true;
 
   publishEvent("INFO", "bluetooth.off",
@@ -1832,7 +1849,7 @@ void setBluetoothAudio(bool state) {
   sendTelemetryNow();
 }
 
-void playDfTrack(int track) { playDfPlayerWithLcd((uint8_t)track, "manual"); }
+void playDfTrack(int track) { playDFTrack((uint8_t)track, "serial_test"); }
 
 void stopDfTrack() {
   if (dfPlayerReady) {
@@ -2131,7 +2148,7 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
     const char *reason = data["reason"] | "dashboard_voice_test";
     Serial.printf("[DFPLAYER] Play track: %d reason: %s\n", track, reason);
     if (track >= 1 && track <= DFPLAYER_MAX_TRACK) {
-      playDfPlayerWithLcd((uint8_t)track, reason);
+      playDFTrack((uint8_t)track, reason);
       publishAck(cmdId, type, true, "DFPlayer play command received.");
     } else {
       publishAck(cmdId, type, false, "Track tidak valid.");
@@ -2520,7 +2537,7 @@ void checkWarnings(int gasRaw, float tempC, bool anyGasWarning,
 
   if (tempWarning && !lastTempWarning) {
     lastTempWarning = true;
-    playDfPlayerWithLcd(TRACK_TEMP_DETECTED, "temperature_warning");
+    playDFTrack(TRACK_TEMP_DETECTED, "temperature_warning");
     publishEvent("WARNING", "temperature.high",
                  "Suhu terdeteksi melebihi ambang batas");
   }
@@ -2630,7 +2647,7 @@ void checkBlackButton() {
 void handleBlackButtonQuickPress() {
   Serial.println("[BUTTON] Black quick press - jam dan suhu");
 
-  playDfPlayerWithLcd(TRACK_TIME_TEMP_REALTIME, "black_button_time_temp");
+  playDFTrack(TRACK_TIME_TEMP_REALTIME, "black_quick");
 
   if (rtcReady) {
     DateTime now = rtc.now();
@@ -3003,7 +3020,7 @@ void onHaloAeroDetected(float score, float rms, int peak) {
   Serial.println(">>> Aksi: Membangunkan asisten, memutar Track 14.");
   Serial.println("==================================================");
 
-  playDfPlayerWithLcd(TRACK_HALO_AERO, "wake_word");
+  playDFTrack(TRACK_HALO_AERO, "halo_aero");
 }
 
 void onCalibrationDetected(float score, float rms, int peak) {
@@ -3016,7 +3033,7 @@ void onCalibrationDetected(float score, float rms, int peak) {
   Serial.println("==================================================");
 
   calibrateMQ2();
-  playDfPlayerWithLcd(TRACK_HALO_AERO, "calibration");
+  playDFTrack(TRACK_HALO_AERO, "calibration");
 }
 
 void onOneClapDetected(float score, float rms, int peak) {
@@ -3029,13 +3046,13 @@ void onOneClapDetected(float score, float rms, int peak) {
   Serial.println("==================================================");
 
   toggleRelay1();
-  playDfPlayerWithLcd(TRACK_HALO_AERO, "1_tepukan");
+  playDFTrack(TRACK_HALO_AERO, "1_tepukan");
 }
 
 void onTwoClapDetected(float score, float rms, int peak) {
   Serial.println(">>> COMMAND DETECTED: 2_tepukan");
   setRelay(2, !relay2State, false, true);
-  playDfPlayerWithLcd(TRACK_HALO_AERO, "2_tepukan");
+  playDFTrack(TRACK_HALO_AERO, "2_tepukan");
 }
 
 void onPortSatuOnDetected(float score, float rms, int peak) {
