@@ -1,117 +1,121 @@
 /*
   ==========================================================
-  SMARTBOX ASSISTANT ESP32-S3 - HARDWARE TEST TANPA AI BACKEND
+  SMARTBOX ASSISTANT IoT - ESP32-S3
+  Monitoring Sensor + DFPlayer + LCD + Relay + MQTT
   ==========================================================
 
-  Versi ini sudah dibersihkan dari AI BACKEND URL,
-  HTTP API Next.js, download MP3, dan playback response AI.
+  Fitur:
+  - Monitoring suhu DS3231
+  - Monitoring gas/asap MQ-2
+  - Monitoring gerakan PIR
+  - DFPlayer suara 0001.mp3 - 0015.mp3
+  - LCD I2C 16x2
+  - Relay Stop Kontak 1 auto OFF 1 menit
+  - Relay Stop Kontak 2 auto OFF 1 menit
+  - Relay Bluetooth ON/OFF + suara + LCD
+  - Tombol merah GPIO20 = toggle Bluetooth
+  - Tombol putih GPIO19 = suara perkenalan Aero
+  - Tombol hitam GPIO7:
+      tekan cepat = jam dan suhu
+      tahan lama = sapaan AI lokal / Aero
+  - MQTT telemetry / event / ack / status
+  - MQTT command:
+      voice.play
+      relay.set
+      bluetooth.set
+      buzzer.set
+      sensor.set
+      sensor.calibrate
+
+  Board:
+  ESP32-S3 DevKitC-1
 
   Serial Monitor:
   115200 baud
-  New Line
-
-  Command Serial:
-  help
-  status
-  df1 ... df15
-  pirtest
-  r1on / r1off
-  r2on / r2off
-  beep
-  mic
-  mq2
-  lcd
-  rtc
-  rgb red / rgb green / rgb blue / rgb off
-  audio on / audio off
-
-  Catatan:
-  - Fitur AI backend / Next.js API sudah dihapus agar tidak muncul error AI BACKEND URL.
-  - Tombol hitam tekan lama hanya menampilkan status AI backend nonaktif.
 */
 
 // ==========================================================
 // LIBRARY
 // ==========================================================
-#include <Arduino.h>
-#include <WiFi.h>
-#include <Wire.h>
-
 #include <Adafruit_NeoPixel.h>
+#include <Arduino.h>
+#include <ArduinoJson.h>
 #include <DFRobotDFPlayerMini.h>
 #include <LiquidCrystal_I2C.h>
-#include <RTClib.h>
-
-#include <driver/i2s.h>
-#include <math.h>
-
-#define MQTT_MAX_PACKET_SIZE 1024
 #include <PubSubClient.h>
+#include <RTClib.h>
+#include <WiFi.h>
 #include <WiFiClientSecure.h>
-#include <ArduinoJson.h>
+#include <Wire.h>
 
 // ==========================================================
 // WIFI + MQTT CONFIG
 // ==========================================================
-const char *WIFI_SSID = "BAGUS";
-const char *WIFI_PASS = "s4nsan15675";
+// GANTI SESUAI WIFI DAN MQTT KAMU
+const char *WIFI_SSID = "vivo Y29";
+const char *WIFI_PASS = "12345678";
 
-// MQTT credential HiveMQ Cloud
-const char *MQTT_HOST = "6559400ba6c741398aa7048b471d5a31.s1.eu.hivemq.cloud";
+const char *MQTT_HOST =
+    "wss://6559400ba6c741398aa7048b471d5a31.s1.eu.hivemq.cloud:8884/mqtt";
 const int MQTT_PORT = 8883;
 const char *MQTT_USER = "smartbox001";
 const char *MQTT_PASS = "Smartbox123!";
+
 const char *DEVICE_ID = "smartbox-001";
 
+// MQTT Topic
+String topicCmd() { return "smartbox/" + String(DEVICE_ID) + "/cmd"; }
+String topicTelemetry() {
+  return "smartbox/" + String(DEVICE_ID) + "/telemetry";
+}
+String topicEvent() { return "smartbox/" + String(DEVICE_ID) + "/event"; }
+String topicAck() { return "smartbox/" + String(DEVICE_ID) + "/ack"; }
+String topicStatus() { return "smartbox/" + String(DEVICE_ID) + "/status"; }
+
 // ==========================================================
-// PIN MAP SMARTBOX
+// PIN ESP32-S3
 // ==========================================================
 
-// I2C LCD + DS3231
+// LCD I2C + RTC DS3231
 #define I2C_SDA 1
 #define I2C_SCL 2
 
-// MQ2 Gas Sensor
+// MQ-2
 #define MQ2_PIN 3
 
-// INMP441 Microphone
+// INMP441
 #define MIC_SCK 4
 #define MIC_WS 5
 #define MIC_SD 6
-#define MIC_I2S_PORT I2S_NUM_1
 
-// Push Button
+// Tombol
 #define BLACK_BTN_PIN 7
 #define WHITE_BTN_PIN 19
 #define RED_BTN_PIN 20
 
 // DFPlayer Mini
-#define ESP_RX_PIN 8
-#define ESP_TX_PIN 18
+#define ESP_RX_PIN 8  // TX DFPlayer -> RX ESP32 GPIO8
+#define ESP_TX_PIN 18 // RX DFPlayer <- TX ESP32 GPIO18 via resistor 1K
 
-// PIR Motion
+// PIR
 #define PIR_PIN 9
 
-// IR + Buzzer
-#define IR_PIN 42
+// Buzzer
 #define BUZZER_PIN 10
 
-// Bluetooth / Amplifier power via transistor
+// Bluetooth / amplifier relay transistor
 #define BT_BASE_PIN 14
 
-// PT8211 DAC pin tetap disiapkan, tetapi playback AI sudah dihapus
+// PT8211 DAC pin, disiapkan jika nanti dipakai
 #define PT_BCLK 15
 #define PT_LRC 16
 #define PT_DOUT 17
-#define PT_I2S_PORT I2S_NUM_0
 
-// Relay
-#define RELAY_21 21
-#define RELAY_47 47
-#define RELAY_1_PIN RELAY_21
-#define RELAY_2_PIN RELAY_47
+// Relay Stop Kontak
+#define RELAY_1_PIN 21
+#define RELAY_2_PIN 47
 
-// RGB LED onboard ESP32-S3
+// RGB onboard
 #define RGB_PIN 48
 #define NUM_PIXELS 1
 
@@ -139,32 +143,32 @@ const char *DEVICE_ID = "smartbox-001";
 #define TRACK_BLUETOOTH_OFF 13
 #define TRACK_AI_HELLO 14
 #define TRACK_AI_INTRO 15
-#define TRACK_HALO_AERO TRACK_AI_HELLO
-#define TRACK_INTRO_AERO TRACK_AI_INTRO
 
 #define DFPLAYER_MAX_TRACK 15
 
 // ==========================================================
-// AUDIO RECORD CONFIG UNTUK DEBUG MIC
-// ==========================================================
-#define RECORD_SAMPLE_RATE 16000
-#define MIC_I2S_SHIFT 14
-#define MIC_AUDIO_GAIN 2.0f
-
-// INMP441 channel
-// L/R ke GND biasanya LEFT
-#define USE_LEFT_CHANNEL 1
-
-// ==========================================================
 // SENSOR CONFIG
 // ==========================================================
-int MQ2_GAS_THRESHOLD = 1400;
-unsigned long PIR_COOLDOWN_MS = 60000;  // 1 menit cooldown PIR greeting
+int MQ2_SMOKE_THRESHOLD = 1400;
+int MQ2_GAS_THRESHOLD = 1800;
+
+float TEMP_WARNING_THRESHOLD = 35.0;
+
+// Cooldown suara
+const unsigned long GAS_VOICE_COOLDOWN_MS = 10000;
+const unsigned long TEMP_VOICE_COOLDOWN_MS = 15000;
+const unsigned long PIR_VOICE_COOLDOWN_MS = 8000;
+
+// Telemetry interval
+const unsigned long TELEMETRY_INTERVAL_MS = 2000;
+const unsigned long STATUS_INTERVAL_MS = 10000;
 
 // ==========================================================
 // OBJECTS
 // ==========================================================
 LiquidCrystal_I2C lcd(0x27, 16, 2);
+// Jika LCD tidak tampil, ganti 0x27 menjadi 0x3F
+
 RTC_DS3231 rtc;
 
 HardwareSerial dfSerial(1);
@@ -172,104 +176,75 @@ DFRobotDFPlayerMini dfPlayer;
 
 Adafruit_NeoPixel rgb(NUM_PIXELS, RGB_PIN, NEO_GRB + NEO_KHZ800);
 
+WiFiClientSecure wifiSecure;
+PubSubClient mqtt(wifiSecure);
+
 // ==========================================================
 // STATE
 // ==========================================================
 bool lcdReady = false;
 bool rtcReady = false;
-bool dfPlayerReady = false;
-bool micReady = false;
+bool dfReady = false;
 bool wifiReady = false;
+bool mqttReadyFlag = false;
 
 bool relay1State = false;
 bool relay2State = false;
+bool bluetoothState = false;
 bool buzzerState = false;
-bool audioPowerState = false;
+
+bool gasSensorEnabled = true;
+bool tempSensorEnabled = true;
+bool pirSensorEnabled = true;
+bool sleepModeEnabled = false;
+
+int mq2Value = 0;
+bool smokeDetected = false;
+bool gasDetected = false;
+bool pirMotion = false;
+float temperatureC = 0.0;
 
 bool lastPirState = false;
 
-unsigned long lastSensorPrintAt = 0;
+unsigned long lastTelemetryAt = 0;
+unsigned long lastStatusAt = 0;
 
-// Button state
-  bool blackLastReading = HIGH;
-  bool blackStableState = HIGH;
-  bool blackLongPressHandled = false;
-  unsigned long blackLastChangeAt = 0;
-  unsigned long blackPressedAt = 0;
+unsigned long lastGasVoiceAt = 0;
+unsigned long lastTempVoiceAt = 0;
+unsigned long lastPirVoiceAt = 0;
 
-  const unsigned long BLACK_DEBOUNCE_MS = 50;
-  const unsigned long BLACK_LONG_PRESS_MS = 1500;
-
-  bool whiteLastReading = HIGH;
-  bool whiteStableState = HIGH;
-  unsigned long whiteLastChangeAt = 0;
-
-  bool redLastReading = HIGH;
-  bool redStableState = HIGH;
-  unsigned long redLastChangeAt = 0;
-
-// Bluetooth state
-bool bluetoothState = true;
-
-// Relay auto-off variables (1 minute)
-unsigned long relay1TurnedOnAt = 0;
-unsigned long relay2TurnedOnAt = 0;
-const unsigned long RELAY_AUTO_OFF_MS = 60000;
-unsigned long audioPowerOffAt = 0; // Non-blocking timer to turn off BT amplifier after track 13 plays
-
-// MQ2 monitoring state
-unsigned long lastMq2CheckAt = 0;
-bool gasAlertActive = false;
-unsigned long lastGasAlertAt = 0;
-const unsigned long GAS_ALERT_COOLDOWN_MS = 10000;  // 10 detik cooldown alert gas
-
-// Sensor toggle states
-bool gasEnabled = true;
-bool temperatureEnabled = true;
-bool pirEnabled = true;
-bool sleepModeEnabled = false;
-
-// LCD override variables
-bool lcdOverrideActive = false;
-unsigned long lcdOverrideUntil = 0;
-
-// Relay auto-off active states
+// Relay auto off
 bool relay1AutoOffActive = false;
-unsigned long relay1AutoOffAt = 0;
 bool relay2AutoOffActive = false;
+
+unsigned long relay1AutoOffAt = 0;
 unsigned long relay2AutoOffAt = 0;
 
-// Voice cooldowns
-unsigned long lastGasVoiceAt = 0;
-const unsigned long GAS_VOICE_COOLDOWN_MS = 10000;
-unsigned long lastTempVoiceAt = 0;
-const unsigned long TEMP_VOICE_COOLDOWN_MS = 15000;
-unsigned long lastPirVoiceAt = 0;
-const unsigned long PIR_VOICE_COOLDOWN_MS = 8000;
-
-bool pirGreetingEnabled = true;
-int pirGreetingTrack = TRACK_GESTURE_WALK;
-unsigned long pirGreetingCooldownMs = PIR_VOICE_COOLDOWN_MS;
-String pirGreetingStart = "00:00";
-String pirGreetingEnd = "23:59";
-String pirGreetingPlayMode = "cycle";
+// PIR track rotate
 int pirGreetingIndex = 0;
-int pirTracks[] = {10, 11, 12};
+int pirTracks[] = {TRACK_GESTURE_WALK, TRACK_GESTURE_JUMP, TRACK_GESTURE_WAVE};
 
-unsigned long whiteBtnTrack15PlayAt = 0;
+// Button debounce
+bool redLastState = HIGH;
+bool whiteLastState = HIGH;
+bool blackLastState = HIGH;
 
-unsigned long lastTelemetryPublishAt = 0;
-const unsigned long TELEMETRY_PUBLISH_INTERVAL_MS = 3000; // 3 seconds
+unsigned long redLastPressAt = 0;
+unsigned long whiteLastPressAt = 0;
+unsigned long blackLastChangeAt = 0;
+unsigned long blackPressedAt = 0;
 
-// MQTT objects
-WiFiClientSecure espClient;
-PubSubClient mqttClient(espClient);
+bool blackLongPressHandled = false;
+
+const unsigned long BUTTON_DEBOUNCE_MS = 250;
+const unsigned long BLACK_LONG_PRESS_MS = 1500;
 
 // ==========================================================
-// LCD HELPERS
+// LCD HELPER
 // ==========================================================
 void lcdPrintLine(uint8_t row, String text) {
-  if (!lcdReady) return;
+  if (!lcdReady)
+    return;
 
   if (text.length() > 16) {
     text = text.substring(0, 16);
@@ -283,56 +258,224 @@ void lcdPrintLine(uint8_t row, String text) {
   lcd.print(text);
 }
 
-void lcdShow(String line1, String line2) {
-  if (!lcdReady) return;
+void showLCD(String line1, String line2) {
+  if (!lcdReady)
+    return;
 
   lcd.clear();
   lcdPrintLine(0, line1);
   lcdPrintLine(1, line2);
+
+  Serial.print("[LCD] ");
+  Serial.print(line1);
+  Serial.print(" / ");
+  Serial.println(line2);
 }
 
 // ==========================================================
-// I2C SCANNER
+// RGB HELPER
 // ==========================================================
-void scanI2C() {
+void setRGB(uint8_t r, uint8_t g, uint8_t b) {
+  rgb.setPixelColor(0, rgb.Color(r, g, b));
+  rgb.show();
+}
+
+// ==========================================================
+// MQTT JSON PUBLISH
+// ==========================================================
+template <typename TDoc>
+bool publishJson(const String &topic, TDoc &doc, bool retained = false) {
+  if (!mqtt.connected())
+    return false;
+
+  String output;
+  serializeJson(doc, output);
+
+  Serial.print("[MQTT PUB] ");
+  Serial.print(topic);
+  Serial.print(" -> ");
+  Serial.println(output);
+
+  return mqtt.publish(topic.c_str(), output.c_str(), retained);
+}
+
+void publishAck(const char *cmdId, const char *type, bool ok,
+                const char *message) {
+  StaticJsonDocument<256> doc;
+
+  doc["deviceId"] = DEVICE_ID;
+  doc["id"] = cmdId ? cmdId : "";
+  doc["type"] = type ? type : "";
+  doc["ok"] = ok;
+  doc["message"] = message;
+  doc["millis"] = millis();
+
+  publishJson(topicAck(), doc, false);
+}
+
+void publishEvent(const char *level, const char *type, const char *message) {
+  StaticJsonDocument<384> doc;
+
+  doc["deviceId"] = DEVICE_ID;
+  doc["level"] = level;
+  doc["type"] = type;
+  doc["message"] = message;
+  doc["millis"] = millis();
+
+  publishJson(topicEvent(), doc, false);
+}
+
+void publishStatus(bool online) {
+  StaticJsonDocument<256> doc;
+
+  doc["deviceId"] = DEVICE_ID;
+  doc["online"] = online;
+  doc["millis"] = millis();
+
+  publishJson(topicStatus(), doc, true);
+}
+
+// ==========================================================
+// DFPLAYER LCD TEXT MAPPING
+// ==========================================================
+void getDfPlayerLcdText(uint8_t track, const char *&line1, const char *&line2) {
+  switch (track) {
+  case 1:
+    line1 = "SMARTBOX SIAP";
+    line2 = "DIGUNAKAN";
+    break;
+
+  case 2:
+    line1 = "JAM DAN SUHU";
+    line2 = "REAL-TIME";
+    break;
+
+  case 3:
+    line1 = "BLUETOOTH";
+    line2 = "DIAKTIFKAN";
+    break;
+
+  case 4:
+    line1 = "SELAMAT PAGI";
+    line2 = "TUAN";
+    break;
+
+  case 5:
+    line1 = "SELAMAT SIANG";
+    line2 = "TUAN";
+    break;
+
+  case 6:
+    line1 = "SELAMAT SORE";
+    line2 = "TUAN";
+    break;
+
+  case 7:
+    line1 = "ASAP";
+    line2 = "TERDETEKSI";
+    break;
+
+  case 8:
+    line1 = "GAS";
+    line2 = "TERDETEKSI";
+    break;
+
+  case 9:
+    line1 = "SUHU";
+    line2 = "TERDETEKSI";
+    break;
+
+  case 10:
+    line1 = "GERAKAN JALAN";
+    line2 = "TERDETEKSI";
+    break;
+
+  case 11:
+    line1 = "GERAKAN LOMPAT";
+    line2 = "TERDETEKSI";
+    break;
+
+  case 12:
+    line1 = "GERAKAN LAMBAI";
+    line2 = "TERDETEKSI";
+    break;
+
+  case 13:
+    line1 = "BLUETOOTH";
+    line2 = "DIMATIKAN";
+    break;
+
+  case 14:
+    line1 = "HALLO TUAN";
+    line2 = "SENANG BICARA";
+    break;
+
+  case 15:
+    line1 = "SAYA AERO";
+    line2 = "SIAP MEMBANTU";
+    break;
+
+  default:
+    line1 = "SMARTBOX";
+    line2 = "SUARA DIPUTAR";
+    break;
+  }
+}
+
+void playVoice(uint8_t track, const char *reason) {
   Serial.println();
-  Serial.println("========== I2C SCANNER ==========");
+  Serial.println("========== [DFPLAYER PLAY] ==========");
+  Serial.printf("[DFPLAYER] Track : %d\n", track);
+  Serial.printf("[DFPLAYER] Reason: %s\n", reason ? reason : "-");
 
-  int count = 0;
-
-  for (byte address = 1; address < 127; address++) {
-    Wire.beginTransmission(address);
-    byte error = Wire.endTransmission();
-
-    if (error == 0) {
-      Serial.print("I2C device found: 0x");
-      if (address < 16) Serial.print("0");
-      Serial.println(address, HEX);
-      count++;
-    }
+  if (!dfReady) {
+    Serial.println("[DFPLAYER] Belum ready.");
+    showLCD("DFPLAYER ERROR", "BELUM READY");
+    return;
   }
 
-  if (count == 0) {
-    Serial.println("Tidak ada device I2C terdeteksi.");
+  if (track < 1 || track > DFPLAYER_MAX_TRACK) {
+    Serial.println("[DFPLAYER] Track invalid.");
+    showLCD("TRACK ERROR", "1 SAMPAI 15");
+    return;
   }
 
-  Serial.println("=================================");
+  const char *line1;
+  const char *line2;
+
+  getDfPlayerLcdText(track, line1, line2);
+  showLCD(line1, line2);
+
+  dfPlayer.play(track);
+
+  Serial.println("[DFPLAYER] Command play dikirim.");
+  Serial.println("=====================================");
+
+  StaticJsonDocument<256> doc;
+  doc["deviceId"] = DEVICE_ID;
+  doc["level"] = "INFO";
+  doc["type"] = "voice.played";
+  doc["message"] = "DFPlayer memutar suara.";
+  doc["millis"] = millis();
+
+  JsonObject payload = doc.createNestedObject("payload");
+  payload["track"] = track;
+  payload["reason"] = reason ? reason : "";
+
+  publishJson(topicEvent(), doc, false);
 }
 
 // ==========================================================
 // INIT LCD
 // ==========================================================
 void initLCD() {
-  Serial.println("[LCD] Init LCD I2C...");
-
   lcd.init();
   lcd.backlight();
   lcd.clear();
 
   lcdReady = true;
 
-  lcdShow("SMARTBOX", "LCD READY");
-
+  showLCD("SMARTBOX", "LCD READY");
   Serial.println("[LCD] Ready.");
 }
 
@@ -340,674 +483,145 @@ void initLCD() {
 // INIT RTC
 // ==========================================================
 void initRTC() {
-  Serial.println("[RTC] Init DS3231...");
-
   if (!rtc.begin()) {
     rtcReady = false;
-    Serial.println("[RTC ERROR] DS3231 tidak terdeteksi.");
-    lcdShow("RTC ERROR", "CEK DS3231");
+    Serial.println("[RTC] DS3231 tidak terdeteksi.");
+    showLCD("RTC ERROR", "CEK DS3231");
     return;
   }
 
   rtcReady = true;
 
   if (rtc.lostPower()) {
-    Serial.println("[RTC WARNING] RTC lost power, set dari compile time.");
+    Serial.println("[RTC] Lost power. Set waktu dari compile time.");
     rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
   }
 
-  DateTime now = rtc.now();
-
-  Serial.printf("[RTC] %02d:%02d:%02d %02d/%02d/%04d\n",
-                now.hour(), now.minute(), now.second(),
-                now.day(), now.month(), now.year());
-
-  lcdShow("RTC DS3231", "READY");
-}
-
-// ==========================================================
-// INIT RGB
-// ==========================================================
-void initRGB() {
-  rgb.begin();
-  rgb.clear();
-  rgb.show();
-
-  Serial.println("[RGB] Ready.");
-}
-
-void setRGB(uint8_t r, uint8_t g, uint8_t b) {
-  rgb.setPixelColor(0, rgb.Color(r, g, b));
-  rgb.show();
-}
-
-// ==========================================================
-// AUDIO POWER / AMPLIFIER
-// ==========================================================
-void setAudioPower(bool state) {
-  audioPowerState = state;
-  digitalWrite(BT_BASE_PIN, state ? HIGH : LOW);
-
-  Serial.print("[AUDIO POWER] ");
-  Serial.println(state ? "ON" : "OFF");
+  Serial.println("[RTC] Ready.");
+  showLCD("RTC DS3231", "READY");
 }
 
 // ==========================================================
 // INIT DFPLAYER
 // ==========================================================
 void initDFPlayer() {
-  Serial.println("[DFPLAYER] Init...");
-
   dfSerial.begin(9600, SERIAL_8N1, ESP_RX_PIN, ESP_TX_PIN);
   delay(1000);
 
   if (!dfPlayer.begin(dfSerial)) {
-    dfPlayerReady = false;
-
-    Serial.println("[DFPLAYER ERROR] Gagal terdeteksi.");
-    Serial.println("Cek wiring:");
-    Serial.println("TX DFPlayer -> GPIO8");
-    Serial.println("RX DFPlayer -> GPIO18 via resistor 1K");
-    Serial.println("VCC 5V stabil");
-    Serial.println("GND common");
-    Serial.println("SD Card FAT32");
-    Serial.println("File 0001.mp3 - 0015.mp3");
-
-    lcdShow("DFPLAYER ERROR", "CEK RX TX SD");
+    dfReady = false;
+    Serial.println("[DFPLAYER] Gagal init. Cek RX TX, SD Card, Power 5V.");
+    showLCD("DFPLAYER ERROR", "CEK RX TX SD");
     return;
   }
 
-  dfPlayerReady = true;
+  dfReady = true;
+
   dfPlayer.volume(25);
   dfPlayer.EQ(DFPLAYER_EQ_NORMAL);
 
   Serial.println("[DFPLAYER] Ready.");
-  lcdShow("DFPLAYER", "READY");
+  showLCD("DFPLAYER", "READY");
 }
 
 void debugDFPlayerEvent() {
-  if (!dfPlayerReady) return;
+  if (!dfReady)
+    return;
 
   if (dfPlayer.available()) {
     uint8_t type = dfPlayer.readType();
     int value = dfPlayer.read();
 
     Serial.println();
-    Serial.println("========== DFPLAYER EVENT ==========");
+    Serial.println("========== [DFPLAYER EVENT] ==========");
     Serial.print("Type : ");
     Serial.println(type);
     Serial.print("Value: ");
     Serial.println(value);
 
     if (type == DFPlayerPlayFinished) {
-      Serial.print("Track selesai: ");
+      Serial.print("[DFPLAYER] Track selesai: ");
       Serial.println(value);
     }
 
     if (type == DFPlayerError) {
-      Serial.print("DFPlayer error code: ");
+      Serial.print("[DFPLAYER] Error code: ");
       Serial.println(value);
-
-      if (value == Busy) Serial.println("Error: Busy");
-      else if (value == Sleeping) Serial.println("Error: Sleeping");
-      else if (value == SerialWrongStack) Serial.println("Error: Serial wrong stack");
-      else if (value == CheckSumNotMatch) Serial.println("Error: Checksum not match");
-      else if (value == FileIndexOut) Serial.println("Error: File index out");
-      else if (value == FileMismatch) Serial.println("Error: File mismatch");
-      else if (value == Advertise) Serial.println("Error: Advertise");
     }
 
-    Serial.println("====================================");
+    Serial.println("======================================");
   }
 }
 
 // ==========================================================
-// LCD TEXT MAPPING UNTUK SETIAP SUARA DFPLAYER
+// RELAY CONTROL
 // ==========================================================
-void getDfPlayerLcdText(uint8_t track, const char* &line1, const char* &line2) {
-  switch (track) {
-    case 1:
-      line1 = "SMARTBOX SIAP";
-      line2 = "DIGUNAKAN";
-      break;
+void setRelay(uint8_t relay, bool state, const char *source = "manual") {
+  if (relay == 1) {
+    relay1State = state;
+    digitalWrite(RELAY_1_PIN, state ? RELAY_ON : RELAY_OFF);
 
-    case 2:
-      line1 = "JAM DAN SUHU";
-      line2 = "REAL-TIME";
-      break;
+    Serial.print("[RELAY 1] ");
+    Serial.println(state ? "ON" : "OFF");
 
-    case 3:
-      line1 = "BLUETOOTH";
-      line2 = "DIAKTIFKAN";
-      break;
-
-    case 4:
-      line1 = "SELAMAT PAGI";
-      line2 = "TUAN";
-      break;
-
-    case 5:
-      line1 = "SELAMAT SIANG";
-      line2 = "TUAN";
-      break;
-
-    case 6:
-      line1 = "SELAMAT SORE";
-      line2 = "TUAN";
-      break;
-
-    case 7:
-      line1 = "ASAP";
-      line2 = "TERDETEKSI";
-      break;
-
-    case 8:
-      line1 = "GAS";
-      line2 = "TERDETEKSI";
-      break;
-
-    case 9:
-      line1 = "SUHU";
-      line2 = "TERDETEKSI";
-      break;
-
-    case 10:
-      line1 = "GERAKAN JALAN";
-      line2 = "TERDETEKSI";
-      break;
-
-    case 11:
-      line1 = "GERAKAN LOMPAT";
-      line2 = "TERDETEKSI";
-      break;
-
-    case 12:
-      line1 = "GERAKAN LAMBAI";
-      line2 = "TERDETEKSI";
-      break;
-
-    case 13:
-      line1 = "BLUETOOTH";
-      line2 = "DIMATIKAN";
-      break;
-
-    case 14:
-      line1 = "HALLO TUAN";
-      line2 = "SENANG BICARA";
-      break;
-
-    case 15:
-      line1 = "SAYA AERO";
-      line2 = "SIAP MEMBANTU";
-      break;
-
-    default:
-      line1 = "SMARTBOX";
-      line2 = "SUARA DIPUTAR";
-      break;
-  }
-}
-
-// ==========================================================
-// TAMPILKAN TEKS LCD BERDASARKAN TRACK DFPLAYER
-// ==========================================================
-void showDfPlayerLcdText(uint8_t track) {
-  const char *line1;
-  const char *line2;
-
-  getDfPlayerLcdText(track, line1, line2);
-
-  Serial.println();
-  Serial.println("========== [LCD TEXT MAP] ==========");
-  Serial.printf("[DFPLAYER] Track : %d\n", track);
-  Serial.printf("[LCD] Line 1     : %s\n", line1);
-  Serial.printf("[LCD] Line 2     : %s\n", line2);
-  Serial.println("====================================");
-
-  lcdShow(line1, line2);
-}
-
-// ==========================================================
-// DFPLAYER PLAY DENGAN TEKS LCD SESUAI SAPAAN
-// ==========================================================
-void setLcdOverride(const char* line1, const char* line2, unsigned long durationMs) {
-  lcdOverrideActive = true;
-  lcdOverrideUntil = millis() + durationMs;
-  lcdShow(line1, line2);
-}
-
-void showDefaultLcd() {
-  if (rtcReady) {
-    DateTime now = rtc.now();
-    float tempC = rtc.getTemperature();
-    char l1[17];
-    char l2[17];
-    snprintf(l1, sizeof(l1), "JAM  %02d:%02d:%02d", now.hour(), now.minute(), now.second());
-    snprintf(l2, sizeof(l2), "SUHU %.1f C", tempC);
-    lcdShow(l1, l2);
-  } else {
-    lcdShow("SMARTBOX READY", "SIAP DIGUNAKAN");
-  }
-}
-
-void checkLcdOverride() {
-  if (lcdOverrideActive && millis() >= lcdOverrideUntil) {
-    lcdOverrideActive = false;
-    showDefaultLcd();
-  }
-}
-
-void playVoice(uint8_t track, const char* reason) {
-  Serial.println();
-  Serial.println("[CMD] voice.play received");
-  Serial.printf("[DFPLAYER] Play track: %d reason: %s\n", track, reason);
-  Serial.println("========== DFPLAYER REQUEST ==========");
-  Serial.printf("Track : %d\n", track);
-  Serial.printf("Reason: %s\n", reason);
-  Serial.printf("Ready : %s\n", dfPlayerReady ? "YES" : "NO");
-
-  if (!dfPlayerReady) {
-    Serial.println("[DFPLAYER] Tidak ready.");
-    lcdShow("DFPLAYER ERROR", "BELUM READY");
-    return;
+    showLCD("STOP KONTAK 1", state ? "ON" : "OFF");
   }
 
-  if (track < 1 || track > TRACK_INTRO_AERO) {
-    Serial.println("[DFPLAYER] Track invalid.");
-    lcdShow("TRACK ERROR", "1 SAMPAI 15");
-    return;
+  else if (relay == 2) {
+    relay2State = state;
+    digitalWrite(RELAY_2_PIN, state ? RELAY_ON : RELAY_OFF);
+
+    Serial.print("[RELAY 2] ");
+    Serial.println(state ? "ON" : "OFF");
+
+    showLCD("STOP KONTAK 2", state ? "ON" : "OFF");
   }
-
-  // Tampilkan teks di LCD secara bersamaan / sebelum delay stabilization!
-  const char *line1;
-  const char *line2;
-  getDfPlayerLcdText(track, line1, line2);
-  setLcdOverride(line1, line2, 4000);
-
-  setRGB(0, 0, 80);
-  setAudioPower(true);
-  delay(400);
-
-  dfPlayer.play(track);
-
-  Serial.println("[DFPLAYER] Command play dikirim.");
-  Serial.println("=====================================");
-}
-
-void playDFTrack(uint8_t track, const char *reason) {
-  playVoice(track, reason);
-}
-
-void publishAck(const char* cmdId, bool ok, const char* message) {
-  if (!mqttClient.connected()) return;
-  
-  StaticJsonDocument<256> doc;
-  doc["id"] = cmdId;
-  doc["ok"] = ok;
-  doc["message"] = message;
-  
-  String topic = "smartbox/" + String(DEVICE_ID) + "/ack";
-  char buffer[256];
-  serializeJson(doc, buffer);
-  mqttClient.publish(topic.c_str(), buffer);
-}
-
-void publishEvent(const char* level, const char* type, const char* message) {
-  if (!mqttClient.connected()) return;
-  
-  StaticJsonDocument<256> doc;
-  doc["deviceId"] = DEVICE_ID;
-  doc["level"] = level;
-  doc["type"] = type;
-  doc["message"] = message;
-  doc["millis"] = millis();
-  
-  String topic = "smartbox/" + String(DEVICE_ID) + "/event";
-  char buffer[256];
-  serializeJson(doc, buffer);
-  mqttClient.publish(topic.c_str(), buffer);
-}
-
-void publishRelayUpdated(uint8_t relay, bool state, int autoOffSeconds) {
-  if (!mqttClient.connected()) return;
 
   StaticJsonDocument<384> doc;
   doc["deviceId"] = DEVICE_ID;
   doc["level"] = "INFO";
   doc["type"] = "relay.updated";
-  doc["message"] = "Relay state updated";
+  doc["message"] = "Relay state updated.";
   doc["millis"] = millis();
+
   JsonObject payload = doc.createNestedObject("payload");
   payload["relay"] = relay;
   payload["state"] = state;
-  payload["autoOffSeconds"] = autoOffSeconds;
+  payload["source"] = source;
 
-  String topic = "smartbox/" + String(DEVICE_ID) + "/event";
-  char buffer[384];
-  serializeJson(doc, buffer);
-  mqttClient.publish(topic.c_str(), buffer);
+  publishJson(topicEvent(), doc, false);
 }
 
-void publishPirMotion(bool detected) {
-  if (!mqttClient.connected()) return;
+void setRelayWithAutoOff(uint8_t relay, bool state, int autoOffSeconds,
+                         const char *label) {
+  setRelay(relay, state, label);
 
-  StaticJsonDocument<384> doc;
-  doc["deviceId"] = DEVICE_ID;
-  doc["level"] = "INFO";
-  doc["type"] = "pir.motion";
-  doc["message"] = detected ? "Gerakan terdeteksi" : "Gerakan berhenti";
-  doc["millis"] = millis();
-  JsonObject payload = doc.createNestedObject("payload");
-  payload["pirDetected"] = detected;
+  if (relay == 1) {
+    if (state && autoOffSeconds > 0) {
+      relay1AutoOffActive = true;
+      relay1AutoOffAt = millis() + (autoOffSeconds * 1000UL);
 
-  String topic = "smartbox/" + String(DEVICE_ID) + "/event";
-  char buffer[384];
-  serializeJson(doc, buffer);
-  mqttClient.publish(topic.c_str(), buffer);
-}
-
-void turnBluetoothOn() {
-  bluetoothState = true;
-  setAudioPower(true);
-  playVoice(TRACK_BLUETOOTH_ACTIVE, "bluetooth_on");
-  publishEvent("INFO", "bluetooth.on", "Bluetooth diaktifkan");
-}
-
-void turnBluetoothOff() {
-  bluetoothState = false;
-  playVoice(TRACK_BLUETOOTH_OFF, "bluetooth_off");
-  audioPowerOffAt = millis() + 2500; // Turn off audio power after 2.5 seconds
-  publishEvent("INFO", "bluetooth.off", "Bluetooth dimatikan");
-}
-
-void publishTelemetry() {
-  if (!mqttClient.connected()) return;
-
-  int mq2Value = analogRead(MQ2_PIN);
-  float tempC = rtcReady ? rtc.getTemperature() : 28.0;
-  bool pirNow = (digitalRead(PIR_PIN) == HIGH);
-
-  StaticJsonDocument<1024> doc;
-  doc["deviceId"] = DEVICE_ID;
-  doc["ip"] = WiFi.localIP().toString();
-  doc["rssi"] = WiFi.RSSI();
-  doc["gasEnabled"] = gasEnabled;
-  doc["gasRaw"] = mq2Value;
-  doc["gasLevel"] = (mq2Value > 2000) ? "gas" : ((mq2Value > MQ2_GAS_THRESHOLD) ? "smoke" : "normal");
-  doc["tempEnabled"] = temperatureEnabled;
-  doc["temperatureC"] = tempC;
-  doc["temperatureHigh"] = tempC >= 35.0;
-  doc["pirDetected"] = pirNow;
-  doc["obstacleNear"] = (digitalRead(IR_PIN) == LOW);
-  doc["pirEnabled"] = pirEnabled;
-  doc["pirGreetingEnabled"] = pirGreetingEnabled;
-  doc["pirGreetingTrack"] = pirGreetingTrack;
-  doc["pirGreetingStart"] = pirGreetingStart;
-  doc["pirGreetingEnd"] = pirGreetingEnd;
-  doc["sleepModeEnabled"] = sleepModeEnabled;
-  doc["rtcReady"] = rtcReady;
-  doc["lcdReady"] = lcdReady;
-  doc["dfPlayerReady"] = dfPlayerReady;
-  doc["relay1"] = relay1State;
-  doc["relay2"] = relay2State;
-  doc["relay1AutoOffRemaining"] =
-      (relay1AutoOffActive && relay1AutoOffAt > millis()) ? (int)((relay1AutoOffAt - millis()) / 1000UL) : 0;
-  doc["relay2AutoOffRemaining"] =
-      (relay2AutoOffActive && relay2AutoOffAt > millis()) ? (int)((relay2AutoOffAt - millis()) / 1000UL) : 0;
-  doc["bluetoothRelay"] = bluetoothState;
-  doc["buzzer"] = buzzerState;
-  doc["dfTrackCount"] = DFPLAYER_MAX_TRACK;
-  doc["createdAt"] = nullptr;
-
-  char buffer[1024];
-  serializeJson(doc, buffer);
-  
-  String topic = "smartbox/" + String(DEVICE_ID) + "/telemetry";
-  mqttClient.publish(topic.c_str(), buffer);
-}
-
-void publishOnlineStatus(bool online) {
-  if (!mqttClient.connected()) return;
-
-  StaticJsonDocument<256> doc;
-  doc["deviceId"] = DEVICE_ID;
-  doc["online"] = online;
-  doc["ip"] = WiFi.localIP().toString();
-  doc["rssi"] = WiFi.RSSI();
-  doc["millis"] = millis();
-
-  char buffer[256];
-  serializeJson(doc, buffer);
-
-  String topic = "smartbox/" + String(DEVICE_ID) + "/status";
-  mqttClient.publish(topic.c_str(), buffer, true);
-}
-
-void reconnectMqtt() {
-  if (WiFi.status() != WL_CONNECTED) return;
-  
-  static unsigned long lastReconnectAttempt = 0;
-  unsigned long now = millis();
-  if (now - lastReconnectAttempt < 5000) return;
-  lastReconnectAttempt = now;
-  
-  Serial.print("[MQTT] Attempting connection...");
-  String clientId = "SmartBoxDevice-";
-  clientId += String(random(0xffff), HEX);
-  
-  String willTopic = "smartbox/" + String(DEVICE_ID) + "/status";
-  String willMessage = "{\"online\":false,\"deviceId\":\"" + String(DEVICE_ID) + "\"}";
-  
-  if (mqttClient.connect(clientId.c_str(), MQTT_USER, MQTT_PASS, willTopic.c_str(), 1, true, willMessage.c_str())) {
-    Serial.println("connected");
-    String cmdTopic = "smartbox/" + String(DEVICE_ID) + "/cmd";
-    mqttClient.subscribe(cmdTopic.c_str());
-    
-    publishOnlineStatus(true);
-    publishTelemetry();
-  } else {
-    Serial.print("failed, rc=");
-    Serial.println(mqttClient.state());
-  }
-}
-
-void mqttCallback(char *topic, byte *payload, unsigned int length) {
-  Serial.print("[MQTT] Message arrived [");
-  Serial.print(topic);
-  Serial.println("]");
-
-  StaticJsonDocument<768> doc;
-  DeserializationError error = deserializeJson(doc, payload, length);
-  if (error) {
-    Serial.print("deserializeJson() failed: ");
-    Serial.println(error.c_str());
-    return;
-  }
-
-  const char* cmdId = doc["id"];
-  const char* cmdType = doc["type"];
-  JsonObject payloadObj = doc["payload"];
-
-  if (!cmdType) return;
-
-  Serial.printf("[MQTT] Cmd type: %s\n", cmdType);
-
-  bool success = false;
-  String responseMsg = "";
-
-  if (strcmp(cmdType, "relay.set") == 0) {
-    int relayNum = payloadObj["relay"];
-    bool state = payloadObj["state"];
-    const char *source = payloadObj["source"] | "";
-    int autoOffSeconds = payloadObj["autoOffSeconds"] | (strcmp(source, "schedule") == 0 ? 0 : 60);
-    
-    if (relayNum == 1) {
-      setRelay1WithAutoOff(state, autoOffSeconds);
-      success = true;
-      responseMsg = "Relay 1 set success";
-    } else if (relayNum == 2) {
-      setRelay2WithAutoOff(state, autoOffSeconds);
-      success = true;
-      responseMsg = "Relay 2 set success";
-    }
-  }
-  else if (strcmp(cmdType, "bluetooth.set") == 0) {
-    bool state = payloadObj["state"];
-    if (state) {
-      turnBluetoothOn();
-    } else {
-      turnBluetoothOff();
-    }
-    success = true;
-    responseMsg = "Bluetooth state set success";
-  }
-  else if (strcmp(cmdType, "buzzer.set") == 0) {
-    bool state = payloadObj["state"];
-    setBuzzer(state);
-    success = true;
-    responseMsg = "Buzzer state set success";
-  }
-  else if (strcmp(cmdType, "voice.play") == 0) {
-    int track = payloadObj["track"];
-    const char* reason = payloadObj["reason"];
-    playVoice(track, reason ? reason : "mqtt_cmd");
-    success = true;
-    responseMsg = "Voice play success";
-  }
-  else if (strcmp(cmdType, "gasSensor.set") == 0) {
-    gasEnabled = payloadObj["enabled"];
-    success = true;
-  }
-  else if (strcmp(cmdType, "tempSensor.set") == 0) {
-    temperatureEnabled = payloadObj["enabled"];
-    success = true;
-  }
-  else if (strcmp(cmdType, "pirSensor.set") == 0) {
-    pirEnabled = payloadObj["enabled"];
-    success = true;
-  }
-  else if (strcmp(cmdType, "pirGreeting.set") == 0) {
-    if (payloadObj["enabled"].is<bool>()) {
-      pirGreetingEnabled = payloadObj["enabled"];
+      showLCD("STOP KONTAK 1", "ON 1 MENIT");
+      Serial.println("[RELAY 1] Auto OFF aktif.");
     }
 
-    int track = payloadObj["track"] | pirGreetingTrack;
-    if (track >= TRACK_GESTURE_WALK && track <= TRACK_GESTURE_WAVE) {
-      pirGreetingTrack = track;
+    if (!state) {
+      relay1AutoOffActive = false;
+    }
+  }
+
+  else if (relay == 2) {
+    if (state && autoOffSeconds > 0) {
+      relay2AutoOffActive = true;
+      relay2AutoOffAt = millis() + (autoOffSeconds * 1000UL);
+
+      showLCD("STOP KONTAK 2", "ON 1 MENIT");
+      Serial.println("[RELAY 2] Auto OFF aktif.");
     }
 
-    int cooldownSeconds = payloadObj["cooldownSeconds"] | (int)(pirGreetingCooldownMs / 1000UL);
-    if (cooldownSeconds < 1) {
-      cooldownSeconds = 1;
+    if (!state) {
+      relay2AutoOffActive = false;
     }
-    pirGreetingCooldownMs = (unsigned long)cooldownSeconds * 1000UL;
-
-    const char *startTime = payloadObj["startTime"] | "";
-    if (strlen(startTime) > 0) {
-      pirGreetingStart = startTime;
-    }
-
-    const char *endTime = payloadObj["endTime"] | "";
-    if (strlen(endTime) > 0) {
-      pirGreetingEnd = endTime;
-    }
-
-    const char *playMode = payloadObj["playMode"] | "";
-    if (strlen(playMode) > 0) {
-      pirGreetingPlayMode = playMode;
-    }
-
-    success = true;
-    responseMsg = "PIR greeting updated";
-    publishEvent("INFO", "pir_greeting.updated", "Setting greeting PIR diperbarui.");
-  }
-  else if (strcmp(cmdType, "sleepMode.set") == 0) {
-    sleepModeEnabled = payloadObj["enabled"];
-    success = true;
-  }
-  else if (strcmp(cmdType, "relaySchedule.set") == 0 || strcmp(cmdType, "relaySchedule.delete") == 0) {
-    success = true;
-    responseMsg = "Relay schedule handled by worker";
-  }
-  else if (strcmp(cmdType, "status.get") == 0 || strcmp(cmdType, "ping") == 0) {
-    publishOnlineStatus(true);
-    publishTelemetry();
-    success = true;
-    responseMsg = "Status published";
-  }
-
-  if (cmdId) {
-    publishAck(cmdId, success, responseMsg.c_str());
-  }
-}
-
-// ==========================================================
-// RELAY
-// ==========================================================
-void initRelays() {
-  pinMode(RELAY_1_PIN, OUTPUT_OPEN_DRAIN);
-  pinMode(RELAY_2_PIN, OUTPUT_OPEN_DRAIN);
-
-  digitalWrite(RELAY_1_PIN, RELAY_OFF);
-  digitalWrite(RELAY_2_PIN, RELAY_OFF);
-
-  relay1State = false;
-  relay2State = false;
-
-  Serial.println("[RELAY] Ready OFF.");
-}
-
-void setRelay1WithAutoOff(bool state, int autoOffSeconds) {
-  relay1State = state;
-  digitalWrite(RELAY_1_PIN, state ? RELAY_ON : RELAY_OFF);
-  if (state) {
-    relay1TurnedOnAt = millis();
-    relay1AutoOffActive = autoOffSeconds > 0;
-    relay1AutoOffAt = millis() + ((unsigned long)autoOffSeconds * 1000UL);
-    setLcdOverride("STOP KONTAK 1", autoOffSeconds > 0 ? "ON 1 MENIT" : "ON", 4000);
-  } else {
-    relay1TurnedOnAt = 0;
-    relay1AutoOffActive = false;
-    setLcdOverride("STOP KONTAK 1", "OFF", 3000);
-  }
-
-  Serial.print("[RELAY 1] ");
-  Serial.println(state ? "ON" : "OFF");
-  publishRelayUpdated(1, state, state ? autoOffSeconds : 0);
-}
-
-void setRelay2WithAutoOff(bool state, int autoOffSeconds) {
-  relay2State = state;
-  digitalWrite(RELAY_2_PIN, state ? RELAY_ON : RELAY_OFF);
-  if (state) {
-    relay2TurnedOnAt = millis();
-    relay2AutoOffActive = autoOffSeconds > 0;
-    relay2AutoOffAt = millis() + ((unsigned long)autoOffSeconds * 1000UL);
-    setLcdOverride("STOP KONTAK 2", autoOffSeconds > 0 ? "ON 1 MENIT" : "ON", 4000);
-  } else {
-    relay2TurnedOnAt = 0;
-    relay2AutoOffActive = false;
-    setLcdOverride("STOP KONTAK 2", "OFF", 3000);
-  }
-
-  Serial.print("[RELAY 2] ");
-  Serial.println(state ? "ON" : "OFF");
-  publishRelayUpdated(2, state, state ? autoOffSeconds : 0);
-}
-
-void setRelay1(bool state) {
-  setRelay1WithAutoOff(state, state ? 60 : 0);
-}
-
-void setRelay2(bool state) {
-  setRelay2WithAutoOff(state, state ? 60 : 0);
-}
-
-void setRelay(int relayNum, bool state) {
-  if (relayNum == 1) {
-    setRelay1(state);
-  } else if (relayNum == 2) {
-    setRelay2(state);
   }
 }
 
@@ -1016,18 +630,66 @@ void checkRelayAutoOff() {
 
   if (relay1AutoOffActive && now >= relay1AutoOffAt) {
     relay1AutoOffActive = false;
-    setRelay(1, false);
-    setLcdOverride("STOP KONTAK 1", "AUTO OFF", 3000);
-    publishEvent("INFO", "relay1.auto_off", "Stop Kontak 1 otomatis mati setelah 1 menit.");
+
+    setRelay(1, false, "auto_off");
+
+    showLCD("STOP KONTAK 1", "AUTO OFF");
+    publishEvent("INFO", "relay1.auto_off",
+                 "Stop Kontak 1 otomatis mati setelah 1 menit.");
   }
 
   if (relay2AutoOffActive && now >= relay2AutoOffAt) {
     relay2AutoOffActive = false;
-    setRelay(2, false);
-    setLcdOverride("STOP KONTAK 2", "AUTO OFF", 3000);
-    publishEvent("INFO", "relay2.auto_off", "Stop Kontak 2 otomatis mati setelah 1 menit.");
+
+    setRelay(2, false, "auto_off");
+
+    showLCD("STOP KONTAK 2", "AUTO OFF");
+    publishEvent("INFO", "relay2.auto_off",
+                 "Stop Kontak 2 otomatis mati setelah 1 menit.");
   }
 }
+
+// ==========================================================
+// BLUETOOTH RELAY CONTROL
+// ==========================================================
+void setBluetoothState(bool state, const char *source = "manual") {
+  if (bluetoothState == state) {
+    Serial.println("[BT] State sama, tidak diubah.");
+    return;
+  }
+
+  bluetoothState = state;
+  digitalWrite(BT_BASE_PIN, state ? HIGH : LOW);
+
+  if (state) {
+    Serial.println("[BT] Bluetooth diaktifkan.");
+    showLCD("BLUETOOTH", "DIAKTIFKAN");
+    playVoice(TRACK_BLUETOOTH_ACTIVE, "bluetooth_on");
+    setRGB(0, 255, 0);
+    publishEvent("INFO", "bluetooth.on", "Bluetooth SmartBox diaktifkan.");
+  } else {
+    Serial.println("[BT] Bluetooth dimatikan.");
+    showLCD("BLUETOOTH", "DIMATIKAN");
+    playVoice(TRACK_BLUETOOTH_OFF, "bluetooth_off");
+    setRGB(255, 0, 0);
+    publishEvent("INFO", "bluetooth.off", "Bluetooth SmartBox dimatikan.");
+  }
+
+  StaticJsonDocument<256> doc;
+  doc["deviceId"] = DEVICE_ID;
+  doc["level"] = "INFO";
+  doc["type"] = "bluetooth.updated";
+  doc["message"] = "Bluetooth relay updated.";
+  doc["millis"] = millis();
+
+  JsonObject payload = doc.createNestedObject("payload");
+  payload["state"] = state;
+  payload["source"] = source;
+
+  publishJson(topicEvent(), doc, false);
+}
+
+void toggleBluetooth() { setBluetoothState(!bluetoothState, "red_button"); }
 
 // ==========================================================
 // BUZZER
@@ -1036,7 +698,7 @@ void setBuzzer(bool state) {
   buzzerState = state;
 
   if (state) {
-    tone(BUZZER_PIN, 1000);
+    tone(BUZZER_PIN, 1200);
   } else {
     noTone(BUZZER_PIN);
     digitalWrite(BUZZER_PIN, LOW);
@@ -1044,138 +706,376 @@ void setBuzzer(bool state) {
 
   Serial.print("[BUZZER] ");
   Serial.println(state ? "ON" : "OFF");
+
+  StaticJsonDocument<256> doc;
+  doc["deviceId"] = DEVICE_ID;
+  doc["level"] = "INFO";
+  doc["type"] = "buzzer.updated";
+  doc["message"] = "Buzzer updated.";
+  doc["millis"] = millis();
+
+  JsonObject payload = doc.createNestedObject("payload");
+  payload["state"] = state;
+
+  publishJson(topicEvent(), doc, false);
 }
 
-void beep() {
-  Serial.println("[BUZZER] Beep.");
-
+void beepBuzzer() {
   for (int i = 0; i < 3; i++) {
     tone(BUZZER_PIN, 1200);
-    delay(150);
+    delay(120);
     noTone(BUZZER_PIN);
-    delay(150);
+    delay(120);
   }
 }
 
 // ==========================================================
-// MIC INMP441 INIT
+// SENSOR READ
 // ==========================================================
-void initMic() {
-  Serial.println("[MIC] Init INMP441...");
+void readSensors() {
+  mq2Value = analogRead(MQ2_PIN);
 
-#if USE_LEFT_CHANNEL
-  i2s_channel_fmt_t channelFormat = I2S_CHANNEL_FMT_ONLY_LEFT;
-  Serial.println("[MIC] Channel LEFT");
-#else
-  i2s_channel_fmt_t channelFormat = I2S_CHANNEL_FMT_ONLY_RIGHT;
-  Serial.println("[MIC] Channel RIGHT");
-#endif
+  smokeDetected = false;
+  gasDetected = false;
 
-  i2s_config_t i2s_config = {
-    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
-    .sample_rate = RECORD_SAMPLE_RATE,
-    .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
-    .channel_format = channelFormat,
-    .communication_format = I2S_COMM_FORMAT_I2S,
-    .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-    .dma_buf_count = 8,
-    .dma_buf_len = 512,
-    .use_apll = false,
-    .tx_desc_auto_clear = false,
-    .fixed_mclk = 0
-  };
+  if (gasSensorEnabled) {
+    if (mq2Value >= MQ2_GAS_THRESHOLD) {
+      gasDetected = true;
+    }
 
-  i2s_pin_config_t pin_config = {
-    .bck_io_num = MIC_SCK,
-    .ws_io_num = MIC_WS,
-    .data_out_num = I2S_PIN_NO_CHANGE,
-    .data_in_num = MIC_SD
-  };
-
-  esp_err_t err;
-
-  err = i2s_driver_install(MIC_I2S_PORT, &i2s_config, 0, NULL);
-  if (err != ESP_OK) {
-    Serial.printf("[MIC ERROR] i2s_driver_install gagal: %d\n", err);
-    micReady = false;
-    return;
+    else if (mq2Value >= MQ2_SMOKE_THRESHOLD) {
+      smokeDetected = true;
+    }
   }
 
-  err = i2s_set_pin(MIC_I2S_PORT, &pin_config);
-  if (err != ESP_OK) {
-    Serial.printf("[MIC ERROR] i2s_set_pin gagal: %d\n", err);
-    micReady = false;
-    return;
+  if (rtcReady && tempSensorEnabled) {
+    temperatureC = rtc.getTemperature();
   }
 
-  i2s_zero_dma_buffer(MIC_I2S_PORT);
-
-  micReady = true;
-  Serial.println("[MIC] Ready.");
+  pirMotion = digitalRead(PIR_PIN) == HIGH;
 }
 
-void printMicDebug() {
-  if (!micReady) {
-    Serial.println("[MIC] Belum ready.");
+// ==========================================================
+// SENSOR VOICE LOGIC
+// ==========================================================
+void handleGasVoice() {
+  if (!gasSensorEnabled)
     return;
+
+  unsigned long now = millis();
+
+  if (gasDetected && now - lastGasVoiceAt >= GAS_VOICE_COOLDOWN_MS) {
+    lastGasVoiceAt = now;
+
+    Serial.println("[SENSOR] Gas terdeteksi.");
+    showLCD("GAS", "TERDETEKSI");
+    playVoice(TRACK_GAS_DETECTED, "gas_detected");
+    setBuzzer(true);
+    setRGB(255, 0, 0);
+
+    publishEvent("WARN", "gas.detected", "Gas terdeteksi oleh sensor MQ-2.");
   }
 
-  int32_t rawSamples[256];
-  size_t bytesRead = 0;
+  else if (smokeDetected && now - lastGasVoiceAt >= GAS_VOICE_COOLDOWN_MS) {
+    lastGasVoiceAt = now;
 
-  esp_err_t err = i2s_read(
-    MIC_I2S_PORT,
-    rawSamples,
-    sizeof(rawSamples),
-    &bytesRead,
-    pdMS_TO_TICKS(1000)
-  );
+    Serial.println("[SENSOR] Asap terdeteksi.");
+    showLCD("ASAP", "TERDETEKSI");
+    playVoice(TRACK_SMOKE_DETECTED, "smoke_detected");
+    setBuzzer(true);
+    setRGB(255, 80, 0);
 
-  if (err != ESP_OK) {
-    Serial.printf("[MIC ERROR] i2s_read gagal: %d\n", err);
+    publishEvent("WARN", "smoke.detected", "Asap terdeteksi oleh sensor MQ-2.");
+  }
+
+  if (!gasDetected && !smokeDetected && buzzerState) {
+    setBuzzer(false);
+    setRGB(0, 0, 80);
+  }
+}
+
+void handleTempVoice() {
+  if (!tempSensorEnabled || !rtcReady)
     return;
+
+  unsigned long now = millis();
+
+  if (temperatureC >= TEMP_WARNING_THRESHOLD &&
+      now - lastTempVoiceAt >= TEMP_VOICE_COOLDOWN_MS) {
+    lastTempVoiceAt = now;
+
+    Serial.println("[SENSOR] Suhu tinggi terdeteksi.");
+    showLCD("SUHU", "TERDETEKSI");
+    playVoice(TRACK_TEMP_DETECTED, "temperature_detected");
+
+    publishEvent("WARN", "temperature.detected",
+                 "Suhu ruangan melewati threshold.");
+  }
+}
+
+void handlePirVoice() {
+  if (!pirSensorEnabled)
+    return;
+
+  bool pirNow = digitalRead(PIR_PIN) == HIGH;
+
+  if (pirNow && !lastPirState) {
+    unsigned long now = millis();
+
+    Serial.println("[PIR] Gerakan terdeteksi.");
+    showLCD("GERAKAN", "TERDETEKSI");
+
+    if (now - lastPirVoiceAt >= PIR_VOICE_COOLDOWN_MS) {
+      lastPirVoiceAt = now;
+
+      int track = pirTracks[pirGreetingIndex];
+      pirGreetingIndex = (pirGreetingIndex + 1) % 3;
+
+      playVoice(track, "pir_greeting");
+
+      publishEvent("INFO", "pir.motion",
+                   "Gerakan PIR terdeteksi dan greeting diputar.");
+    } else {
+      Serial.println("[PIR] Cooldown aktif, suara tidak diputar.");
+    }
   }
 
-  int count = bytesRead / sizeof(int32_t);
+  lastPirState = pirNow;
+}
 
-  int peak = 0;
-  uint64_t sumAbs = 0;
-  uint64_t sumSquares = 0;
+// ==========================================================
+// TELEMETRY
+// ==========================================================
+String getRtcTimeString() {
+  if (!rtcReady)
+    return "";
 
-  for (int i = 0; i < count; i++) {
-    int32_t shifted = rawSamples[i] >> MIC_I2S_SHIFT;
-    float gained = shifted * MIC_AUDIO_GAIN;
+  DateTime now = rtc.now();
 
-    if (gained > 32767) gained = 32767;
-    if (gained < -32768) gained = -32768;
+  char buffer[20];
+  snprintf(buffer, sizeof(buffer), "%02d:%02d:%02d", now.hour(), now.minute(),
+           now.second());
 
-    int16_t sample = (int16_t)gained;
-    int absVal = abs((int)sample);
+  return String(buffer);
+}
 
-    if (absVal > peak) peak = absVal;
+String getRtcDateString() {
+  if (!rtcReady)
+    return "";
 
-    sumAbs += absVal;
-    sumSquares += (int64_t)sample * sample;
+  DateTime now = rtc.now();
+
+  char buffer[20];
+  snprintf(buffer, sizeof(buffer), "%04d-%02d-%02d", now.year(), now.month(),
+           now.day());
+
+  return String(buffer);
+}
+
+void publishTelemetry() {
+  if (!mqtt.connected())
+    return;
+
+  StaticJsonDocument<768> doc;
+
+  doc["deviceId"] = DEVICE_ID;
+  doc["online"] = true;
+  doc["millis"] = millis();
+
+  doc["temperature"] = temperatureC;
+  doc["mq2"] = mq2Value;
+  doc["smokeDetected"] = smokeDetected;
+  doc["gasDetected"] = gasDetected;
+  doc["pirMotion"] = pirMotion;
+
+  doc["relay1"] = relay1State;
+  doc["relay2"] = relay2State;
+  doc["bluetooth"] = bluetoothState;
+  doc["buzzer"] = buzzerState;
+
+  doc["gasSensorEnabled"] = gasSensorEnabled;
+  doc["tempSensorEnabled"] = tempSensorEnabled;
+  doc["pirSensorEnabled"] = pirSensorEnabled;
+  doc["sleepMode"] = sleepModeEnabled;
+
+  doc["rtcReady"] = rtcReady;
+  doc["dfPlayerReady"] = dfReady;
+  doc["lcdReady"] = lcdReady;
+
+  doc["rtcTime"] = getRtcTimeString();
+  doc["rtcDate"] = getRtcDateString();
+
+  publishJson(topicTelemetry(), doc, false);
+}
+
+// ==========================================================
+// MQTT COMMAND HANDLER
+// ==========================================================
+void handleVoicePlay(JsonObject payload, const char *cmdId, const char *type) {
+  int track = payload["track"] | 1;
+  const char *reason = payload["reason"] | "mqtt_voice";
+
+  Serial.println("[CMD] voice.play received.");
+  Serial.printf("[CMD] Track: %d Reason: %s\n", track, reason);
+
+  playVoice(track, reason);
+
+  publishAck(cmdId, type, true, "Voice played.");
+}
+
+void handleRelaySet(JsonObject payload, const char *cmdId, const char *type) {
+  int relay = payload["relay"] | 1;
+  bool state = payload["state"] | false;
+  int autoOffSeconds = payload["autoOffSeconds"] | 0;
+  const char *label = payload["label"] | "mqtt";
+
+  Serial.println("[CMD] relay.set received.");
+  Serial.printf("[CMD] Relay: %d State: %s AutoOff: %d\n", relay,
+                state ? "ON" : "OFF", autoOffSeconds);
+
+  setRelayWithAutoOff(relay, state, autoOffSeconds, label);
+
+  publishAck(cmdId, type, true, "Relay updated.");
+}
+
+void handleBluetoothSet(JsonObject payload, const char *cmdId,
+                        const char *type) {
+  bool state = payload["state"] | false;
+
+  Serial.println("[CMD] bluetooth.set received.");
+  Serial.printf("[CMD] Bluetooth: %s\n", state ? "ON" : "OFF");
+
+  setBluetoothState(state, "mqtt");
+
+  publishAck(cmdId, type, true, "Bluetooth updated.");
+}
+
+void handleBuzzerSet(JsonObject payload, const char *cmdId, const char *type) {
+  bool state = payload["state"] | false;
+
+  Serial.println("[CMD] buzzer.set received.");
+  Serial.printf("[CMD] Buzzer: %s\n", state ? "ON" : "OFF");
+
+  setBuzzer(state);
+
+  publishAck(cmdId, type, true, "Buzzer updated.");
+}
+
+void handleSensorSet(JsonObject payload, const char *cmdId, const char *type) {
+  const char *sensor = payload["sensor"] | "";
+  bool enabled = payload["enabled"] | false;
+
+  Serial.println("[CMD] sensor.set received.");
+  Serial.printf("[CMD] Sensor: %s Enabled: %s\n", sensor,
+                enabled ? "YES" : "NO");
+
+  if (strcmp(sensor, "gas") == 0 || strcmp(sensor, "mq2") == 0) {
+    gasSensorEnabled = enabled;
   }
 
-  float avgAbs = count > 0 ? (float)sumAbs / count : 0;
-  float rms = count > 0 ? sqrt((float)sumSquares / count) : 0;
+  else if (strcmp(sensor, "temperature") == 0 || strcmp(sensor, "suhu") == 0) {
+    tempSensorEnabled = enabled;
+  }
 
+  else if (strcmp(sensor, "pir") == 0) {
+    pirSensorEnabled = enabled;
+  }
+
+  else if (strcmp(sensor, "sleep") == 0) {
+    sleepModeEnabled = enabled;
+  }
+
+  publishAck(cmdId, type, true, "Sensor setting updated.");
+}
+
+void handleSensorCalibrate(JsonObject payload, const char *cmdId,
+                           const char *type) {
+  int smoke = payload["smokeThreshold"] | MQ2_SMOKE_THRESHOLD;
+  int gas = payload["gasThreshold"] | MQ2_GAS_THRESHOLD;
+  float temp = payload["tempThreshold"] | TEMP_WARNING_THRESHOLD;
+
+  MQ2_SMOKE_THRESHOLD = smoke;
+  MQ2_GAS_THRESHOLD = gas;
+  TEMP_WARNING_THRESHOLD = temp;
+
+  Serial.println("[CMD] sensor.calibrate received.");
+  Serial.printf("[CMD] Smoke: %d Gas: %d Temp: %.1f\n", MQ2_SMOKE_THRESHOLD,
+                MQ2_GAS_THRESHOLD, TEMP_WARNING_THRESHOLD);
+
+  publishAck(cmdId, type, true, "Sensor calibrated.");
+}
+
+void mqttCallback(char *topic, byte *payload, unsigned int length) {
   Serial.println();
-  Serial.println("========== MIC DEBUG ==========");
-  Serial.printf("Bytes : %d\n", bytesRead);
-  Serial.printf("Peak  : %d\n", peak);
-  Serial.printf("Avg   : %.1f\n", avgAbs);
-  Serial.printf("RMS   : %.1f\n", rms);
-  Serial.println("===============================");
+  Serial.print("[MQTT RX] Topic: ");
+  Serial.println(topic);
+
+  String message;
+
+  for (unsigned int i = 0; i < length; i++) {
+    message += (char)payload[i];
+  }
+
+  Serial.print("[MQTT RX] Payload: ");
+  Serial.println(message);
+
+  StaticJsonDocument<1024> doc;
+
+  DeserializationError error = deserializeJson(doc, message);
+
+  if (error) {
+    Serial.print("[MQTT ERROR] JSON parse failed: ");
+    Serial.println(error.c_str());
+    return;
+  }
+
+  const char *cmdId = doc["id"] | "";
+  const char *type = doc["type"] | "";
+
+  JsonObject data = doc["payload"].as<JsonObject>();
+
+  if (strcmp(type, "voice.play") == 0) {
+    handleVoicePlay(data, cmdId, type);
+  }
+
+  else if (strcmp(type, "relay.set") == 0) {
+    handleRelaySet(data, cmdId, type);
+  }
+
+  else if (strcmp(type, "bluetooth.set") == 0) {
+    handleBluetoothSet(data, cmdId, type);
+  }
+
+  else if (strcmp(type, "buzzer.set") == 0) {
+    handleBuzzerSet(data, cmdId, type);
+  }
+
+  else if (strcmp(type, "sensor.set") == 0) {
+    handleSensorSet(data, cmdId, type);
+  }
+
+  else if (strcmp(type, "sensor.calibrate") == 0) {
+    handleSensorCalibrate(data, cmdId, type);
+  }
+
+  else {
+    Serial.print("[CMD] Unknown type: ");
+    Serial.println(type);
+    publishAck(cmdId, type, false, "Unknown command type.");
+  }
 }
 
 // ==========================================================
-// WIFI
+// WIFI + MQTT CONNECT
 // ==========================================================
 void connectWiFi() {
+  if (WiFi.status() == WL_CONNECTED) {
+    wifiReady = true;
+    return;
+  }
+
   Serial.println();
-  Serial.println("========== WIFI CONNECT ==========");
+  Serial.println("========== [WIFI CONNECT] ==========");
   Serial.print("SSID: ");
   Serial.println(WIFI_SSID);
 
@@ -1199,280 +1099,195 @@ void connectWiFi() {
     Serial.print("[WIFI] IP: ");
     Serial.println(WiFi.localIP());
 
-    lcdShow("WIFI CONNECTED", WiFi.localIP().toString());
-    setRGB(0, 100, 0);
+    showLCD("WIFI CONNECTED", WiFi.localIP().toString());
+    setRGB(0, 0, 255);
   } else {
     wifiReady = false;
 
     Serial.println("[WIFI] Gagal connect.");
-    lcdShow("WIFI ERROR", "CEK SSID PASS");
+    showLCD("WIFI ERROR", "CEK SSID PASS");
+    setRGB(255, 0, 0);
+  }
+}
+
+void connectMQTT() {
+  if (mqtt.connected()) {
+    mqttReadyFlag = true;
+    return;
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    mqttReadyFlag = false;
+    return;
+  }
+
+  Serial.println();
+  Serial.println("========== [MQTT CONNECT] ==========");
+
+  String clientId =
+      String(DEVICE_ID) + "-" + String((uint32_t)ESP.getEfuseMac(), HEX);
+
+  Serial.print("[MQTT] Client ID: ");
+  Serial.println(clientId);
+
+  bool connected =
+      mqtt.connect(clientId.c_str(), MQTT_USER, MQTT_PASS,
+                   topicStatus().c_str(), 1, true, "{\"online\":false}");
+
+  if (connected) {
+    mqttReadyFlag = true;
+
+    Serial.println("[MQTT] Connected.");
+
+    mqtt.subscribe(topicCmd().c_str());
+    Serial.print("[MQTT] Subscribe: ");
+    Serial.println(topicCmd());
+
+    publishStatus(true);
+    publishEvent("INFO", "device.online", "ESP32-S3 SmartBox online.");
+
+    showLCD("MQTT CONNECTED", "SMARTBOX ONLINE");
+    setRGB(0, 255, 0);
+  } else {
+    mqttReadyFlag = false;
+
+    Serial.print("[MQTT] Failed rc=");
+    Serial.println(mqtt.state());
+
+    showLCD("MQTT ERROR", "CEK BROKER");
     setRGB(255, 0, 0);
   }
 }
 
 // ==========================================================
-// MQ2 GAS / ASAP MONITORING
+// BUTTON HANDLER
 // ==========================================================
-void checkMQ2() {
-  if (!gasEnabled) return;
+void checkRedButton() {
+  bool redNow = digitalRead(RED_BTN_PIN);
 
-  if (millis() - lastMq2CheckAt < 1000) return;
-  lastMq2CheckAt = millis();
+  if (redLastState == HIGH && redNow == LOW) {
+    unsigned long now = millis();
 
-  int mq2Value = analogRead(MQ2_PIN);
-  bool isDanger = (mq2Value > 2000);
-  bool isWarning = (mq2Value > MQ2_GAS_THRESHOLD && mq2Value <= 2000);
+    if (now - redLastPressAt > BUTTON_DEBOUNCE_MS) {
+      redLastPressAt = now;
 
-  if (isDanger || isWarning) {
-    if (!gasAlertActive || (millis() - lastGasVoiceAt >= GAS_VOICE_COOLDOWN_MS)) {
-      gasAlertActive = true;
-      lastGasVoiceAt = millis();
-
-      if (isDanger) {
-        Serial.println("[MQ2] GAS BERBAHAYA TERDETEKSI!");
-        playVoice(TRACK_GAS_DETECTED, "gas_detected");
-        publishEvent("CRITICAL", "gas.detected", "Gas berbahaya terdeteksi!");
-      } else {
-        Serial.println("[MQ2] ASAP TERDETEKSI!");
-        playVoice(TRACK_SMOKE_DETECTED, "smoke_detected");
-        publishEvent("WARNING", "smoke.detected", "Asap terdeteksi!");
-      }
-      beep();
-    }
-  } else {
-    if (gasAlertActive) {
-      gasAlertActive = false;
-      Serial.println("[MQ2] Gas/asap kembali normal.");
-      setLcdOverride("GAS NORMAL", "AMAN", 2000);
-      publishEvent("INFO", "gas.cleared", "Gas dan asap kembali normal.");
+      Serial.println("[BUTTON] RED pressed -> toggle Bluetooth.");
+      toggleBluetooth();
     }
   }
+
+  redLastState = redNow;
 }
 
-void checkTemperature() {
-  if (!temperatureEnabled || !rtcReady) return;
+void checkWhiteButton() {
+  bool whiteNow = digitalRead(WHITE_BTN_PIN);
 
-  float tempC = rtc.getTemperature();
-  if (tempC >= 35.0) {
-    if (millis() - lastTempVoiceAt >= TEMP_VOICE_COOLDOWN_MS) {
-      lastTempVoiceAt = millis();
-      Serial.println("[TEMP] Suhu tinggi terdeteksi!");
-      playVoice(TRACK_TEMP_DETECTED, "temperature_detected");
-      publishEvent("WARNING", "temp.high", "Suhu ruangan terlalu tinggi!");
+  if (whiteLastState == HIGH && whiteNow == LOW) {
+    unsigned long now = millis();
+
+    if (now - whiteLastPressAt > BUTTON_DEBOUNCE_MS) {
+      whiteLastPressAt = now;
+
+      Serial.println("[BUTTON] WHITE pressed -> intro Aero.");
+      playVoice(TRACK_AI_INTRO, "white_button_intro");
     }
   }
+
+  whiteLastState = whiteNow;
 }
 
-void checkPIR() {
-  if (!pirEnabled) return;
-
-  bool pirNow = (digitalRead(PIR_PIN) == HIGH);
-
-  if (pirNow && !lastPirState) {
-    Serial.println("[PIR] Gerakan terdeteksi!");
-    publishPirMotion(true);
-
-    if (pirGreetingEnabled && millis() - lastPirVoiceAt >= pirGreetingCooldownMs) {
-      lastPirVoiceAt = millis();
-
-      int track = pirGreetingTrack;
-      if (pirGreetingPlayMode == "cycle") {
-        track = pirTracks[pirGreetingIndex];
-        pirGreetingIndex = (pirGreetingIndex + 1) % 3;
-      }
-
-      playVoice(track, "pir_greeting");
-    }
-  }
-  else if (!pirNow && lastPirState) {
-    publishPirMotion(false);
-  }
-  lastPirState = pirNow;
-}
-
-// ==========================================================
-// BUTTON CHECK
-// ==========================================================
 void checkBlackButton() {
-  bool reading = digitalRead(BLACK_BTN_PIN);
+  bool blackNow = digitalRead(BLACK_BTN_PIN);
   unsigned long now = millis();
 
-  if (reading != blackLastReading) {
-    blackLastChangeAt = now;
+  if (blackLastState == HIGH && blackNow == LOW) {
+    blackPressedAt = now;
+    blackLongPressHandled = false;
+
+    Serial.println("[BUTTON] BLACK pressed.");
   }
 
-  blackLastReading = reading;
-
-  if (now - blackLastChangeAt >= BLACK_DEBOUNCE_MS) {
-    if (reading != blackStableState) {
-      blackStableState = reading;
-
-      if (blackStableState == LOW) {
-        blackPressedAt = now;
-        blackLongPressHandled = false;
-        Serial.println("[BUTTON] Black pressed.");
-      } else {
-        if (!blackLongPressHandled) {
-          Serial.println("[BUTTON] Black quick press -> Jam & Suhu.");
-
-          // Tampilkan jam dan suhu real-time di LCD
-          if (rtcReady) {
-            DateTime now2 = rtc.now();
-            float tempC = rtc.getTemperature();
-
-            char l1[17];
-            char l2[17];
-            snprintf(l1, sizeof(l1), "JAM  %02d:%02d:%02d", now2.hour(), now2.minute(), now2.second());
-            snprintf(l2, sizeof(l2), "SUHU %.1f C", tempC);
-
-            lcdShow(l1, l2);
-
-            Serial.println();
-            Serial.println("========== JAM & SUHU ==========");
-            Serial.printf("Waktu: %02d:%02d:%02d\n", now2.hour(), now2.minute(), now2.second());
-            Serial.printf("Suhu : %.1f C\n", tempC);
-            Serial.println("================================");
-          } else {
-            lcdShow("RTC ERROR", "BELUM READY");
-          }
-
-          playDFTrack(TRACK_TIME_TEMP_REALTIME, "black_quick_time_temp");
-        }
-      }
-    }
-  }
-
-  if (blackStableState == LOW && !blackLongPressHandled) {
-    if (now - blackPressedAt >= BLACK_LONG_PRESS_MS) {
+  if (blackLastState == LOW && blackNow == LOW) {
+    if (!blackLongPressHandled && now - blackPressedAt >= BLACK_LONG_PRESS_MS) {
       blackLongPressHandled = true;
 
-      Serial.println("[BUTTON] Black long press -> AI backend sudah dihapus.");
-      lcdShow("AI BACKEND", "SUDAH DIHAPUS");
-      playDFTrack(TRACK_HALO_AERO, "black_long_ai_removed");
+      Serial.println("[BUTTON] BLACK long press -> local AI greeting.");
+      showLCD("AI ASSISTANT", "HALLO TUAN");
+      playVoice(TRACK_AI_HELLO, "black_long_press");
     }
   }
-}
 
-void checkOtherButtons() {
-  bool whiteReading = digitalRead(WHITE_BTN_PIN);
-  bool redReading = digitalRead(RED_BTN_PIN);
-  unsigned long now = millis();
+  if (blackLastState == LOW && blackNow == HIGH) {
+    if (!blackLongPressHandled) {
+      Serial.println("[BUTTON] BLACK quick press -> time temp.");
 
-  // White button debounce
-  if (whiteReading != whiteLastReading) {
-    whiteLastChangeAt = now;
-  }
-  whiteLastReading = whiteReading;
+      if (rtcReady) {
+        DateTime t = rtc.now();
+        char line1[17];
+        char line2[17];
 
-  if (now - whiteLastChangeAt >= BLACK_DEBOUNCE_MS) {
-    if (whiteReading != whiteStableState) {
-      whiteStableState = whiteReading;
-      if (whiteStableState == LOW) { // Pressed
-        Serial.println("[BUTTON] White pressed -> Perkenalan Aero.");
-        playVoice(TRACK_AI_HELLO, "white_hello_aero");
-        whiteBtnTrack15PlayAt = millis() + 4000;
+        snprintf(line1, sizeof(line1), "JAM %02d:%02d:%02d", t.hour(),
+                 t.minute(), t.second());
+        snprintf(line2, sizeof(line2), "SUHU %4.1f C", temperatureC);
+
+        showLCD(line1, line2);
       }
+
+      playVoice(TRACK_TIME_TEMP_REALTIME, "black_quick_time_temp");
     }
   }
 
-  // Red button debounce
-  if (redReading != redLastReading) {
-    redLastChangeAt = now;
-    Serial.printf("[BUTTON] Red physical state changed to: %d\n", redReading);
-  }
-  redLastReading = redReading;
-
-  if (now - redLastChangeAt >= BLACK_DEBOUNCE_MS) {
-    if (redReading != redStableState) {
-      redStableState = redReading;
-      Serial.printf("[BUTTON] Red stable state: %d\n", redStableState);
-      if (redStableState == LOW) { // Pressed
-        Serial.println("[BUTTON] Red quick press -> Toggle Bluetooth");
-        if (!bluetoothState) {
-          turnBluetoothOn();
-        } else {
-          turnBluetoothOff();
-        }
-      }
-    }
-  }
+  blackLastState = blackNow;
 }
 
 // ==========================================================
-// SENSOR STATUS
-// ==========================================================
-void printSensorStatus() {
-  if (millis() - lastSensorPrintAt < 5000) return;
-  lastSensorPrintAt = millis();
-
-  int mq2 = analogRead(MQ2_PIN);
-  bool pir = digitalRead(PIR_PIN) == HIGH;
-  bool ir = digitalRead(IR_PIN);
-
-  Serial.println();
-  Serial.println("========== SENSOR STATUS ==========");
-  Serial.printf("MQ2 Raw : %d\n", mq2);
-  Serial.printf("PIR     : %s\n", pir ? "GERAK" : "DIAM");
-  Serial.printf("IR      : %s\n", ir == LOW ? "TERHALANG" : "AMAN");
-
-  if (rtcReady) {
-    DateTime now = rtc.now();
-    Serial.printf("RTC     : %02d:%02d:%02d\n", now.hour(), now.minute(), now.second());
-  }
-
-  Serial.println("===================================");
-}
-
-// ==========================================================
-// STATUS
-// ==========================================================
-void printStatus() {
-  Serial.println();
-  Serial.println("========== SMARTBOX STATUS ==========");
-  Serial.printf("WiFi        : %s\n", WiFi.status() == WL_CONNECTED ? "CONNECTED" : "DISCONNECTED");
-  Serial.printf("IP          : %s\n", WiFi.localIP().toString().c_str());
-  Serial.printf("LCD Ready   : %s\n", lcdReady ? "YES" : "NO");
-  Serial.printf("RTC Ready   : %s\n", rtcReady ? "YES" : "NO");
-  Serial.printf("DF Ready    : %s\n", dfPlayerReady ? "YES" : "NO");
-  Serial.printf("Mic Ready   : %s\n", micReady ? "YES" : "NO");
-  Serial.printf("Relay 1     : %s\n", relay1State ? "ON" : "OFF");
-  Serial.printf("Relay 2     : %s\n", relay2State ? "ON" : "OFF");
-  Serial.printf("Buzzer      : %s\n", buzzerState ? "ON" : "OFF");
-  Serial.printf("Audio Power : %s\n", audioPowerState ? "ON" : "OFF");
-  Serial.println("====================================");
-}
-
-// ==========================================================
-// SERIAL COMMAND
+// SERIAL COMMAND DEBUG
 // ==========================================================
 void printHelp() {
   Serial.println();
   Serial.println("========== COMMAND LIST ==========");
-  Serial.println("help       -> tampilkan command");
-  Serial.println("status     -> cek semua status");
-  Serial.println("df1-df15   -> test DFPlayer track");
-  Serial.println("pirtest    -> paksa play 0010.mp3");
-  Serial.println("ai         -> info AI backend sudah dihapus");
-  Serial.println("mic        -> cek RMS mic");
-  Serial.println("mq2        -> baca sensor MQ2");
-  Serial.println("lcd        -> test LCD");
-  Serial.println("rtc        -> tampil waktu RTC");
-  Serial.println("r1on       -> relay 1 ON");
-  Serial.println("r1off      -> relay 1 OFF");
-  Serial.println("r2on       -> relay 2 ON");
-  Serial.println("r2off      -> relay 2 OFF");
-  Serial.println("beep       -> test buzzer");
-  Serial.println("audio on   -> audio power ON");
-  Serial.println("audio off  -> audio power OFF");
-  Serial.println("rgb red    -> RGB merah");
-  Serial.println("rgb green  -> RGB hijau");
-  Serial.println("rgb blue   -> RGB biru");
-  Serial.println("rgb off    -> RGB mati");
-  Serial.println("==================================");
+  Serial.println("help              -> tampilkan command");
+  Serial.println("status            -> cek status");
+  Serial.println("df1 - df15        -> test DFPlayer");
+  Serial.println("r1on              -> relay 1 ON auto OFF 60 detik");
+  Serial.println("r1off             -> relay 1 OFF");
+  Serial.println("r2on              -> relay 2 ON auto OFF 60 detik");
+  Serial.println("r2off             -> relay 2 OFF");
+  Serial.println("bt on             -> Bluetooth ON");
+  Serial.println("bt off            -> Bluetooth OFF");
+  Serial.println("beep              -> buzzer beep");
+  Serial.println("buzzer on         -> buzzer ON");
+  Serial.println("buzzer off        -> buzzer OFF");
+  Serial.println("sensor            -> print sensor");
+  Serial.println("lcd               -> test LCD");
+  Serial.println("================================================");
+}
+
+void printStatus() {
+  Serial.println();
+  Serial.println("========== SMARTBOX STATUS ==========");
+  Serial.printf("WiFi       : %s\n",
+                WiFi.status() == WL_CONNECTED ? "CONNECTED" : "DISCONNECTED");
+  Serial.printf("MQTT       : %s\n",
+                mqtt.connected() ? "CONNECTED" : "DISCONNECTED");
+  Serial.printf("LCD        : %s\n", lcdReady ? "READY" : "ERROR");
+  Serial.printf("RTC        : %s\n", rtcReady ? "READY" : "ERROR");
+  Serial.printf("DFPlayer   : %s\n", dfReady ? "READY" : "ERROR");
+  Serial.printf("MQ2        : %d\n", mq2Value);
+  Serial.printf("Temp       : %.1f C\n", temperatureC);
+  Serial.printf("Smoke      : %s\n", smokeDetected ? "YES" : "NO");
+  Serial.printf("Gas        : %s\n", gasDetected ? "YES" : "NO");
+  Serial.printf("PIR        : %s\n", pirMotion ? "MOTION" : "NO MOTION");
+  Serial.printf("Relay 1    : %s\n", relay1State ? "ON" : "OFF");
+  Serial.printf("Relay 2    : %s\n", relay2State ? "ON" : "OFF");
+  Serial.printf("Bluetooth  : %s\n", bluetoothState ? "ON" : "OFF");
+  Serial.printf("Buzzer     : %s\n", buzzerState ? "ON" : "OFF");
+  Serial.println("====================================");
 }
 
 void handleSerialCommand() {
-  if (!Serial.available()) return;
+  if (!Serial.available())
+    return;
 
   String cmd = Serial.readStringUntil('\n');
   cmd.trim();
@@ -1486,93 +1301,58 @@ void handleSerialCommand() {
     printStatus();
   }
 
-  else if (cmd == "ai") {
-    Serial.println("[AI] Backend URL dan fitur API sudah dihapus dari firmware ini.");
-    lcdShow("AI BACKEND", "SUDAH DIHAPUS");
-  }
-
-  else if (cmd == "mic") {
-    printMicDebug();
-  }
-
-  else if (cmd == "mq2") {
-    int mq2 = analogRead(MQ2_PIN);
-    Serial.print("[MQ2] Raw: ");
-    Serial.println(mq2);
-  }
-
-  else if (cmd == "lcd") {
-    lcdShow("LCD TEST", "SMARTBOX OK");
-  }
-
-  else if (cmd == "rtc") {
-    if (rtcReady) {
-      DateTime now = rtc.now();
-      Serial.printf("RTC: %02d:%02d:%02d %02d/%02d/%04d\n",
-                    now.hour(), now.minute(), now.second(),
-                    now.day(), now.month(), now.year());
-
-      lcdShow("RTC TIME", String(now.hour()) + ":" + String(now.minute()));
-    } else {
-      Serial.println("RTC belum ready.");
-    }
-  }
-
   else if (cmd.startsWith("df")) {
     int track = cmd.substring(2).toInt();
-    playDFTrack(track, "serial_test");
-  }
-
-  else if (cmd == "pirtest") {
-    playDFTrack(TRACK_GESTURE_WALK, "pirtest");
+    playVoice(track, "serial_test");
   }
 
   else if (cmd == "r1on") {
-    setRelay1(true);
+    setRelayWithAutoOff(1, true, 60, "serial");
   }
 
   else if (cmd == "r1off") {
-    setRelay1(false);
+    setRelayWithAutoOff(1, false, 0, "serial");
   }
 
   else if (cmd == "r2on") {
-    setRelay2(true);
+    setRelayWithAutoOff(2, true, 60, "serial");
   }
 
   else if (cmd == "r2off") {
-    setRelay2(false);
+    setRelayWithAutoOff(2, false, 0, "serial");
+  }
+
+  else if (cmd == "bt on") {
+    setBluetoothState(true, "serial");
+  }
+
+  else if (cmd == "bt off") {
+    setBluetoothState(false, "serial");
   }
 
   else if (cmd == "beep") {
-    beep();
+    beepBuzzer();
   }
 
-  else if (cmd == "audio on") {
-    setAudioPower(true);
+  else if (cmd == "buzzer on") {
+    setBuzzer(true);
   }
 
-  else if (cmd == "audio off") {
-    setAudioPower(false);
+  else if (cmd == "buzzer off") {
+    setBuzzer(false);
   }
 
-  else if (cmd == "rgb red") {
-    setRGB(255, 0, 0);
+  else if (cmd == "sensor") {
+    readSensors();
+    printStatus();
   }
 
-  else if (cmd == "rgb green") {
-    setRGB(0, 255, 0);
-  }
-
-  else if (cmd == "rgb blue") {
-    setRGB(0, 0, 255);
-  }
-
-  else if (cmd == "rgb off") {
-    setRGB(0, 0, 0);
+  else if (cmd == "lcd") {
+    showLCD("LCD TEST", "SMARTBOX OK");
   }
 
   else {
-    Serial.println("Command tidak dikenal. Ketik help.");
+    Serial.println("[SERIAL] Command tidak dikenal. Ketik help.");
   }
 }
 
@@ -1581,58 +1361,70 @@ void handleSerialCommand() {
 // ==========================================================
 void setup() {
   Serial.begin(115200);
-  delay(3000);
+  delay(2000);
 
   Serial.println();
-  Serial.println("=================================================");
-  Serial.println("SMARTBOX ASSISTANT - HARDWARE TEST NO AI BACKEND");
-  Serial.println("=================================================");
+  Serial.println("==================================================");
+  Serial.println("SMARTBOX ASSISTANT ESP32-S3 STARTING");
+  Serial.println("FIRMWARE: SMARTBOX_REALTIME_MQTT_DFPLAYER_V1");
+  Serial.println("==================================================");
 
   pinMode(MQ2_PIN, INPUT);
   pinMode(PIR_PIN, INPUT);
-  pinMode(IR_PIN, INPUT);
 
   pinMode(BLACK_BTN_PIN, INPUT_PULLUP);
   pinMode(WHITE_BTN_PIN, INPUT_PULLUP);
   pinMode(RED_BTN_PIN, INPUT_PULLUP);
 
   pinMode(BUZZER_PIN, OUTPUT);
+  noTone(BUZZER_PIN);
   digitalWrite(BUZZER_PIN, LOW);
 
   pinMode(BT_BASE_PIN, OUTPUT);
   digitalWrite(BT_BASE_PIN, LOW);
 
-  initRelays();
+  pinMode(RELAY_1_PIN, OUTPUT);
+  pinMode(RELAY_2_PIN, OUTPUT);
 
-  initRGB();
-  setRGB(0, 0, 80);
+  digitalWrite(RELAY_1_PIN, RELAY_OFF);
+  digitalWrite(RELAY_2_PIN, RELAY_OFF);
+
+  relay1State = false;
+  relay2State = false;
+
+  rgb.begin();
+  rgb.clear();
+  rgb.show();
+  setRGB(0, 0, 100);
 
   Wire.begin(I2C_SDA, I2C_SCL);
   Wire.setClock(100000);
 
-  scanI2C();
   initLCD();
+  delay(500);
+
   initRTC();
+  delay(500);
 
-  setAudioPower(true);
   initDFPlayer();
+  delay(500);
 
-  initMic();
+  showLCD("SMARTBOX READY", "SIAP DIGUNAKAN");
+
+  wifiSecure.setInsecure();
+
+  mqtt.setServer(MQTT_HOST, MQTT_PORT);
+  mqtt.setCallback(mqttCallback);
+  mqtt.setBufferSize(1024);
+  mqtt.setKeepAlive(30);
 
   connectWiFi();
+  connectMQTT();
 
-  // Configure TLS connection to HiveMQ Cloud without verifying certificate chains
-  espClient.setInsecure();
+  delay(1000);
 
-  // Initialize MQTT
-  mqttClient.setServer(MQTT_HOST, MQTT_PORT);
-  mqttClient.setServer(MQTT_HOST, MQTT_PORT);
-  mqttClient.setCallback(mqttCallback);
-
-  lcdShow("SMARTBOX READY", "SIAP DIGUNAKAN");
-
-  if (dfPlayerReady) {
-    playDFTrack(TRACK_STARTUP_READY, "startup");
+  if (dfReady) {
+    playVoice(TRACK_STARTUP_READY, "system_startup");
   }
 
   printHelp();
@@ -1642,44 +1434,57 @@ void setup() {
 // LOOP
 // ==========================================================
 void loop() {
-  // Reconnect MQTT if necessary
-  if (!mqttClient.connected()) {
-    reconnectMqtt();
-  }
-  mqttClient.loop();
-
   handleSerialCommand();
+
+  if (WiFi.status() != WL_CONNECTED) {
+    wifiReady = false;
+
+    static unsigned long lastWiFiReconnect = 0;
+    if (millis() - lastWiFiReconnect > 10000) {
+      lastWiFiReconnect = millis();
+      connectWiFi();
+    }
+  }
+
+  if (WiFi.status() == WL_CONNECTED && !mqtt.connected()) {
+    mqttReadyFlag = false;
+
+    static unsigned long lastMqttReconnect = 0;
+    if (millis() - lastMqttReconnect > 5000) {
+      lastMqttReconnect = millis();
+      connectMQTT();
+    }
+  }
+
+  if (mqtt.connected()) {
+    mqtt.loop();
+  }
 
   debugDFPlayerEvent();
 
+  checkRedButton();
+  checkWhiteButton();
   checkBlackButton();
-  checkOtherButtons();
 
-  checkMQ2();
-  checkTemperature();
-  checkPIR();
-  checkLcdOverride();
+  readSensors();
+
+  handleGasVoice();
+  handleTempVoice();
+  handlePirVoice();
+
   checkRelayAutoOff();
-  printSensorStatus();
 
-  // Telemetry publish loop
-  if (millis() - lastTelemetryPublishAt >= TELEMETRY_PUBLISH_INTERVAL_MS) {
-    lastTelemetryPublishAt = millis();
-    publishOnlineStatus(true);
+  unsigned long now = millis();
+
+  if (now - lastTelemetryAt >= TELEMETRY_INTERVAL_MS) {
+    lastTelemetryAt = now;
     publishTelemetry();
   }
 
-  // Non-blocking timer to turn off BT amplifier after track 13 finishes
-  if (audioPowerOffAt > 0 && millis() >= audioPowerOffAt) {
-    setAudioPower(false);
-    audioPowerOffAt = 0;
+  if (now - lastStatusAt >= STATUS_INTERVAL_MS) {
+    lastStatusAt = now;
+    publishStatus(mqtt.connected());
   }
 
-  // White button intro timer
-  if (whiteBtnTrack15PlayAt > 0 && millis() >= whiteBtnTrack15PlayAt) {
-    whiteBtnTrack15PlayAt = 0;
-    playVoice(TRACK_AI_INTRO, "white_intro_aero");
-  }
-
-  delay(5);
+  delay(10);
 }
