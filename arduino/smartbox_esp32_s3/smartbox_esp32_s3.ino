@@ -1376,13 +1376,16 @@ void checkOtherButtons() {
   // Red button debounce
   if (redReading != redLastReading) {
     redLastChangeAt = now;
+    Serial.printf("[BUTTON] Red physical state changed to: %d\n", redReading);
   }
   redLastReading = redReading;
 
   if (now - redLastChangeAt >= BLACK_DEBOUNCE_MS) {
     if (redReading != redStableState) {
       redStableState = redReading;
+      Serial.printf("[BUTTON] Red stable state: %d\n", redStableState);
       if (redStableState == LOW) { // Pressed
+        Serial.println("[BUTTON] Red quick press -> Toggle Bluetooth");
         if (!bluetoothState) {
           turnBluetoothOn();
         } else {
