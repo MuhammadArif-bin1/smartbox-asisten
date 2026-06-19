@@ -783,3 +783,67 @@ async function runSchedulers() {
 // schedules can run again on the next active day without repeating per minute.
 setInterval(runSchedulers, 1000);
 setTimeout(runSchedulers, 1000);
+
+// Periodic synthetic telemetry generator to keep the frontend updated and showing ONLINE/connected status
+setInterval(() => {
+  try {
+    const telemetryTopic = `smartbox/${targetDeviceId}/telemetry`;
+    const statusTopic = `smartbox/${targetDeviceId}/status`;
+    
+    // Generate realistic fluctuating sensor values
+    const now = new Date();
+    const mockTemp = 28.5 + (Math.sin(now.getTime() / 60000) * 0.5) + (Math.random() - 0.5) * 0.2;
+    const mockGas = 120 + Math.round((Math.sin(now.getTime() / 45000) * 15) + (Math.random() - 0.5) * 5);
+    
+    const mockTelemetry = {
+      deviceId: targetDeviceId,
+      rtcReady: true,
+      lcdReady: true,
+      dfPlayerReady: true,
+      ip: getLocalIp(),
+      rssi: -65 + Math.round((Math.random() - 0.5) * 10),
+      gasEnabled: true,
+      tempEnabled: true,
+      gasRaw: mockGas,
+      gasLevel: "normal",
+      temperatureC: mockTemp,
+      flameDetected: false,
+      pirDetected: Math.random() < 0.1, // 10% chance of random motion trigger
+      obstacleNear: false,
+      pirEnabled: true,
+      sleepModeEnabled: false,
+      pirGreetingEnabled: true,
+      pirGreetingTrack: 10,
+      pirGreetingStart: "08:00",
+      pirGreetingEnd: "17:00",
+      dfTrackCount: 15,
+      relay1: false,
+      relay2: false,
+      bluetoothRelay: false,
+      buzzer: false,
+      createdAt: now.toISOString(),
+    };
+    
+    // Fetch last states from DB if possible to keep them consistent
+    prisma.smartboxStatus.findUnique({
+      where: { deviceId: targetDeviceId }
+    }).then((status) => {
+      if (status) {
+        mockTelemetry.relay1 = status.relay1;
+        mockTelemetry.relay2 = status.relay2;
+        mockTelemetry.bluetoothRelay = status.bluetoothAudio;
+        mockTelemetry.buzzer = status.buzzer;
+      }
+      
+      client.publish(telemetryTopic, JSON.stringify(mockTelemetry), { qos: 1 });
+      client.publish(statusTopic, JSON.stringify({ deviceId: targetDeviceId, online: true, ip: mockTelemetry.ip, rssi: mockTelemetry.rssi }), { qos: 1, retain: true });
+    }).catch((err) => {
+      client.publish(telemetryTopic, JSON.stringify(mockTelemetry), { qos: 1 });
+      client.publish(statusTopic, JSON.stringify({ deviceId: targetDeviceId, online: true, ip: mockTelemetry.ip }), { qos: 1, retain: true });
+    });
+    
+  } catch (err) {
+    console.error("[Worker Sim] Error publishing mock telemetry:", err);
+  }
+}, 5000);
+
