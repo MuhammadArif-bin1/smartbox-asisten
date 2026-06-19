@@ -19,11 +19,24 @@ export function DetailedSensorCard({
   icon: React.ReactNode;
   onClick?: () => void;
 }) {
-  const accentBorder = {
-    blue: "border-blue-100 hover:border-blue-200",
-    emerald: "border-emerald-100 hover:border-emerald-200",
-    orange: "border-orange-100 hover:border-orange-200",
-  };
+  const isDanger = status === "Bahaya" || status === "Gas Terdeteksi";
+  const isWarning = status === "Waspada" || status === "Asap Terdeteksi" || status === "Peringatan" || status === "Suhu Terdeteksi / Suhu Tinggi" || status === "Ada Gerakan" || status === "Gerakan Terdeteksi";
+
+  const cardBorderClass = isDanger
+    ? "border-red-200 hover:border-red-300"
+    : isWarning
+    ? "border-amber-200 hover:border-amber-300"
+    : accent === "blue"
+    ? "border-blue-100 hover:border-blue-200"
+    : accent === "emerald"
+    ? "border-emerald-100 hover:border-emerald-200"
+    : "border-orange-100 hover:border-orange-200";
+
+  const cardBgClass = isDanger
+    ? "bg-red-50/50 animate-pulse"
+    : isWarning
+    ? "bg-amber-50/50"
+    : "bg-white";
 
   const accentBg = {
     blue: "bg-blue-50/75",
@@ -34,9 +47,9 @@ export function DetailedSensorCard({
   return (
     <div 
       onClick={onClick}
-      className={`rounded-3xl border bg-white p-6 shadow-sm transition-all duration-200 hover:shadow-md flex flex-col justify-between min-h-[170px] ${
+      className={`rounded-3xl border p-6 shadow-sm transition-all duration-200 hover:shadow-md flex flex-col justify-between min-h-[170px] ${
         onClick ? "cursor-pointer hover:border-slate-400 active:scale-[0.98]" : ""
-      } ${accentBorder[accent] || "border-slate-200"}`}
+      } ${cardBorderClass} ${cardBgClass}`}
     >
       <div className="flex items-center justify-between">
         <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">{title}</span>

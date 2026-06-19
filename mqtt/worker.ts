@@ -20,6 +20,7 @@ const username = process.env.MQTT_USERNAME || process.env.NEXT_PUBLIC_MQTT_USERN
 const password = process.env.MQTT_PASSWORD || process.env.NEXT_PUBLIC_MQTT_PASSWORD;
 const targetDeviceId = process.env.NEXT_PUBLIC_DEVICE_ID || "smartbox-001";
 const RETAINED_OFFLINE_GRACE_MS = Number(process.env.MQTT_RETAINED_OFFLINE_GRACE_MS || 8000);
+let lastRealTelemetryReceivedAt = 0;
 
 console.log(`[Worker] Starting MQTT worker connecting to: ${brokerUrl}`);
 
@@ -285,6 +286,9 @@ client.on("message", async (topic, message, packet) => {
 
     else if (messageType === "telemetry") {
       clearPendingRetainedOffline(deviceId);
+      if (!data.mock) {
+        lastRealTelemetryReceivedAt = Date.now();
+      }
       const {
         temperature,
         temperatureC,
@@ -844,6 +848,10 @@ setTimeout(runSchedulers, 1000);
 // Periodic synthetic telemetry generator to keep the frontend updated and showing ONLINE/connected status
 setInterval(() => {
   try {
+    if (Date.now() - lastRealTelemetryReceivedAt < 15000) {
+      // Real telemetry from ESP32 is active, skip mock telemetry
+      return;
+    }
     const telemetryTopic = `smartbox/${targetDeviceId}/telemetry`;
     const statusTopic = `smartbox/${targetDeviceId}/status`;
     

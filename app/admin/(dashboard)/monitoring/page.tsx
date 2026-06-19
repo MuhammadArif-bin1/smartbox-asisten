@@ -20,7 +20,13 @@ export default function MonitoringPage() {
             <DetailedSensorCard
               title="Suhu Ruangan"
               value={isOnline ? (ctx.visibleTempEstimate > 0 ? `${ctx.visibleTempEstimate.toFixed(1)}°C` : "Menunggu data...") : "Tidak Terhubung"}
-              status={ctx.tempState}
+              status={
+                isOnline
+                  ? ctx.tempState === "Peringatan"
+                    ? "Suhu Terdeteksi / Suhu Tinggi"
+                    : ctx.tempState
+                  : "Offline"
+              }
               lastSeen={lastUpdate}
               online={isOnline}
               accent="blue"
@@ -42,7 +48,15 @@ export default function MonitoringPage() {
             <DetailedSensorCard
               title="Sensor Gas / Asap"
               value={isOnline ? `${ctx.gasPpm} PPM` : "Tidak Terhubung"}
-              status={ctx.gasState}
+              status={
+                isOnline
+                  ? ctx.gasState === "Waspada"
+                    ? "Asap Terdeteksi"
+                    : ctx.gasState === "Bahaya"
+                    ? "Gas Terdeteksi"
+                    : ctx.gasState
+                  : "Offline"
+              }
               lastSeen={lastUpdate}
               online={isOnline}
               accent="emerald"
@@ -66,7 +80,7 @@ export default function MonitoringPage() {
             <DetailedSensorCard
               title="Gerakan PIR"
               value={isOnline ? (ctx.pirDetected ? "Gerakan Terdeteksi" : "Tidak Ada Gerakan") : "Tidak Terhubung"}
-              status={isOnline ? (ctx.pirDetected ? "Ada Gerakan" : "Aman") : "Offline"}
+              status={isOnline ? (ctx.pirDetected ? "Gerakan Terdeteksi" : "Aman") : "Offline"}
               lastSeen={lastUpdate}
               online={isOnline}
               accent="orange"
