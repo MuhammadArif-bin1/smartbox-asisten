@@ -9,7 +9,7 @@ type MqttRequest = {
 
 export const runtime = "nodejs";
 
-const defaultBrokerUrl = "mqtt://192.168.1.12:1883";
+const defaultBrokerUrl = "mqtts://6559400ba6c741398aa7048b471d5a31.s1.eu.hivemq.cloud:8883";
 
 export async function GET() {
   const brokerUrl = process.env.MQTT_URL || process.env.MQTT_BROKER_URL || defaultBrokerUrl;

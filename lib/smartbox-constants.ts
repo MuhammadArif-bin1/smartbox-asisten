@@ -110,8 +110,8 @@ export const GAS_WARNING_RAW = 1800;
 export const BOARD_LED_DURATION_SECONDS = 10;
 
 /* ─── MQTT / Network ─── */
-export const DEFAULT_MQTT_WS_URL = "ws://192.168.1.12:9001";
-export const MQTT_BROKER_LABEL = "mqtt://192.168.1.12:1883";
+export const DEFAULT_MQTT_WS_URL = "wss://6559400ba6c741398aa7048b471d5a31.s1.eu.hivemq.cloud:8884/mqtt";
+export const MQTT_BROKER_LABEL = "mqtts://6559400ba6c741398aa7048b471d5a31.s1.eu.hivemq.cloud:8883";
 
 /* ─── Auth ─── */
 export const DASHBOARD_PASSWORD = process.env.NEXT_PUBLIC_DASHBOARD_PASSWORD || "smartbox123";
