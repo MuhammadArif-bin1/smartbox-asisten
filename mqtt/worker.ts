@@ -18,6 +18,8 @@ function getLocalIp(): string {
 const brokerUrl = process.env.MQTT_URL || process.env.MQTT_BROKER_URL || "mqtt://localhost:1883";
 const username = process.env.MQTT_USERNAME || process.env.NEXT_PUBLIC_MQTT_USERNAME;
 const password = process.env.MQTT_PASSWORD || process.env.NEXT_PUBLIC_MQTT_PASSWORD;
+const targetDeviceId = process.env.NEXT_PUBLIC_DEVICE_ID || "smartbox-001";
+const RETAINED_OFFLINE_GRACE_MS = Number(process.env.MQTT_RETAINED_OFFLINE_GRACE_MS || 8000);
 
 console.log(`[Worker] Starting MQTT worker connecting to: ${brokerUrl}`);
 
@@ -73,7 +75,66 @@ type ActuatorPatch = {
   buzzer?: boolean;
 };
 
+const pendingRetainedOffline = new Map<string, ReturnType<typeof setTimeout>>();
+
+function clearPendingRetainedOffline(deviceId: string) {
+  const timer = pendingRetainedOffline.get(deviceId);
+  if (!timer) return;
+
+  clearTimeout(timer);
+  pendingRetainedOffline.delete(deviceId);
+}
+
+async function syncDeviceStatus(deviceId: string, isOnline: boolean) {
+  clearPendingRetainedOffline(deviceId);
+
+  await ensureDevice(deviceId, isOnline);
+
+  await retryQuery(() => prisma.smartboxStatus.upsert({
+    where: { deviceId },
+    create: {
+      deviceId,
+      online: isOnline,
+      lastSeenAt: new Date(),
+    },
+    update: {
+      online: isOnline,
+      lastSeenAt: new Date(),
+    }
+  })).catch((err) => {
+    console.error(`[Worker] Error syncing SmartboxStatus status:`, err);
+  });
+}
+
+function requestDeviceStatus(deviceId: string, reason: string) {
+  const command = {
+    id: `status_ping_${Date.now()}`,
+    type: "status.get",
+    payload: { reason },
+  };
+
+  client.publish(`smartbox/${deviceId}/cmd`, JSON.stringify(command), { qos: 1 });
+  console.log(`[Worker] Sent status ping to device ${deviceId} (${reason})`);
+}
+
+function scheduleRetainedOffline(deviceId: string) {
+  clearPendingRetainedOffline(deviceId);
+
+  console.warn(
+    `[Worker] Retained offline received for ${deviceId}; waiting ${RETAINED_OFFLINE_GRACE_MS}ms for live telemetry/status before marking offline.`
+  );
+
+  pendingRetainedOffline.set(deviceId, setTimeout(() => {
+    pendingRetainedOffline.delete(deviceId);
+    syncDeviceStatus(deviceId, false).catch((err) => {
+      console.error(`[Worker] Error applying retained offline status for ${deviceId}:`, err);
+    });
+  }, RETAINED_OFFLINE_GRACE_MS));
+}
+
 async function syncActuatorState(deviceId: string, patch: ActuatorPatch) {
+  clearPendingRetainedOffline(deviceId);
+
   const now = new Date();
 
   await retryQuery(() => prisma.smartboxStatus.upsert({
@@ -134,7 +195,6 @@ client.on("connect", () => {
   // Automatically sync local Next.js IP address to the ESP32
   try {
     const localIp = getLocalIp();
-    const targetDeviceId = process.env.NEXT_PUBLIC_DEVICE_ID || "smartbox-001";
     const syncCmd = {
       id: `sync_backend_${Date.now()}`,
       type: "backend.set",
@@ -144,12 +204,13 @@ client.on("connect", () => {
     };
     client.publish(`smartbox/${targetDeviceId}/cmd`, JSON.stringify(syncCmd), { qos: 1 });
     console.log(`[Worker] Sent backend sync command: http://${localIp}:3000 to device ${targetDeviceId}`);
+    requestDeviceStatus(targetDeviceId, "worker_connect");
   } catch (err) {
     console.error("[Worker] Failed to send backend sync command:", err);
   }
 });
 
-client.on("message", async (topic, message) => {
+client.on("message", async (topic, message, packet) => {
   const payloadStr = message.toString();
   console.log(`[Worker] Message received on ${topic}`);
   console.log(`[Worker] Payload: ${payloadStr}`);
@@ -167,27 +228,20 @@ client.on("message", async (topic, message) => {
 
     if (messageType === "status") {
       const isOnline = data.online === true;
+      const isRetainedOffline = !isOnline && packet?.retain === true;
       console.log(`[Worker] Device ${deviceId} status changed to: ${isOnline ? "ONLINE" : "OFFLINE"}`);
-      await ensureDevice(deviceId, isOnline);
 
-      // Sync to SmartboxStatus
-      await retryQuery(() => prisma.smartboxStatus.upsert({
-        where: { deviceId },
-        create: {
-          deviceId,
-          online: isOnline,
-          lastSeenAt: new Date(),
-        },
-        update: {
-          online: isOnline,
-          lastSeenAt: new Date(),
-        }
-      })).catch((err) => {
-        console.error(`[Worker] Error syncing SmartboxStatus status:`, err);
-      });
+      if (isRetainedOffline) {
+        scheduleRetainedOffline(deviceId);
+        requestDeviceStatus(deviceId, "retained_offline");
+        return;
+      }
+
+      await syncDeviceStatus(deviceId, isOnline);
     }
     
     else if (messageType === "telemetry") {
+      clearPendingRetainedOffline(deviceId);
       const {
         temperature,
         temperatureC,
@@ -302,6 +356,8 @@ client.on("message", async (topic, message) => {
     }
     
     else if (messageType === "event") {
+      clearPendingRetainedOffline(deviceId);
+
       const { level = "INFO", type = "generic", message = "" } = data;
       const payloadObj = data.payload && typeof data.payload === "object" ? data.payload : {};
       
@@ -399,6 +455,8 @@ client.on("message", async (topic, message) => {
     }
     
     else if (messageType === "ack") {
+      clearPendingRetainedOffline(deviceId);
+
       const { id: commandId, message = "" } = data;
       
       await ensureDevice(deviceId, true);
