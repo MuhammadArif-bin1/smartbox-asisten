@@ -57,18 +57,18 @@ export function LiveClockCard({ online, rtcReady }: { online: boolean; rtcReady:
       </div>
 
       {/* Main Display screen */}
-      <div className="z-10 flex flex-col items-center bg-slate-900/90 border border-slate-800 rounded-2xl py-6 px-10 w-full max-w-xl shadow-inner relative">
+      <div className="z-10 flex flex-col items-center bg-blue-600 border border-blue-700 rounded-2xl py-6 px-10 w-full max-w-xl shadow-inner relative">
         {/* Glow border */}
-        <div className="absolute inset-0 rounded-2xl border border-blue-500/10 pointer-events-none" />
+        <div className="absolute inset-0 rounded-2xl border border-white/20 pointer-events-none" />
         
         {/* Digital Time digits with digital/LCD style font */}
-        <h2 className="text-5xl sm:text-7xl font-bold font-mono tracking-widest text-cyan-400 drop-shadow-[0_0_12px_rgba(34,211,238,0.4)] select-none">
+        <h2 className="text-5xl sm:text-7xl font-bold font-mono tracking-widest text-black select-none">
           {timeString}
         </h2>
 
         {/* Date Display */}
-        <p className="mt-4 text-sm sm:text-base font-medium text-slate-400 font-mono tracking-wide select-none text-center">
-          {dateString} <span className="text-slate-600 font-semibold">•</span> Asia/Jakarta (WIB)
+        <p className="mt-4 text-sm sm:text-base font-bold text-black/80 font-mono tracking-wide select-none text-center">
+          {dateString} <span className="text-black/60 font-semibold">•</span> Asia/Jakarta (WIB)
         </p>
       </div>
     </div>

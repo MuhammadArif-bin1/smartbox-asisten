@@ -195,8 +195,22 @@ unsigned long blackPressedAt = 0;
 const unsigned long BLACK_DEBOUNCE_MS = 50;
 const unsigned long BLACK_LONG_PRESS_MS = 1500;
 
+bool whiteLastReading = HIGH;
+bool whiteStableState = HIGH;
+unsigned long whiteLastChangeAt = 0;
+
+bool redLastReading = HIGH;
+bool redStableState = HIGH;
+unsigned long redLastChangeAt = 0;
+
 // Bluetooth state
 bool bluetoothState = false;
+
+// Relay auto-off variables (1 minute)
+unsigned long relay1TurnedOnAt = 0;
+unsigned long relay2TurnedOnAt = 0;
+const unsigned long RELAY_AUTO_OFF_MS = 60000;
+unsigned long audioPowerOffAt = 0; // Non-blocking timer to turn off BT amplifier after track 13 plays
 
 // MQ2 monitoring state
 unsigned long lastMq2CheckAt = 0;
@@ -528,10 +542,12 @@ void playDFTrack(uint8_t track, const char *reason) {
     return;
   }
 
+  // Tampilkan teks di LCD secara bersamaan / sebelum delay stabilization!
+  showDfPlayerLcdText(track);
+
+  setRGB(0, 0, 80);
   setAudioPower(true);
   delay(400);
-
-  showDfPlayerLcdText(track);
 
   dfPlayer.play(track);
 
@@ -558,6 +574,11 @@ void initRelays() {
 void setRelay1(bool state) {
   relay1State = state;
   digitalWrite(RELAY_1_PIN, state ? RELAY_ON : RELAY_OFF);
+  if (state) {
+    relay1TurnedOnAt = millis();
+  } else {
+    relay1TurnedOnAt = 0;
+  }
 
   Serial.print("[RELAY 1] ");
   Serial.println(state ? "ON" : "OFF");
@@ -568,6 +589,11 @@ void setRelay1(bool state) {
 void setRelay2(bool state) {
   relay2State = state;
   digitalWrite(RELAY_2_PIN, state ? RELAY_ON : RELAY_OFF);
+  if (state) {
+    relay2TurnedOnAt = millis();
+  } else {
+    relay2TurnedOnAt = 0;
+  }
 
   Serial.print("[RELAY 2] ");
   Serial.println(state ? "ON" : "OFF");
@@ -906,39 +932,55 @@ void checkBlackButton() {
 }
 
 void checkOtherButtons() {
-  static bool lastWhite = HIGH;
-  static bool lastRed = HIGH;
+  bool whiteReading = digitalRead(WHITE_BTN_PIN);
+  bool redReading = digitalRead(RED_BTN_PIN);
+  unsigned long now = millis();
 
-  bool whiteNow = digitalRead(WHITE_BTN_PIN);
-  bool redNow = digitalRead(RED_BTN_PIN);
-
-  // Tombol Putih = Perkenalan Otomatis (Halo Aero + Intro Aero)
-  if (lastWhite == HIGH && whiteNow == LOW) {
-    Serial.println("[BUTTON] White pressed -> Perkenalan Aero.");
-    setAudioPower(true);
-    delay(400);
-    playDFTrack(TRACK_HALO_AERO, "white_halo_aero");
-    delay(4000);
-    playDFTrack(TRACK_INTRO_AERO, "white_intro_aero");
+  // White button debounce
+  if (whiteReading != whiteLastReading) {
+    whiteLastChangeAt = now;
   }
+  whiteLastReading = whiteReading;
 
-  // Tombol Merah = Toggle Bluetooth ON / OFF
-  if (lastRed == HIGH && redNow == LOW) {
-    bluetoothState = !bluetoothState;
-
-    if (bluetoothState) {
-      Serial.println("[BUTTON] Red pressed -> Bluetooth ON.");
-      setAudioPower(true);
-      delay(400);
-      playDFTrack(TRACK_BLUETOOTH_ACTIVE, "bluetooth_on");
-    } else {
-      Serial.println("[BUTTON] Red pressed -> Bluetooth OFF.");
-      playDFTrack(TRACK_BLUETOOTH_OFF, "bluetooth_off");
+  if (now - whiteLastChangeAt >= BLACK_DEBOUNCE_MS) {
+    if (whiteReading != whiteStableState) {
+      whiteStableState = whiteReading;
+      if (whiteStableState == LOW) { // Pressed
+        Serial.println("[BUTTON] White pressed -> Perkenalan Aero.");
+        setAudioPower(true);
+        delay(400);
+        playDFTrack(TRACK_HALO_AERO, "white_halo_aero");
+        delay(4000);
+        playDFTrack(TRACK_INTRO_AERO, "white_intro_aero");
+      }
     }
   }
 
-  lastWhite = whiteNow;
-  lastRed = redNow;
+  // Red button debounce
+  if (redReading != redLastReading) {
+    redLastChangeAt = now;
+  }
+  redLastReading = redReading;
+
+  if (now - redLastChangeAt >= BLACK_DEBOUNCE_MS) {
+    if (redReading != redStableState) {
+      redStableState = redReading;
+      if (redStableState == LOW) { // Pressed
+        bluetoothState = !bluetoothState;
+        Serial.printf("[BUTTON] Red pressed -> Bluetooth %s.\n", bluetoothState ? "ON" : "OFF");
+        
+        if (bluetoothState) {
+          setAudioPower(true);
+          // Play Bluetooth Active (Track 3)
+          playDFTrack(TRACK_BLUETOOTH_ACTIVE, "bluetooth_on");
+        } else {
+          // Play Bluetooth Off (Track 13)
+          playDFTrack(TRACK_BLUETOOTH_OFF, "bluetooth_off");
+          audioPowerOffAt = millis() + 2500; // Turn off audio power after 2.5 seconds (sound finished)
+        }
+      }
+    }
+  }
 }
 
 // ==========================================================
@@ -1187,6 +1229,22 @@ void loop() {
   checkMQ2();
   checkPIR();
   printSensorStatus();
+
+  // Auto off relay 1 & 2 after 1 minute (60000 ms)
+  if (relay1State && (millis() - relay1TurnedOnAt >= RELAY_AUTO_OFF_MS)) {
+    Serial.println("[AUTO OFF] Relay 1 otomatis mati setelah 1 menit.");
+    setRelay1(false);
+  }
+  if (relay2State && (millis() - relay2TurnedOnAt >= RELAY_AUTO_OFF_MS)) {
+    Serial.println("[AUTO OFF] Relay 2 otomatis mati setelah 1 menit.");
+    setRelay2(false);
+  }
+
+  // Non-blocking timer to turn off BT amplifier after track 13 finishes
+  if (audioPowerOffAt > 0 && millis() >= audioPowerOffAt) {
+    setAudioPower(false);
+    audioPowerOffAt = 0;
+  }
 
   delay(5);
 }

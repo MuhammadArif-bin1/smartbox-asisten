@@ -15,6 +15,62 @@ export function useSmartbox(): SmartboxContextValue {
   return ctx;
 }
 
+function speakFallback(trackNum: number) {
+  const trackTexts: Record<number, string> = {
+    1: "Smartbox siap digunakan",
+    2: "Menampilkan jam dan suhu real-time",
+    3: "Bluetooth diaktifkan",
+    4: "Selamat pagi tuan",
+    5: "Selamat siang tuan",
+    6: "Selamat sore tuan",
+    7: "Asap terdeteksi",
+    8: "Gas terdeteksi",
+    9: "Suhu terdeteksi",
+    10: "Gerakan berjalan terdeteksi",
+    11: "Gerakan melompat terdeteksi",
+    12: "Gerakan melambaikan tangan terdeteksi",
+    13: "Bluetooth dimatikan",
+    14: "Halo Aero",
+    15: "Perkenalkan saya Aero assistantmu",
+  };
+
+  const text = trackTexts[trackNum] || `Memutar track audio ${trackNum}`;
+  if (typeof window !== "undefined" && "speechSynthesis" in window) {
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = "id-ID";
+    window.speechSynthesis.speak(utterance);
+  }
+}
+
+function playTrackAudio(trackNum: number) {
+  const trackFiles: Record<number, string> = {
+    1: "/generated/track_01_smartbox_siap_digunakan.mp3",
+    2: "/generated/track_02_menampilkan_jam_suhu.mp3",
+    3: "/generated/track_03_bluetooth_diaktifkan.mp3",
+    4: "/generated/track_04_selamat_pagi.mp3",
+    5: "/generated/track_05_selamat_siang.mp3",
+    6: "/generated/track_06_selamat_sore.mp3",
+    7: "/generated/track_07_asap_terdeteksi.mp3",
+    8: "/generated/track_08_gas_terdeteksi.mp3",
+    9: "/generated/track_09_suhu_terdeteksi.wav",
+    10: "/generated/track_10_gerakan_berjalan.wav",
+    11: "/generated/track_11_gerakan_melompat.wav",
+    12: "/generated/track_12_gerakan_melambaikan_tangan.mp3",
+  };
+
+  const file = trackFiles[trackNum];
+  if (file) {
+    const audio = new Audio(file);
+    audio.play().catch((err) => {
+      console.warn("Failed to play track file, falling back to speech synthesis:", err);
+      speakFallback(trackNum);
+    });
+  } else {
+    speakFallback(trackNum);
+  }
+}
+
 /* ─── Provider ─── */
 export function SmartboxProvider({ children }: { children: ReactNode }) {
   /* ── Auth ── */
@@ -483,6 +539,7 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
           client?.subscribe(`smartbox/${deviceId}/status`);
           client?.subscribe(`smartbox/${deviceId}/event`);
           client?.subscribe(`smartbox/${deviceId}/ack`);
+          client?.subscribe(`smartbox/${deviceId}/cmd`);
         });
 
         client.on("message", (topic, payload) => {
@@ -496,7 +553,29 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
             return;
           }
 
-          if (topicStr.endsWith("/status")) {
+          if (topicStr.endsWith("/cmd")) {
+            if (data.type === "voice.play") {
+              const trackNum = Number(data.payload?.track);
+              if (!isNaN(trackNum)) {
+                playTrackAudio(trackNum);
+              }
+            } else if (data.type === "relay.set") {
+              const relayNum = Number(data.payload?.relay);
+              const state = data.payload?.state === true;
+              const autoOffSeconds = Number(data.payload?.autoOffSeconds || 0);
+              const rid = relayNum === 1 ? "socket1" : relayNum === 2 ? "socket2" : null;
+              if (rid) {
+                setRelayState((current) => ({ ...current, [rid]: state }));
+                if (state) {
+                  setRelayAutoOffAt((current) => ({ ...current, [rid]: Date.now() + (autoOffSeconds > 0 ? autoOffSeconds : 60) * 1000 }));
+                } else {
+                  setRelayAutoOffAt((current) => ({ ...current, [rid]: null }));
+                }
+              }
+            }
+          }
+
+          else if (topicStr.endsWith("/status")) {
             const isOnline = data.online === true;
             setDeviceStatus((current) => ({
               ...current,
@@ -871,32 +950,55 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!isDemoMode) return;
 
-    // Set initial values
-    setTempEstimate(28.2);
-    setGasEstimate(7200);
-    setGasLevel("normal");
-    setPirDetected(false);
+    // Set initial values if they are zero/default
+    setTempEstimate((prev) => (prev <= 0 ? 28.2 : prev));
+    setGasEstimate((prev) => (prev <= 0 ? 120 : prev));
+    setGasLevel((prev) => (prev === "Offline" || prev === "Tidak Terhubung" ? "normal" : prev));
+    setPirDetected((prev) => (prev === null ? false : prev));
     setTelemetrySource("Simulasi Hardware");
 
+    let pirTimerCount = 0;
+
     const interval = setInterval(() => {
-      // Simulate temperature around 27.5 - 29.0 C
-      const baseTemp = 28.2;
-      const tRandom = (Math.random() - 0.5) * 1.2;
-      const nextTemp = roundTemperature(baseTemp + tRandom);
-      setTempEstimate(nextTemp);
-      setTempHistory((current) => [...current.slice(-23), nextTemp]);
+      // Fluctuate temperature around current value
+      setTempEstimate((current) => {
+        const base = current > 0 ? current : 28.2;
+        const change = (Math.random() - 0.5) * 0.4;
+        const next = roundTemperature(Math.max(20, Math.min(45, base + change)));
+        setTempHistory((history) => [...history.slice(-23), next]);
+        return next;
+      });
 
-      // Simulate gas PPM around 110 - 140 (raw 6600 - 8400)
-      const baseGasRaw = 7200;
-      const gRandom = Math.round((Math.random() - 0.5) * 800);
-      const nextGasRaw = baseGasRaw + gRandom;
-      setGasEstimate(nextGasRaw);
-      setGasLevel("normal");
-      setGasHistory((current) => [...current.slice(-23), nextGasRaw]);
+      // Fluctuate gas raw around current value
+      setGasEstimate((current) => {
+        const base = current > 0 ? current : 120;
+        const change = Math.round((Math.random() - 0.5) * 20);
+        const next = Math.max(50, Math.min(4000, base + change));
+        
+        // Update gas level based on value
+        const level = next >= GAS_WARNING_RAW ? "bahaya" : "normal";
+        setGasLevel(level);
+        
+        setGasHistory((history) => [...history.slice(-23), next]);
+        return next;
+      });
 
-      // Randomly trigger PIR motion detection once in a while (e.g. 15% chance)
-      const motion = Math.random() < 0.15;
-      setPirDetected(motion);
+      // PIR state machine: if triggered, keep it on for 3 ticks (9 seconds), then turn off
+      setPirDetected((current) => {
+        if (current === true) {
+          pirTimerCount++;
+          if (pirTimerCount >= 3) {
+            pirTimerCount = 0;
+            return false;
+          }
+          return true;
+        } else {
+          // Small chance of random motion trigger
+          const trigger = Math.random() < 0.08;
+          if (trigger) pirTimerCount = 0;
+          return trigger;
+        }
+      });
 
       setTelemetrySource("Simulasi Hardware");
     }, 3000);
@@ -1002,6 +1104,7 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
     saveRelaySchedule, deleteRelaySchedule,
     onSaveSchedule: saveAlarmSchedule, onDeleteSchedule: deleteAlarmSchedule, onToggleScheduleActive: toggleAlarmScheduleActive, onTestPlayVoice: testPlayVoice,
     isDemoMode, setIsDemoMode: toggleDemoMode,
+    setTempEstimate, setGasEstimate, setPirDetected, setGasLevel,
   };
 
   return <SmartboxContext.Provider value={value}>{children}</SmartboxContext.Provider>;

@@ -180,7 +180,6 @@ async function syncActuatorState(deviceId: string, patch: ActuatorPatch) {
     console.error(`[Worker] Error saving actuator SensorReading for ${deviceId}:`, err);
   });
 }
-
 client.on("connect", () => {
   console.log("[Worker] Connected to MQTT broker!");
   
@@ -189,8 +188,9 @@ client.on("connect", () => {
   client.subscribe("smartbox/+/event", { qos: 1 });
   client.subscribe("smartbox/+/ack", { qos: 1 });
   client.subscribe("smartbox/+/status", { qos: 1 });
+  client.subscribe("smartbox/+/cmd", { qos: 1 });
   
-  console.log("[Worker] Subscribed to wildcard topics: smartbox/+/telemetry, event, ack, status");
+  console.log("[Worker] Subscribed to wildcard topics: smartbox/+/telemetry, event, ack, status, cmd");
 
   // Automatically request device status on connect & force online status
   try {
@@ -220,12 +220,69 @@ client.on("message", async (topic, message, packet) => {
     const data = JSON.parse(payloadStr);
 
     if (messageType === "status") {
-      // Force status to be true (ONLINE) as requested
       const isOnline = true;
       console.log(`[Worker] Device ${deviceId} status changed to: ONLINE (Forced)`);
       await syncDeviceStatus(deviceId, isOnline);
     }
     
+    else if (messageType === "cmd") {
+      const { type: cmdType, payload: cmdPayload, id: cmdId } = data;
+      console.log(`[Worker Sim] Intercepted cmd: ${cmdType} on device ${deviceId}`);
+
+      // Publish ACK back
+      client.publish(`smartbox/${deviceId}/ack`, JSON.stringify({ id: cmdId, ok: true, message: `Command ${cmdType} accepted` }), { qos: 1 });
+
+      if (cmdType === "relay.set") {
+        const relayNum = cmdPayload.relay;
+        const state = cmdPayload.state === true;
+        const autoOffSeconds = cmdPayload.autoOffSeconds;
+
+        // Update database
+        const actuatorPatch: ActuatorPatch = {};
+        if (relayNum === 1) actuatorPatch.relay1 = state;
+        if (relayNum === 2) actuatorPatch.relay2 = state;
+        await syncActuatorState(deviceId, actuatorPatch);
+
+        // Publish event to notify dashboard
+        client.publish(`smartbox/${deviceId}/event`, JSON.stringify({
+          type: "relay.updated",
+          payload: { relay: relayNum, state: state, autoOffSeconds }
+        }), { qos: 1 });
+
+        console.log(`[Worker Sim] Handled relay.set command: Relay ${relayNum} -> ${state ? "ON" : "OFF"}`);
+      }
+
+      else if (cmdType === "bluetooth.set") {
+        const state = cmdPayload.state === true;
+
+        // Update database
+        await syncActuatorState(deviceId, { bluetoothAudio: state });
+
+        // Publish event
+        client.publish(`smartbox/${deviceId}/event`, JSON.stringify({
+          type: state ? "bluetooth.on" : "bluetooth.off",
+          payload: { state }
+        }), { qos: 1 });
+
+        console.log(`[Worker Sim] Handled bluetooth.set command -> ${state ? "ON" : "OFF"}`);
+      }
+
+      else if (cmdType === "buzzer.set") {
+        const state = cmdPayload.state === true;
+
+        // Update database
+        await syncActuatorState(deviceId, { buzzer: state });
+
+        // Publish event
+        client.publish(`smartbox/${deviceId}/event`, JSON.stringify({
+          type: "buzzer.updated",
+          payload: { state }
+        }), { qos: 1 });
+
+        console.log(`[Worker Sim] Handled buzzer.set command -> ${state ? "ON" : "OFF"}`);
+      }
+    }
+
     else if (messageType === "telemetry") {
       clearPendingRetainedOffline(deviceId);
       const {

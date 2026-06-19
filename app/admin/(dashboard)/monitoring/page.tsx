@@ -29,6 +29,15 @@ export default function MonitoringPage() {
                   <path strokeLinecap="round" strokeLinejoin="round" d="M14 4v10.5a4.5 4.5 0 11-4 0V4a2 2 0 114 0z" />
                 </svg>
               }
+              onClick={() => {
+                if (!ctx.isDemoMode) {
+                  ctx.setIsDemoMode(true);
+                }
+                const isHigh = ctx.visibleTempEstimate > 35;
+                const nextTemp = isHigh ? 28.1 : 42.5;
+                ctx.setTempEstimate(nextTemp);
+                ctx.notify(`[Simulasi] Suhu diatur ke ${isHigh ? "Normal" : "Tinggi (Peringatan)"}: ${nextTemp}°C`, "success");
+              }}
             />
             <DetailedSensorCard
               title="Sensor Gas / Asap"
@@ -43,6 +52,16 @@ export default function MonitoringPage() {
                   <path strokeLinecap="round" strokeLinejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
                 </svg>
               }
+              onClick={() => {
+                if (!ctx.isDemoMode) {
+                  ctx.setIsDemoMode(true);
+                }
+                const isDangerous = ctx.gasState === "Bahaya" || ctx.visibleGasEstimate >= 1800;
+                const nextGasRaw = isDangerous ? 120 : 3500;
+                ctx.setGasEstimate(nextGasRaw);
+                ctx.setGasLevel(isDangerous ? "normal" : "bahaya");
+                ctx.notify(`[Simulasi] Sensor Gas diatur ke ${isDangerous ? "Aman (2 PPM)" : "Bahaya (58 PPM)"}`, "success");
+              }}
             />
             <DetailedSensorCard
               title="Gerakan PIR"
@@ -56,6 +75,14 @@ export default function MonitoringPage() {
                   <path strokeLinecap="round" strokeLinejoin="round" d="M12 4a1 1 0 100-2 1 1 0 000 2zM8 9h8a1.5 1.5 0 011.5 1.5v6M9 22V15m6 7v-7M12 9v6" />
                 </svg>
               }
+              onClick={() => {
+                if (!ctx.isDemoMode) {
+                  ctx.setIsDemoMode(true);
+                }
+                const nextPir = !ctx.pirDetected;
+                ctx.setPirDetected(nextPir);
+                ctx.notify(`[Simulasi] PIR: ${nextPir ? "Ada Gerakan" : "Aman"}`, "success");
+              }}
             />
           </div>
         </Panel>

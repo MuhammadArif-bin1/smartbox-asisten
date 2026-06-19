@@ -204,4 +204,9 @@ export type SmartboxContextValue = {
   setToast: (toast: Toast | null) => void;
   isDemoMode: boolean;
   setIsDemoMode: (value: boolean) => void;
+  setTempEstimate: (val: number) => void;
+  setGasEstimate: (val: number) => void;
+  setPirDetected: (val: boolean | null) => void;
+  setGasLevel: (val: string) => void;
 };
+

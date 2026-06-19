@@ -8,6 +8,7 @@ export function DetailedSensorCard({
   online,
   accent,
   icon,
+  onClick,
 }: {
   title: string;
   value: string;
@@ -16,6 +17,7 @@ export function DetailedSensorCard({
   online: boolean;
   accent: "blue" | "emerald" | "orange";
   icon: React.ReactNode;
+  onClick?: () => void;
 }) {
   const accentBorder = {
     blue: "border-blue-100 hover:border-blue-200",
@@ -30,7 +32,12 @@ export function DetailedSensorCard({
   };
 
   return (
-    <div className={`rounded-3xl border bg-white p-6 shadow-sm transition-shadow duration-200 hover:shadow-md ${accentBorder[accent] || "border-slate-200"} flex flex-col justify-between min-h-[170px]`}>
+    <div 
+      onClick={onClick}
+      className={`rounded-3xl border bg-white p-6 shadow-sm transition-all duration-200 hover:shadow-md flex flex-col justify-between min-h-[170px] ${
+        onClick ? "cursor-pointer hover:border-slate-400 active:scale-[0.98]" : ""
+      } ${accentBorder[accent] || "border-slate-200"}`}
+    >
       <div className="flex items-center justify-between">
         <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">{title}</span>
         <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ${accentBg[accent]}`}>
@@ -62,6 +69,11 @@ export function DetailedSensorCard({
             {lastSeen && lastSeen !== "-" ? `Update: ${lastSeen}` : (online ? "Update: Baru saja" : "Belum terhubung")}
           </span>
         </div>
+        {onClick && (
+          <div className="mt-2 text-right">
+            <span className="text-[10px] text-slate-300 font-bold uppercase tracking-wider">Klik untuk simulasi</span>
+          </div>
+        )}
       </div>
     </div>
   );
