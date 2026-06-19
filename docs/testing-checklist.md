@@ -4,6 +4,48 @@
 
 ---
 
+## ⚠️ Panduan Flash & Sinkronisasi Firmware Baru
+
+### Langkah Flash Firmware Baru
+- [ ] Buka Arduino IDE.
+- [ ] Pilih board: **ESP32S3 Dev Module** (atau board ESP32-S3 yang sesuai).
+- [ ] Pilih port COM yang benar.
+- [ ] Buka Serial Monitor (baud rate: 115200).
+- [ ] Klik **Upload (Flash)** firmware baru.
+- [ ] **Verifikasi Setelah Upload:**
+  - [ ] Serial Monitor wajib menampilkan log berikut saat boot:
+    ```txt
+    ======================================
+    SMARTBOX ASSISTANT ESP32-S3
+    FIRMWARE VERSION: SMARTBOX_VIVO_Y29_SYNC_V2
+    WIFI TARGET: vivo Y29
+    BACKEND TARGET IP: 10.48.31.49
+    ======================================
+    ```
+  - [ ] LCD 16x2 wajib menampilkan tulisan berikut selama 4 detik:
+    ```txt
+    FW VIVO Y29
+    SYNC V2
+    ```
+    *Jika tidak muncul, berarti firmware baru belum masuk.*
+
+### Solusi jika Masih Muncul IP Lama (192.168.1.4)
+Jika setelah di-upload status di worker masih mendeteksi IP `192.168.1.4` (artinya kredensial Wi-Fi lama masih tersimpan di memori NVS flash ESP32):
+- [ ] **Erase Flash via Arduino IDE:**
+  - [ ] Buka menu `Tools` > `Erase Flash` > Pilih `All Flash Contents`.
+  - [ ] Lakukan Upload ulang firmware.
+- [ ] **Erase Flash via Command Line (jika menu di IDE tidak ada):**
+  - [ ] Jalankan command berikut (sesuaikan port COM):
+    ```bash
+    python -m esptool --chip esp32s3 --port COM6 erase_flash
+    ```
+  - [ ] Upload ulang firmware setelah proses erase selesai.
+- [ ] **Cek ESP32 Lain:**
+  - [ ] Pastikan tidak ada ESP32 lain dengan Device ID `smartbox-001` yang menyala dan terhubung ke router lama Anda.
+  - [ ] Jika perlu, Anda dapat mengganti `DEVICE_ID` menjadi `"smartbox-001-test"` untuk verifikasi terpisah.
+
+---
+
 ## Persiapan Hardware
 
 - [ ] ESP32-S3 DevKitC-1 terhubung ke komputer via USB

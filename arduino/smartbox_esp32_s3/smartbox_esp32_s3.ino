@@ -41,19 +41,26 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <DFRobotDFPlayerMini.h>
+#include <HTTPClient.h>
 #include <LiquidCrystal_I2C.h>
 #include <PubSubClient.h>
 #include <RTClib.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <Wire.h>
+#include <driver/i2s.h>
+
 
 // ==========================================================
 // WIFI + MQTT CONFIG
 // ==========================================================
-// GANTI SESUAI WIFI DAN MQTT KAMU
+#define FIRMWARE_VERSION "SMARTBOX_VIVO_Y29_SYNC_V2"
+#define WIFI_TARGET_NAME "vivo Y29"
+#define BACKEND_TARGET_IP "10.48.31.49"
+
 const char *WIFI_SSID = "vivo Y29";
 const char *WIFI_PASS = "12345678";
+const char *AI_BACKEND_URL = "http://10.48.31.49:3000/api/gemini/chat-audio";
 
 const char *MQTT_HOST =
     "wss://6559400ba6c741398aa7048b471d5a31.s1.eu.hivemq.cloud:8884/mqtt";
@@ -112,8 +119,10 @@ String topicStatus() { return "smartbox/" + String(DEVICE_ID) + "/status"; }
 #define PT_DOUT 17
 
 // Relay Stop Kontak
-#define RELAY_1_PIN 21
-#define RELAY_2_PIN 47
+#define RELAY_21 21
+#define RELAY_47 47
+#define RELAY_1_PIN RELAY_21
+#define RELAY_2_PIN RELAY_47
 
 // RGB onboard
 #define RGB_PIN 48
@@ -239,6 +248,26 @@ bool blackLongPressHandled = false;
 const unsigned long BUTTON_DEBOUNCE_MS = 250;
 const unsigned long BLACK_LONG_PRESS_MS = 1500;
 
+// Voice queue state
+#define VOICE_QUEUE_MAX 5
+uint8_t voiceQueue[VOICE_QUEUE_MAX];
+int voiceQueueSize = 0;
+const char *voiceQueueReasons[VOICE_QUEUE_MAX];
+bool isVoicePlaying = false;
+
+// Voice recording state
+#define WAV_HEADER_SIZE 44
+#define SAMPLE_RATE 16000
+#define MAX_RECORDING_TIME_SEC 5
+#define RECORD_BUFFER_SIZE                                                     \
+  (WAV_HEADER_SIZE + (SAMPLE_RATE * 2 * MAX_RECORDING_TIME_SEC))
+
+uint8_t *audioBuffer = nullptr;
+int recordedBytes = 0;
+volatile bool isRecording = false;
+volatile bool recordRequestStop = false;
+TaskHandle_t recordTaskHandle = NULL;
+
 // ==========================================================
 // LCD HELPER
 // ==========================================================
@@ -272,12 +301,216 @@ void showLCD(String line1, String line2) {
   Serial.println(line2);
 }
 
+void setLcdOverride(String line1, String line2, unsigned long duration) {
+  showLCD(line1, line2);
+  delay(duration);
+}
+
 // ==========================================================
 // RGB HELPER
 // ==========================================================
 void setRGB(uint8_t r, uint8_t g, uint8_t b) {
   rgb.setPixelColor(0, rgb.Color(r, g, b));
   rgb.show();
+}
+
+// ==========================================================
+// VOICE QUEUE FUNCTIONS
+// ==========================================================
+void queueVoice(uint8_t track, const char *reason) {
+  if (voiceQueueSize < VOICE_QUEUE_MAX) {
+    voiceQueue[voiceQueueSize] = track;
+    voiceQueueReasons[voiceQueueSize] = reason;
+    voiceQueueSize++;
+    Serial.printf("[QUEUE] Queued track %d. Queue size: %d\n", track,
+                  voiceQueueSize);
+  } else {
+    Serial.println("[QUEUE] Queue full!");
+  }
+}
+
+void processVoiceQueue() {
+  if (voiceQueueSize > 0) {
+    uint8_t nextTrack = voiceQueue[0];
+    const char *reason = voiceQueueReasons[0];
+
+    // Shift queue
+    for (int i = 1; i < voiceQueueSize; i++) {
+      voiceQueue[i - 1] = voiceQueue[i];
+      voiceQueueReasons[i - 1] = voiceQueueReasons[i];
+    }
+    voiceQueueSize--;
+
+    playVoice(nextTrack, reason);
+  }
+}
+
+// ==========================================================
+// I2S / AUDIO RECORDING FUNCTIONS
+// ==========================================================
+void initI2S() {
+  i2s_config_t i2s_config = {
+      .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
+      .sample_rate = SAMPLE_RATE,
+      .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+      .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT, // INMP441 mono left channel
+      .communication_format = i2s_comm_format_t(I2S_COMM_FORMAT_STAND_I2S),
+      .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+      .dma_buf_count = 8,
+      .dma_buf_len = 64,
+      .use_apll = false};
+
+  i2s_pin_config_t pin_config = {.bck_io_num = MIC_SCK,
+                                 .ws_io_num = MIC_WS,
+                                 .data_out_num = I2S_PIN_NO_CHANGE,
+                                 .data_in_num = MIC_SD};
+
+  i2s_driver_install(I2S_NUM_0, &i2s_config, 0, NULL);
+  i2s_set_pin(I2S_NUM_0, &pin_config);
+
+  i2s_zero_dma_buffer(I2S_NUM_0);
+}
+
+void deinitI2S() { i2s_driver_uninstall(I2S_NUM_0); }
+
+void writeWavHeader(uint8_t *header, int totalAudioLen) {
+  int totalDataLen = totalAudioLen + 36;
+  int byteRate = SAMPLE_RATE * 2; // 16000 * 1 channel * 16-bit / 8
+
+  header[0] = 'R'; // RIFF
+  header[1] = 'I';
+  header[2] = 'F';
+  header[3] = 'F';
+  header[4] = (totalDataLen & 0xff);
+  header[5] = ((totalDataLen >> 8) & 0xff);
+  header[6] = ((totalDataLen >> 16) & 0xff);
+  header[7] = ((totalDataLen >> 24) & 0xff);
+  header[8] = 'W'; // WAVE
+  header[9] = 'A';
+  header[10] = 'V';
+  header[11] = 'E';
+  header[12] = 'f'; // fmt
+  header[13] = 'm';
+  header[14] = 't';
+  header[15] = ' ';
+  header[16] = 16; // size of fmt chunk
+  header[17] = 0;
+  header[18] = 0;
+  header[19] = 0;
+  header[20] = 1; // format = 1 (PCM)
+  header[21] = 0;
+  header[22] = 1; // mono
+  header[23] = 0;
+  header[24] = (SAMPLE_RATE & 0xff);
+  header[25] = ((SAMPLE_RATE >> 8) & 0xff);
+  header[26] = ((SAMPLE_RATE >> 16) & 0xff);
+  header[27] = ((SAMPLE_RATE >> 24) & 0xff);
+  header[28] = (byteRate & 0xff);
+  header[29] = ((byteRate >> 8) & 0xff);
+  header[30] = ((byteRate >> 16) & 0xff);
+  header[31] = ((byteRate >> 24) & 0xff);
+  header[32] = 2; // block align
+  header[33] = 0;
+  header[34] = 16; // bits per sample
+  header[35] = 0;
+  header[36] = 'd'; // data
+  header[37] = 'a';
+  header[38] = 't';
+  header[39] = 'a';
+  header[40] = (totalAudioLen & 0xff);
+  header[41] = ((totalAudioLen >> 8) & 0xff);
+  header[42] = ((totalAudioLen >> 16) & 0xff);
+  header[43] = ((totalAudioLen >> 24) & 0xff);
+}
+
+void recordTask(void *pvParameters) {
+  audioBuffer = (uint8_t *)malloc(RECORD_BUFFER_SIZE);
+  if (!audioBuffer) {
+    Serial.println("[RECORD] Gagal alokasi buffer audio");
+    isRecording = false;
+    vTaskDelete(NULL);
+    return;
+  }
+
+  initI2S();
+  recordedBytes = 0;
+  recordRequestStop = false;
+
+  Serial.println("[RECORD] Merekam...");
+
+  // Skip 100ms awal untuk menghindari noise
+  size_t bytesRead;
+  uint8_t tempBuf[512];
+  for (int i = 0; i < 6; i++) {
+    i2s_read(I2S_NUM_0, tempBuf, sizeof(tempBuf), &bytesRead, portMAX_DELAY);
+  }
+
+  while (!recordRequestStop &&
+         recordedBytes < (RECORD_BUFFER_SIZE - WAV_HEADER_SIZE)) {
+    size_t bytesToRead = 1024;
+    if ((RECORD_BUFFER_SIZE - WAV_HEADER_SIZE) - recordedBytes < bytesToRead) {
+      bytesToRead = (RECORD_BUFFER_SIZE - WAV_HEADER_SIZE) - recordedBytes;
+    }
+
+    i2s_read(I2S_NUM_0, audioBuffer + WAV_HEADER_SIZE + recordedBytes,
+             bytesToRead, &bytesRead, portMAX_DELAY);
+    recordedBytes += bytesRead;
+
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+
+  Serial.printf("[RECORD] Selesai. Ukuran: %d bytes\n", recordedBytes);
+  deinitI2S();
+
+  if (recordedBytes > 0) {
+    writeWavHeader(audioBuffer, recordedBytes);
+  }
+
+  isRecording = false;
+  vTaskDelete(NULL);
+}
+
+void sendAudioToBackend() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[HTTP] WiFi terputus");
+    showLCD("AI ASSISTANT", "BELUM AKTIF");
+    return;
+  }
+
+  showLCD("MENGIRIM AUDIO", "MOHON TUNGGU...");
+
+  HTTPClient http;
+  http.begin(AI_BACKEND_URL);
+  http.addHeader("Content-Type", "audio/wav");
+  http.addHeader("x-device-id", DEVICE_ID);
+  http.addHeader("x-source", "black_button_long_press");
+
+  Serial.printf("[HTTP] POST %d bytes ke %s\n", WAV_HEADER_SIZE + recordedBytes,
+                AI_BACKEND_URL);
+  int httpResponseCode =
+      http.POST(audioBuffer, WAV_HEADER_SIZE + recordedBytes);
+
+  if (httpResponseCode > 0) {
+    String response = http.getString();
+    Serial.printf("[HTTP] Kode respon: %d\n", httpResponseCode);
+    Serial.println("[HTTP] Respon: " + response);
+
+    if (httpResponseCode == 200) {
+      showLCD("AI RESPONDED", "SUKSES");
+    } else {
+      showLCD("AI ASSISTANT", "BELUM AKTIF");
+    }
+  } else {
+    Serial.printf("[HTTP] POST gagal: %s\n",
+                  http.errorToString(httpResponseCode).c_str());
+    showLCD("AI ASSISTANT", "BELUM AKTIF");
+  }
+  http.end();
+
+  if (audioBuffer) {
+    free(audioBuffer);
+    audioBuffer = nullptr;
+  }
 }
 
 // ==========================================================
@@ -326,10 +559,16 @@ void publishEvent(const char *level, const char *type, const char *message) {
 }
 
 void publishStatus(bool online) {
-  StaticJsonDocument<256> doc;
+  StaticJsonDocument<512> doc;
 
   doc["deviceId"] = DEVICE_ID;
   doc["online"] = online;
+  doc["firmwareVersion"] = FIRMWARE_VERSION;
+  doc["ssid"] = WiFi.SSID();
+  doc["ip"] = WiFi.localIP().toString();
+  doc["backendIp"] = BACKEND_TARGET_IP;
+  doc["mac"] = WiFi.macAddress();
+  doc["rssi"] = WiFi.RSSI();
   doc["millis"] = millis();
 
   publishJson(topicStatus(), doc, true);
@@ -431,14 +670,18 @@ void playVoice(uint8_t track, const char *reason) {
   if (!dfReady) {
     Serial.println("[DFPLAYER] Belum ready.");
     showLCD("DFPLAYER ERROR", "BELUM READY");
+    isVoicePlaying = false;
     return;
   }
 
   if (track < 1 || track > DFPLAYER_MAX_TRACK) {
     Serial.println("[DFPLAYER] Track invalid.");
     showLCD("TRACK ERROR", "1 SAMPAI 15");
+    isVoicePlaying = false;
     return;
   }
+
+  isVoicePlaying = true;
 
   const char *line1;
   const char *line2;
@@ -542,11 +785,15 @@ void debugDFPlayerEvent() {
     if (type == DFPlayerPlayFinished) {
       Serial.print("[DFPLAYER] Track selesai: ");
       Serial.println(value);
+      isVoicePlaying = false;
+      processVoiceQueue();
     }
 
     if (type == DFPlayerError) {
       Serial.print("[DFPLAYER] Error code: ");
       Serial.println(value);
+      isVoicePlaying = false;
+      processVoiceQueue();
     }
 
     Serial.println("======================================");
@@ -762,6 +1009,7 @@ void handleGasVoice() {
   if (!gasSensorEnabled)
     return;
 
+  static bool lastGasOrSmokeDetected = false;
   unsigned long now = millis();
 
   if (gasDetected && now - lastGasVoiceAt >= GAS_VOICE_COOLDOWN_MS) {
@@ -792,6 +1040,13 @@ void handleGasVoice() {
     setBuzzer(false);
     setRGB(0, 0, 80);
   }
+
+  bool currentGasOrSmoke = gasDetected || smokeDetected;
+  if (!currentGasOrSmoke && lastGasOrSmokeDetected) {
+    Serial.println("[SENSOR] Gas dan asap kembali normal.");
+    publishEvent("INFO", "gas.cleared", "Gas dan asap kembali normal.");
+  }
+  lastGasOrSmokeDetected = currentGasOrSmoke;
 }
 
 void handleTempVoice() {
@@ -825,6 +1080,9 @@ void handlePirVoice() {
     Serial.println("[PIR] Gerakan terdeteksi.");
     showLCD("GERAKAN", "TERDETEKSI");
 
+    // Publish event immediately for fast dashboard update
+    publishEvent("INFO", "pir.motion", "Gerakan PIR terdeteksi.");
+
     if (now - lastPirVoiceAt >= PIR_VOICE_COOLDOWN_MS) {
       lastPirVoiceAt = now;
 
@@ -832,9 +1090,6 @@ void handlePirVoice() {
       pirGreetingIndex = (pirGreetingIndex + 1) % 3;
 
       playVoice(track, "pir_greeting");
-
-      publishEvent("INFO", "pir.motion",
-                   "Gerakan PIR terdeteksi dan greeting diputar.");
     } else {
       Serial.println("[PIR] Cooldown aktif, suara tidak diputar.");
     }
@@ -1069,15 +1324,13 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
 // WIFI + MQTT CONNECT
 // ==========================================================
 void connectWiFi() {
-  if (WiFi.status() == WL_CONNECTED) {
-    wifiReady = true;
-    return;
-  }
-
   Serial.println();
   Serial.println("========== [WIFI CONNECT] ==========");
-  Serial.print("SSID: ");
+  Serial.print("[WIFI] Target SSID: ");
   Serial.println(WIFI_SSID);
+
+  WiFi.disconnect(true, true);
+  delay(1000);
 
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
@@ -1094,18 +1347,20 @@ void connectWiFi() {
 
   if (WiFi.status() == WL_CONNECTED) {
     wifiReady = true;
-
     Serial.println("[WIFI] Connected.");
-    Serial.print("[WIFI] IP: ");
+    Serial.print("[WIFI] SSID : ");
+    Serial.println(WiFi.SSID());
+    Serial.print("[WIFI] IP   : ");
     Serial.println(WiFi.localIP());
+    Serial.print("[WIFI] RSSI : ");
+    Serial.println(WiFi.RSSI());
 
-    showLCD("WIFI CONNECTED", WiFi.localIP().toString());
+    setLcdOverride("WIFI CONNECTED", WiFi.localIP().toString().c_str(), 3000);
     setRGB(0, 0, 255);
   } else {
     wifiReady = false;
-
-    Serial.println("[WIFI] Gagal connect.");
-    showLCD("WIFI ERROR", "CEK SSID PASS");
+    Serial.println("[WIFI ERROR] Gagal connect ke WiFi baru.");
+    setLcdOverride("WIFI ERROR", "CEK VIVO Y29", 3000);
     setRGB(255, 0, 0);
   }
 }
@@ -1179,6 +1434,16 @@ void checkRedButton() {
   redLastState = redNow;
 }
 
+void playAeroIntroSequence() {
+  if (!isVoicePlaying) {
+    playVoice(TRACK_AI_HELLO, "white_button_hello");
+    queueVoice(TRACK_AI_INTRO, "white_button_intro");
+  } else {
+    queueVoice(TRACK_AI_HELLO, "white_button_hello");
+    queueVoice(TRACK_AI_INTRO, "white_button_intro");
+  }
+}
+
 void checkWhiteButton() {
   bool whiteNow = digitalRead(WHITE_BTN_PIN);
 
@@ -1188,8 +1453,8 @@ void checkWhiteButton() {
     if (now - whiteLastPressAt > BUTTON_DEBOUNCE_MS) {
       whiteLastPressAt = now;
 
-      Serial.println("[BUTTON] WHITE pressed -> intro Aero.");
-      playVoice(TRACK_AI_INTRO, "white_button_intro");
+      Serial.println("[BUTTON] WHITE pressed -> Aero Intro Sequence.");
+      playAeroIntroSequence();
     }
   }
 
@@ -1211,14 +1476,40 @@ void checkBlackButton() {
     if (!blackLongPressHandled && now - blackPressedAt >= BLACK_LONG_PRESS_MS) {
       blackLongPressHandled = true;
 
-      Serial.println("[BUTTON] BLACK long press -> local AI greeting.");
-      showLCD("AI ASSISTANT", "HALLO TUAN");
-      playVoice(TRACK_AI_HELLO, "black_long_press");
+      Serial.println("[BUTTON] BLACK long press -> Start Recording.");
+      if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("[AI] WiFi tidak tersambung. AI assistant tidak aktif.");
+        showLCD("AI ASSISTANT", "BELUM AKTIF");
+      } else {
+        showLCD("MEREKAM SUARA...", "BICARA SEKARANG");
+        isRecording = true;
+        xTaskCreate(recordTask, "recordTask", 4096, NULL, 5, &recordTaskHandle);
+      }
     }
   }
 
   if (blackLastState == LOW && blackNow == HIGH) {
-    if (!blackLongPressHandled) {
+    if (blackLongPressHandled) {
+      Serial.println("[BUTTON] BLACK long press released -> Stop Recording.");
+      if (isRecording) {
+        recordRequestStop = true;
+        int waitCount = 0;
+        while (isRecording && waitCount < 100) {
+          delay(10);
+          waitCount++;
+        }
+      }
+
+      if (recordedBytes > 0 && audioBuffer != nullptr) {
+        sendAudioToBackend();
+      } else {
+        showLCD("AI ASSISTANT", "BELUM AKTIF");
+        if (audioBuffer) {
+          free(audioBuffer);
+          audioBuffer = nullptr;
+        }
+      }
+    } else {
       Serial.println("[BUTTON] BLACK quick press -> time temp.");
 
       if (rtcReady) {
@@ -1363,11 +1654,12 @@ void setup() {
   Serial.begin(115200);
   delay(2000);
 
-  Serial.println();
-  Serial.println("==================================================");
-  Serial.println("SMARTBOX ASSISTANT ESP32-S3 STARTING");
-  Serial.println("FIRMWARE: SMARTBOX_REALTIME_MQTT_DFPLAYER_V1");
-  Serial.println("==================================================");
+  Serial.println("======================================");
+  Serial.println("SMARTBOX ASSISTANT ESP32-S3");
+  Serial.println("FIRMWARE VERSION: SMARTBOX_VIVO_Y29_SYNC_V2");
+  Serial.println("WIFI TARGET: vivo Y29");
+  Serial.println("BACKEND TARGET IP: 10.48.31.49");
+  Serial.println("======================================");
 
   pinMode(MQ2_PIN, INPUT);
   pinMode(PIR_PIN, INPUT);
@@ -1402,6 +1694,8 @@ void setup() {
 
   initLCD();
   delay(500);
+
+  setLcdOverride("FW VIVO Y29", "SYNC V2", 4000);
 
   initRTC();
   delay(500);

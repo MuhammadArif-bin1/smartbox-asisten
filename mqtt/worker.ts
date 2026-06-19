@@ -207,6 +207,22 @@ client.on("message", async (topic, message, packet) => {
       const isRetainedOffline = !isOnline && packet?.retain === true;
       console.log(`[Worker] Device ${deviceId} status changed to: ${isOnline ? "ONLINE" : "OFFLINE"}`);
 
+      console.log("[Worker] Status received:", data);
+      console.log("[Worker] Firmware:", data.firmwareVersion ?? "UNKNOWN_OLD_FIRMWARE");
+      console.log("[Worker] SSID:", data.ssid ?? "-");
+      console.log("[Worker] ESP32 IP:", data.ip ?? "-");
+      console.log("[Worker] Backend IP:", data.backendIp ?? "-");
+      console.log("[Worker] MAC:", data.mac ?? "-");
+
+      if (!data.firmwareVersion) {
+        console.warn("[Worker] WARNING: ESP32 masih memakai firmware lama atau payload status lama.");
+      }
+
+      if (data.ip === "192.168.1.4") {
+        console.warn("[Worker] WARNING: ESP32 masih terhubung ke WiFi/router lama.");
+        console.warn("[Worker] Solusi: erase flash ESP32 lalu upload firmware SMARTBOX_VIVO_Y29_SYNC_V2.");
+      }
+
       if (isRetainedOffline) {
         scheduleRetainedOffline(deviceId);
         requestDeviceStatus(deviceId, "retained_offline");
