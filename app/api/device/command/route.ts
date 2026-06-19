@@ -14,18 +14,21 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Field deviceId, type, dan payload wajib diisi" }, { status: 400 });
     }
 
-    // Ensure the device exists
-    await prisma.device.upsert({
+    const existingDevice = await prisma.device.findUnique({
       where: { deviceId },
-      update: { lastSeenAt: new Date() },
-      create: {
-        id: deviceId, // Keep id = deviceId for backward compatibility
-        deviceId,
-        name: `SmartBox ${deviceId}`,
-        status: "online",
-        lastSeenAt: new Date(),
-      },
+      select: { deviceId: true },
     });
+
+    if (!existingDevice) {
+      await prisma.device.create({
+        data: {
+          id: deviceId, // Keep id = deviceId for backward compatibility
+          deviceId,
+          name: `SmartBox ${deviceId}`,
+          status: "offline",
+        },
+      });
+    }
 
     // 1. Simpan command ke DeviceCommand dengan status PENDING
     const command = await prisma.deviceCommand.create({

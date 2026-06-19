@@ -53,15 +53,14 @@
 // ==========================================================
 // WIFI + MQTT CONFIG
 // ==========================================================
-// Ganti sesuai WiFi kamu
-const char *WIFI_SSID = "ISI_NAMA_WIFI_KAMU";
-const char *WIFI_PASS = "ISI_PASSWORD_WIFI_KAMU";
+const char *WIFI_SSID = "BAGUS";
+const char *WIFI_PASS = "s4nsan15675";
 
-// MQTT credential tetap disiapkan, tetapi di versi ini belum dipakai
-const char *MQTT_HOST = "ISI_HOST_MQTT_KAMU";
+// MQTT credential HiveMQ Cloud
+const char *MQTT_HOST = "6559400ba6c741398aa7048b471d5a31.s1.eu.hivemq.cloud";
 const int MQTT_PORT = 8883;
-const char *MQTT_USER = "ISI_USER_MQTT_KAMU";
-const char *MQTT_PASS = "ISI_PASSWORD_MQTT_KAMU";
+const char *MQTT_USER = "smartbox001";
+const char *MQTT_PASS = "Smartbox123!";
 const char *DEVICE_ID = "smartbox-001";
 
 // ==========================================================
@@ -138,8 +137,10 @@ const char *DEVICE_ID = "smartbox-001";
 #define TRACK_GESTURE_JUMP 11
 #define TRACK_GESTURE_WAVE 12
 #define TRACK_BLUETOOTH_OFF 13
-#define TRACK_HALO_AERO 14
-#define TRACK_INTRO_AERO 15
+#define TRACK_AI_HELLO 14
+#define TRACK_AI_INTRO 15
+#define TRACK_HALO_AERO TRACK_AI_HELLO
+#define TRACK_INTRO_AERO TRACK_AI_INTRO
 
 #define DFPLAYER_MAX_TRACK 15
 
@@ -186,7 +187,6 @@ bool buzzerState = false;
 bool audioPowerState = false;
 
 bool lastPirState = false;
-unsigned long lastPirVoiceAt = 0;
 
 unsigned long lastSensorPrintAt = 0;
 
@@ -209,7 +209,7 @@ bool redStableState = HIGH;
 unsigned long redLastChangeAt = 0;
 
 // Bluetooth state
-bool bluetoothState = false;
+bool bluetoothState = true;
 
 // Relay auto-off variables (1 minute)
 unsigned long relay1TurnedOnAt = 0;
@@ -247,6 +247,12 @@ const unsigned long TEMP_VOICE_COOLDOWN_MS = 15000;
 unsigned long lastPirVoiceAt = 0;
 const unsigned long PIR_VOICE_COOLDOWN_MS = 8000;
 
+bool pirGreetingEnabled = true;
+int pirGreetingTrack = TRACK_GESTURE_WALK;
+unsigned long pirGreetingCooldownMs = PIR_VOICE_COOLDOWN_MS;
+String pirGreetingStart = "00:00";
+String pirGreetingEnd = "23:59";
+String pirGreetingPlayMode = "cycle";
 int pirGreetingIndex = 0;
 int pirTracks[] = {10, 11, 12};
 
@@ -648,12 +654,52 @@ void publishEvent(const char* level, const char* type, const char* message) {
   if (!mqttClient.connected()) return;
   
   StaticJsonDocument<256> doc;
+  doc["deviceId"] = DEVICE_ID;
   doc["level"] = level;
   doc["type"] = type;
   doc["message"] = message;
+  doc["millis"] = millis();
   
   String topic = "smartbox/" + String(DEVICE_ID) + "/event";
   char buffer[256];
+  serializeJson(doc, buffer);
+  mqttClient.publish(topic.c_str(), buffer);
+}
+
+void publishRelayUpdated(uint8_t relay, bool state, int autoOffSeconds) {
+  if (!mqttClient.connected()) return;
+
+  StaticJsonDocument<384> doc;
+  doc["deviceId"] = DEVICE_ID;
+  doc["level"] = "INFO";
+  doc["type"] = "relay.updated";
+  doc["message"] = "Relay state updated";
+  doc["millis"] = millis();
+  JsonObject payload = doc.createNestedObject("payload");
+  payload["relay"] = relay;
+  payload["state"] = state;
+  payload["autoOffSeconds"] = autoOffSeconds;
+
+  String topic = "smartbox/" + String(DEVICE_ID) + "/event";
+  char buffer[384];
+  serializeJson(doc, buffer);
+  mqttClient.publish(topic.c_str(), buffer);
+}
+
+void publishPirMotion(bool detected) {
+  if (!mqttClient.connected()) return;
+
+  StaticJsonDocument<384> doc;
+  doc["deviceId"] = DEVICE_ID;
+  doc["level"] = "INFO";
+  doc["type"] = "pir.motion";
+  doc["message"] = detected ? "Gerakan terdeteksi" : "Gerakan berhenti";
+  doc["millis"] = millis();
+  JsonObject payload = doc.createNestedObject("payload");
+  payload["pirDetected"] = detected;
+
+  String topic = "smartbox/" + String(DEVICE_ID) + "/event";
+  char buffer[384];
   serializeJson(doc, buffer);
   mqttClient.publish(topic.c_str(), buffer);
 }
@@ -679,28 +725,60 @@ void publishTelemetry() {
   float tempC = rtcReady ? rtc.getTemperature() : 28.0;
   bool pirNow = (digitalRead(PIR_PIN) == HIGH);
 
-  StaticJsonDocument<512> doc;
+  StaticJsonDocument<1024> doc;
   doc["deviceId"] = DEVICE_ID;
+  doc["ip"] = WiFi.localIP().toString();
+  doc["rssi"] = WiFi.RSSI();
   doc["gasEnabled"] = gasEnabled;
   doc["gasRaw"] = mq2Value;
   doc["gasLevel"] = (mq2Value > 2000) ? "gas" : ((mq2Value > MQ2_GAS_THRESHOLD) ? "smoke" : "normal");
   doc["tempEnabled"] = temperatureEnabled;
   doc["temperatureC"] = tempC;
+  doc["temperatureHigh"] = tempC >= 35.0;
   doc["pirDetected"] = pirNow;
   doc["obstacleNear"] = (digitalRead(IR_PIN) == LOW);
+  doc["pirEnabled"] = pirEnabled;
+  doc["pirGreetingEnabled"] = pirGreetingEnabled;
+  doc["pirGreetingTrack"] = pirGreetingTrack;
+  doc["pirGreetingStart"] = pirGreetingStart;
+  doc["pirGreetingEnd"] = pirGreetingEnd;
+  doc["sleepModeEnabled"] = sleepModeEnabled;
   doc["rtcReady"] = rtcReady;
   doc["lcdReady"] = lcdReady;
   doc["dfPlayerReady"] = dfPlayerReady;
   doc["relay1"] = relay1State;
   doc["relay2"] = relay2State;
+  doc["relay1AutoOffRemaining"] =
+      (relay1AutoOffActive && relay1AutoOffAt > millis()) ? (int)((relay1AutoOffAt - millis()) / 1000UL) : 0;
+  doc["relay2AutoOffRemaining"] =
+      (relay2AutoOffActive && relay2AutoOffAt > millis()) ? (int)((relay2AutoOffAt - millis()) / 1000UL) : 0;
   doc["bluetoothRelay"] = bluetoothState;
   doc["buzzer"] = buzzerState;
+  doc["dfTrackCount"] = DFPLAYER_MAX_TRACK;
+  doc["createdAt"] = nullptr;
 
-  char buffer[512];
+  char buffer[1024];
   serializeJson(doc, buffer);
   
   String topic = "smartbox/" + String(DEVICE_ID) + "/telemetry";
   mqttClient.publish(topic.c_str(), buffer);
+}
+
+void publishOnlineStatus(bool online) {
+  if (!mqttClient.connected()) return;
+
+  StaticJsonDocument<256> doc;
+  doc["deviceId"] = DEVICE_ID;
+  doc["online"] = online;
+  doc["ip"] = WiFi.localIP().toString();
+  doc["rssi"] = WiFi.RSSI();
+  doc["millis"] = millis();
+
+  char buffer[256];
+  serializeJson(doc, buffer);
+
+  String topic = "smartbox/" + String(DEVICE_ID) + "/status";
+  mqttClient.publish(topic.c_str(), buffer, true);
 }
 
 void reconnectMqtt() {
@@ -723,9 +801,8 @@ void reconnectMqtt() {
     String cmdTopic = "smartbox/" + String(DEVICE_ID) + "/cmd";
     mqttClient.subscribe(cmdTopic.c_str());
     
-    String statusTopic = "smartbox/" + String(DEVICE_ID) + "/status";
-    String statusMessage = "{\"online\":true,\"deviceId\":\"" + String(DEVICE_ID) + "\"}";
-    mqttClient.publish(statusTopic.c_str(), statusMessage.c_str(), true);
+    publishOnlineStatus(true);
+    publishTelemetry();
   } else {
     Serial.print("failed, rc=");
     Serial.println(mqttClient.state());
@@ -737,7 +814,7 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
   Serial.print(topic);
   Serial.println("]");
 
-  StaticJsonDocument<512> doc;
+  StaticJsonDocument<768> doc;
   DeserializationError error = deserializeJson(doc, payload, length);
   if (error) {
     Serial.print("deserializeJson() failed: ");
@@ -759,14 +836,15 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
   if (strcmp(cmdType, "relay.set") == 0) {
     int relayNum = payloadObj["relay"];
     bool state = payloadObj["state"];
-    int autoOffSeconds = payloadObj["autoOffSeconds"];
+    const char *source = payloadObj["source"] | "";
+    int autoOffSeconds = payloadObj["autoOffSeconds"] | (strcmp(source, "schedule") == 0 ? 0 : 60);
     
     if (relayNum == 1) {
-      setRelay1(state);
+      setRelay1WithAutoOff(state, autoOffSeconds);
       success = true;
       responseMsg = "Relay 1 set success";
     } else if (relayNum == 2) {
-      setRelay2(state);
+      setRelay2WithAutoOff(state, autoOffSeconds);
       success = true;
       responseMsg = "Relay 2 set success";
     }
@@ -806,9 +884,54 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
     pirEnabled = payloadObj["enabled"];
     success = true;
   }
+  else if (strcmp(cmdType, "pirGreeting.set") == 0) {
+    if (payloadObj["enabled"].is<bool>()) {
+      pirGreetingEnabled = payloadObj["enabled"];
+    }
+
+    int track = payloadObj["track"] | pirGreetingTrack;
+    if (track >= TRACK_GESTURE_WALK && track <= TRACK_GESTURE_WAVE) {
+      pirGreetingTrack = track;
+    }
+
+    int cooldownSeconds = payloadObj["cooldownSeconds"] | (int)(pirGreetingCooldownMs / 1000UL);
+    if (cooldownSeconds < 1) {
+      cooldownSeconds = 1;
+    }
+    pirGreetingCooldownMs = (unsigned long)cooldownSeconds * 1000UL;
+
+    const char *startTime = payloadObj["startTime"] | "";
+    if (strlen(startTime) > 0) {
+      pirGreetingStart = startTime;
+    }
+
+    const char *endTime = payloadObj["endTime"] | "";
+    if (strlen(endTime) > 0) {
+      pirGreetingEnd = endTime;
+    }
+
+    const char *playMode = payloadObj["playMode"] | "";
+    if (strlen(playMode) > 0) {
+      pirGreetingPlayMode = playMode;
+    }
+
+    success = true;
+    responseMsg = "PIR greeting updated";
+    publishEvent("INFO", "pir_greeting.updated", "Setting greeting PIR diperbarui.");
+  }
   else if (strcmp(cmdType, "sleepMode.set") == 0) {
     sleepModeEnabled = payloadObj["enabled"];
     success = true;
+  }
+  else if (strcmp(cmdType, "relaySchedule.set") == 0 || strcmp(cmdType, "relaySchedule.delete") == 0) {
+    success = true;
+    responseMsg = "Relay schedule handled by worker";
+  }
+  else if (strcmp(cmdType, "status.get") == 0 || strcmp(cmdType, "ping") == 0) {
+    publishOnlineStatus(true);
+    publishTelemetry();
+    success = true;
+    responseMsg = "Status published";
   }
 
   if (cmdId) {
@@ -832,14 +955,14 @@ void initRelays() {
   Serial.println("[RELAY] Ready OFF.");
 }
 
-void setRelay1(bool state) {
+void setRelay1WithAutoOff(bool state, int autoOffSeconds) {
   relay1State = state;
   digitalWrite(RELAY_1_PIN, state ? RELAY_ON : RELAY_OFF);
   if (state) {
     relay1TurnedOnAt = millis();
-    relay1AutoOffActive = true;
-    relay1AutoOffAt = millis() + 60000UL;
-    setLcdOverride("STOP KONTAK 1", "ON 1 MENIT", 4000);
+    relay1AutoOffActive = autoOffSeconds > 0;
+    relay1AutoOffAt = millis() + ((unsigned long)autoOffSeconds * 1000UL);
+    setLcdOverride("STOP KONTAK 1", autoOffSeconds > 0 ? "ON 1 MENIT" : "ON", 4000);
   } else {
     relay1TurnedOnAt = 0;
     relay1AutoOffActive = false;
@@ -848,16 +971,17 @@ void setRelay1(bool state) {
 
   Serial.print("[RELAY 1] ");
   Serial.println(state ? "ON" : "OFF");
+  publishRelayUpdated(1, state, state ? autoOffSeconds : 0);
 }
 
-void setRelay2(bool state) {
+void setRelay2WithAutoOff(bool state, int autoOffSeconds) {
   relay2State = state;
   digitalWrite(RELAY_2_PIN, state ? RELAY_ON : RELAY_OFF);
   if (state) {
     relay2TurnedOnAt = millis();
-    relay2AutoOffActive = true;
-    relay2AutoOffAt = millis() + 60000UL;
-    setLcdOverride("STOP KONTAK 2", "ON 1 MENIT", 4000);
+    relay2AutoOffActive = autoOffSeconds > 0;
+    relay2AutoOffAt = millis() + ((unsigned long)autoOffSeconds * 1000UL);
+    setLcdOverride("STOP KONTAK 2", autoOffSeconds > 0 ? "ON 1 MENIT" : "ON", 4000);
   } else {
     relay2TurnedOnAt = 0;
     relay2AutoOffActive = false;
@@ -866,6 +990,15 @@ void setRelay2(bool state) {
 
   Serial.print("[RELAY 2] ");
   Serial.println(state ? "ON" : "OFF");
+  publishRelayUpdated(2, state, state ? autoOffSeconds : 0);
+}
+
+void setRelay1(bool state) {
+  setRelay1WithAutoOff(state, state ? 60 : 0);
+}
+
+void setRelay2(bool state) {
+  setRelay2WithAutoOff(state, state ? 60 : 0);
 }
 
 void setRelay(int relayNum, bool state) {
@@ -1079,6 +1212,8 @@ void connectWiFi() {
 // MQ2 GAS / ASAP MONITORING
 // ==========================================================
 void checkMQ2() {
+  if (!gasEnabled) return;
+
   if (millis() - lastMq2CheckAt < 1000) return;
   lastMq2CheckAt = millis();
 
@@ -1106,9 +1241,8 @@ void checkMQ2() {
     if (gasAlertActive) {
       gasAlertActive = false;
       Serial.println("[MQ2] Gas/asap kembali normal.");
-      lcdShow("GAS NORMAL", "AMAN");
+      setLcdOverride("GAS NORMAL", "AMAN", 2000);
       publishEvent("INFO", "gas.cleared", "Gas dan asap kembali normal.");
-      delay(1500);
     }
   }
 }
@@ -1134,16 +1268,22 @@ void checkPIR() {
 
   if (pirNow && !lastPirState) {
     Serial.println("[PIR] Gerakan terdeteksi!");
-    publishEvent("INFO", "pir.motion", "Gerakan terdeteksi");
+    publishPirMotion(true);
 
-    if (millis() - lastPirVoiceAt >= PIR_VOICE_COOLDOWN_MS) {
+    if (pirGreetingEnabled && millis() - lastPirVoiceAt >= pirGreetingCooldownMs) {
       lastPirVoiceAt = millis();
 
-      int track = pirTracks[pirGreetingIndex];
-      pirGreetingIndex = (pirGreetingIndex + 1) % 3;
+      int track = pirGreetingTrack;
+      if (pirGreetingPlayMode == "cycle") {
+        track = pirTracks[pirGreetingIndex];
+        pirGreetingIndex = (pirGreetingIndex + 1) % 3;
+      }
 
       playVoice(track, "pir_greeting");
     }
+  }
+  else if (!pirNow && lastPirState) {
+    publishPirMotion(false);
   }
   lastPirState = pirNow;
 }
@@ -1519,6 +1659,7 @@ void loop() {
   // Telemetry publish loop
   if (millis() - lastTelemetryPublishAt >= TELEMETRY_PUBLISH_INTERVAL_MS) {
     lastTelemetryPublishAt = millis();
+    publishOnlineStatus(true);
     publishTelemetry();
   }
 

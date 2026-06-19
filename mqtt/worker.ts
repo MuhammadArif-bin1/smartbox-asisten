@@ -1,26 +1,12 @@
 import "dotenv/config";
 import mqtt from "mqtt";
 import { prisma } from "../lib/prisma.js";
-import os from "os";
-
-function getLocalIp(): string {
-  const interfaces = os.networkInterfaces();
-  for (const name of Object.keys(interfaces)) {
-    for (const iface of interfaces[name] || []) {
-      if (iface.family === "IPv4" && !iface.internal) {
-        return iface.address;
-      }
-    }
-  }
-  return "127.0.0.1";
-}
 
 const brokerUrl = process.env.MQTT_URL || process.env.MQTT_BROKER_URL || "mqtt://localhost:1883";
 const username = process.env.MQTT_USERNAME || process.env.NEXT_PUBLIC_MQTT_USERNAME;
 const password = process.env.MQTT_PASSWORD || process.env.NEXT_PUBLIC_MQTT_PASSWORD;
 const targetDeviceId = process.env.NEXT_PUBLIC_DEVICE_ID || "smartbox-001";
 const RETAINED_OFFLINE_GRACE_MS = Number(process.env.MQTT_RETAINED_OFFLINE_GRACE_MS || 8000);
-let lastRealTelemetryReceivedAt = 0;
 
 console.log(`[Worker] Starting MQTT worker connecting to: ${brokerUrl}`);
 
@@ -92,12 +78,12 @@ async function syncDeviceStatus(deviceId: string, isOnline: boolean) {
   await ensureDevice(deviceId, isOnline);
 
   await retryQuery(() => prisma.smartboxStatus.upsert({
-    where: { deviceId },
-    create: {
-      deviceId,
-      online: isOnline,
-      lastSeenAt: new Date(),
-    },
+      where: { deviceId },
+      create: {
+        deviceId,
+        online: isOnline,
+        lastSeenAt: new Date(),
+      },
     update: {
       online: isOnline,
       lastSeenAt: new Date(),
@@ -189,15 +175,11 @@ client.on("connect", () => {
   client.subscribe("smartbox/+/event", { qos: 1 });
   client.subscribe("smartbox/+/ack", { qos: 1 });
   client.subscribe("smartbox/+/status", { qos: 1 });
-  client.subscribe("smartbox/+/cmd", { qos: 1 });
   
-  console.log("[Worker] Subscribed to wildcard topics: smartbox/+/telemetry, event, ack, status, cmd");
+  console.log("[Worker] Subscribed to wildcard topics: smartbox/+/telemetry, event, ack, status");
 
-  // Automatically request device status on connect & force online status
+  // Automatically request device status on connect.
   try {
-    const onlinePayload = { deviceId: targetDeviceId, online: true };
-    client.publish(`smartbox/${targetDeviceId}/status`, JSON.stringify(onlinePayload), { qos: 1, retain: true });
-    console.log(`[Worker] Forced device ${targetDeviceId} status to ONLINE via MQTT`);
     requestDeviceStatus(targetDeviceId, "worker_connect");
   } catch (err) {
     console.error("[Worker] Failed to send status ping:", err);
@@ -221,74 +203,21 @@ client.on("message", async (topic, message, packet) => {
     const data = JSON.parse(payloadStr);
 
     if (messageType === "status") {
-      const isOnline = true;
-      console.log(`[Worker] Device ${deviceId} status changed to: ONLINE (Forced)`);
+      const isOnline = data.online === true;
+      const isRetainedOffline = !isOnline && packet?.retain === true;
+      console.log(`[Worker] Device ${deviceId} status changed to: ${isOnline ? "ONLINE" : "OFFLINE"}`);
+
+      if (isRetainedOffline) {
+        scheduleRetainedOffline(deviceId);
+        requestDeviceStatus(deviceId, "retained_offline");
+        return;
+      }
+
       await syncDeviceStatus(deviceId, isOnline);
-    }
-    
-    else if (messageType === "cmd") {
-      const { type: cmdType, payload: cmdPayload, id: cmdId } = data;
-      console.log(`[Worker Sim] Intercepted cmd: ${cmdType} on device ${deviceId}`);
-
-      // Publish ACK back
-      client.publish(`smartbox/${deviceId}/ack`, JSON.stringify({ id: cmdId, ok: true, message: `Command ${cmdType} accepted` }), { qos: 1 });
-
-      if (cmdType === "relay.set") {
-        const relayNum = cmdPayload.relay;
-        const state = cmdPayload.state === true;
-        const autoOffSeconds = cmdPayload.autoOffSeconds;
-
-        // Update database
-        const actuatorPatch: ActuatorPatch = {};
-        if (relayNum === 1) actuatorPatch.relay1 = state;
-        if (relayNum === 2) actuatorPatch.relay2 = state;
-        await syncActuatorState(deviceId, actuatorPatch);
-
-        // Publish event to notify dashboard
-        client.publish(`smartbox/${deviceId}/event`, JSON.stringify({
-          type: "relay.updated",
-          payload: { relay: relayNum, state: state, autoOffSeconds }
-        }), { qos: 1 });
-
-        console.log(`[Worker Sim] Handled relay.set command: Relay ${relayNum} -> ${state ? "ON" : "OFF"}`);
-      }
-
-      else if (cmdType === "bluetooth.set") {
-        const state = cmdPayload.state === true;
-
-        // Update database
-        await syncActuatorState(deviceId, { bluetoothAudio: state });
-
-        // Publish event
-        client.publish(`smartbox/${deviceId}/event`, JSON.stringify({
-          type: state ? "bluetooth.on" : "bluetooth.off",
-          payload: { state }
-        }), { qos: 1 });
-
-        console.log(`[Worker Sim] Handled bluetooth.set command -> ${state ? "ON" : "OFF"}`);
-      }
-
-      else if (cmdType === "buzzer.set") {
-        const state = cmdPayload.state === true;
-
-        // Update database
-        await syncActuatorState(deviceId, { buzzer: state });
-
-        // Publish event
-        client.publish(`smartbox/${deviceId}/event`, JSON.stringify({
-          type: "buzzer.updated",
-          payload: { state }
-        }), { qos: 1 });
-
-        console.log(`[Worker Sim] Handled buzzer.set command -> ${state ? "ON" : "OFF"}`);
-      }
     }
 
     else if (messageType === "telemetry") {
       clearPendingRetainedOffline(deviceId);
-      if (!data.mock) {
-        lastRealTelemetryReceivedAt = Date.now();
-      }
       const {
         temperature,
         temperatureC,
@@ -844,71 +773,3 @@ async function runSchedulers() {
 // schedules can run again on the next active day without repeating per minute.
 setInterval(runSchedulers, 1000);
 setTimeout(runSchedulers, 1000);
-
-// Periodic synthetic telemetry generator to keep the frontend updated and showing ONLINE/connected status
-setInterval(() => {
-  try {
-    if (Date.now() - lastRealTelemetryReceivedAt < 15000) {
-      // Real telemetry from ESP32 is active, skip mock telemetry
-      return;
-    }
-    const telemetryTopic = `smartbox/${targetDeviceId}/telemetry`;
-    const statusTopic = `smartbox/${targetDeviceId}/status`;
-    
-    // Generate realistic fluctuating sensor values
-    const now = new Date();
-    const mockTemp = 28.5 + (Math.sin(now.getTime() / 60000) * 0.5) + (Math.random() - 0.5) * 0.2;
-    const mockGas = 120 + Math.round((Math.sin(now.getTime() / 45000) * 15) + (Math.random() - 0.5) * 5);
-    
-    const mockTelemetry = {
-      deviceId: targetDeviceId,
-      rtcReady: true,
-      lcdReady: true,
-      dfPlayerReady: true,
-      ip: getLocalIp(),
-      rssi: -65 + Math.round((Math.random() - 0.5) * 10),
-      gasEnabled: true,
-      tempEnabled: true,
-      gasRaw: mockGas,
-      gasLevel: "normal",
-      temperatureC: mockTemp,
-      flameDetected: false,
-      pirDetected: Math.random() < 0.1, // 10% chance of random motion trigger
-      obstacleNear: false,
-      pirEnabled: true,
-      sleepModeEnabled: false,
-      pirGreetingEnabled: true,
-      pirGreetingTrack: 10,
-      pirGreetingStart: "08:00",
-      pirGreetingEnd: "17:00",
-      dfTrackCount: 15,
-      relay1: false,
-      relay2: false,
-      bluetoothRelay: false,
-      buzzer: false,
-      createdAt: now.toISOString(),
-    };
-    
-    // Fetch last states from DB if possible to keep them consistent
-    prisma.smartboxStatus.findUnique({
-      where: { deviceId: targetDeviceId }
-    }).then((status) => {
-      if (status) {
-        mockTelemetry.relay1 = status.relay1;
-        mockTelemetry.relay2 = status.relay2;
-        mockTelemetry.bluetoothRelay = status.bluetoothAudio;
-        mockTelemetry.buzzer = status.buzzer;
-      }
-      
-      client.publish(telemetryTopic, JSON.stringify(mockTelemetry), { qos: 1 });
-      client.publish(statusTopic, JSON.stringify({ deviceId: targetDeviceId, online: true, ip: mockTelemetry.ip, rssi: mockTelemetry.rssi }), { qos: 1, retain: true });
-    }).catch((err) => {
-      client.publish(telemetryTopic, JSON.stringify(mockTelemetry), { qos: 1 });
-      client.publish(statusTopic, JSON.stringify({ deviceId: targetDeviceId, online: true, ip: mockTelemetry.ip }), { qos: 1, retain: true });
-    });
-    
-  } catch (err) {
-    console.error("[Worker Sim] Error publishing mock telemetry:", err);
-  }
-}, 5000);
-

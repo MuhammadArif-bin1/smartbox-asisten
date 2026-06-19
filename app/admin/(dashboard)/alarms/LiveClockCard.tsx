@@ -3,17 +3,14 @@
 import { useEffect, useState } from "react";
 
 export function LiveClockCard({ online, rtcReady }: { online: boolean; rtcReady: boolean }) {
-  const [currentTime, setCurrentTime] = useState<Date | null>(null);
+  const [currentTime, setCurrentTime] = useState(() => new Date());
 
   useEffect(() => {
-    setCurrentTime(new Date());
     const interval = setInterval(() => {
       setCurrentTime(new Date());
     }, 1000);
     return () => clearInterval(interval);
   }, []);
-
-  if (!currentTime) return null;
 
   // Formatting time in Asia/Jakarta timezone
   const timeFormatter = new Intl.DateTimeFormat("en-US", {
