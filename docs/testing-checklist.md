@@ -55,7 +55,7 @@ Buka Serial Monitor 115200 baud, catat output berikut:
 ### 1c. WiFi & MQTT
 ```
 [WIFI] Connected.
-[WIFI] IP: 192.168.x.x
+[WIFI] IP: 10.48.31.x
 [MQTT] Connected.
 ```
 - [ ] ✅ WiFi OK

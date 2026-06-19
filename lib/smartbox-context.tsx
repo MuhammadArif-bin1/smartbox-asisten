@@ -158,7 +158,7 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
         rtc: true,
         lcd: true,
         dfPlayer: true,
-        ip: "192.168.1.55 (Simulasi)",
+        ip: "10.48.31.49 (Simulasi)",
         rssi: -55,
         lastSeen: "Simulasi",
       };

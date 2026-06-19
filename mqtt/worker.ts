@@ -498,12 +498,17 @@ let cachedRelaySchedules: any[] = [];
 let cachedAlarmSchedules: any[] = [];
 let lastCacheFetchTime = 0;
 const CACHE_TTL_MS = 30 * 1000; // 30 seconds
+let isFetchingSchedules = false;
 
 async function refreshSchedulesCacheIfNeeded() {
   const now = Date.now();
   if (now - lastCacheFetchTime < CACHE_TTL_MS) {
     return;
   }
+  if (isFetchingSchedules) {
+    return;
+  }
+  isFetchingSchedules = true;
   try {
     const relaySchedules = await retryQuery(() => prisma.relaySchedule.findMany({
       where: { enabled: true },
@@ -528,6 +533,8 @@ async function refreshSchedulesCacheIfNeeded() {
     lastCacheFetchTime = now;
   } catch (err) {
     console.error("[Worker Cache] Unhandled error during cache refresh:", err);
+  } finally {
+    isFetchingSchedules = false;
   }
 }
 
@@ -765,8 +772,16 @@ async function checkAlarmSchedules() {
   }
 }
 
+let isRunningSchedulers = false;
+
 async function runSchedulers() {
-  await Promise.all([checkRelaySchedules(), checkAlarmSchedules()]);
+  if (isRunningSchedulers) return;
+  isRunningSchedulers = true;
+  try {
+    await Promise.all([checkRelaySchedules(), checkAlarmSchedules()]);
+  } finally {
+    isRunningSchedulers = false;
+  }
 }
 
 // Run schedules every 1 second. Date is included in each trigger key so
