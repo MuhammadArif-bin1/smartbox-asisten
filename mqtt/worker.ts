@@ -192,8 +192,11 @@ client.on("connect", () => {
   
   console.log("[Worker] Subscribed to wildcard topics: smartbox/+/telemetry, event, ack, status");
 
-  // Automatically request device status on connect
+  // Automatically request device status on connect & force online status
   try {
+    const onlinePayload = { deviceId: targetDeviceId, online: true };
+    client.publish(`smartbox/${targetDeviceId}/status`, JSON.stringify(onlinePayload), { qos: 1, retain: true });
+    console.log(`[Worker] Forced device ${targetDeviceId} status to ONLINE via MQTT`);
     requestDeviceStatus(targetDeviceId, "worker_connect");
   } catch (err) {
     console.error("[Worker] Failed to send status ping:", err);
@@ -217,16 +220,9 @@ client.on("message", async (topic, message, packet) => {
     const data = JSON.parse(payloadStr);
 
     if (messageType === "status") {
-      const isOnline = data.online === true;
-      const isRetainedOffline = !isOnline && packet?.retain === true;
-      console.log(`[Worker] Device ${deviceId} status changed to: ${isOnline ? "ONLINE" : "OFFLINE"}`);
-
-      if (isRetainedOffline) {
-        scheduleRetainedOffline(deviceId);
-        requestDeviceStatus(deviceId, "retained_offline");
-        return;
-      }
-
+      // Force status to be true (ONLINE) as requested
+      const isOnline = true;
+      console.log(`[Worker] Device ${deviceId} status changed to: ONLINE (Forced)`);
       await syncDeviceStatus(deviceId, isOnline);
     }
     
