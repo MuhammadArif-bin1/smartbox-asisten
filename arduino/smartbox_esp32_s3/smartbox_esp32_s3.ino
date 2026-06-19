@@ -191,22 +191,22 @@ bool lastPirState = false;
 unsigned long lastSensorPrintAt = 0;
 
 // Button state
-bool blackLastReading = HIGH;
-bool blackStableState = HIGH;
-bool blackLongPressHandled = false;
-unsigned long blackLastChangeAt = 0;
-unsigned long blackPressedAt = 0;
+  bool blackLastReading = HIGH;
+  bool blackStableState = HIGH;
+  bool blackLongPressHandled = false;
+  unsigned long blackLastChangeAt = 0;
+  unsigned long blackPressedAt = 0;
 
-const unsigned long BLACK_DEBOUNCE_MS = 50;
-const unsigned long BLACK_LONG_PRESS_MS = 1500;
+  const unsigned long BLACK_DEBOUNCE_MS = 50;
+  const unsigned long BLACK_LONG_PRESS_MS = 1500;
 
-bool whiteLastReading = HIGH;
-bool whiteStableState = HIGH;
-unsigned long whiteLastChangeAt = 0;
+  bool whiteLastReading = HIGH;
+  bool whiteStableState = HIGH;
+  unsigned long whiteLastChangeAt = 0;
 
-bool redLastReading = HIGH;
-bool redStableState = HIGH;
-unsigned long redLastChangeAt = 0;
+  bool redLastReading = HIGH;
+  bool redStableState = HIGH;
+  unsigned long redLastChangeAt = 0;
 
 // Bluetooth state
 bool bluetoothState = true;
@@ -599,6 +599,8 @@ void checkLcdOverride() {
 
 void playVoice(uint8_t track, const char* reason) {
   Serial.println();
+  Serial.println("[CMD] voice.play received");
+  Serial.printf("[DFPLAYER] Play track: %d reason: %s\n", track, reason);
   Serial.println("========== DFPLAYER REQUEST ==========");
   Serial.printf("Track : %d\n", track);
   Serial.printf("Reason: %s\n", reason);
@@ -1623,6 +1625,7 @@ void setup() {
   espClient.setInsecure();
 
   // Initialize MQTT
+  mqttClient.setServer(MQTT_HOST, MQTT_PORT);
   mqttClient.setServer(MQTT_HOST, MQTT_PORT);
   mqttClient.setCallback(mqttCallback);
 
