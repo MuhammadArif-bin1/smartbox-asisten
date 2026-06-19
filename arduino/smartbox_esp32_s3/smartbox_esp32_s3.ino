@@ -912,29 +912,29 @@ void checkOtherButtons() {
   bool whiteNow = digitalRead(WHITE_BTN_PIN);
   bool redNow = digitalRead(RED_BTN_PIN);
 
-  // Tombol Putih = Toggle Bluetooth ON / OFF
+  // Tombol Putih = Perkenalan Otomatis (Halo Aero + Intro Aero)
   if (lastWhite == HIGH && whiteNow == LOW) {
+    Serial.println("[BUTTON] White pressed -> Perkenalan Aero.");
+    setAudioPower(true);
+    delay(400);
+    playDFTrack(TRACK_HALO_AERO, "white_halo_aero");
+    delay(4000);
+    playDFTrack(TRACK_INTRO_AERO, "white_intro_aero");
+  }
+
+  // Tombol Merah = Toggle Bluetooth ON / OFF
+  if (lastRed == HIGH && redNow == LOW) {
     bluetoothState = !bluetoothState;
 
     if (bluetoothState) {
-      Serial.println("[BUTTON] White pressed -> Bluetooth ON.");
+      Serial.println("[BUTTON] Red pressed -> Bluetooth ON.");
       setAudioPower(true);
       delay(400);
       playDFTrack(TRACK_BLUETOOTH_ACTIVE, "bluetooth_on");
     } else {
-      Serial.println("[BUTTON] White pressed -> Bluetooth OFF.");
+      Serial.println("[BUTTON] Red pressed -> Bluetooth OFF.");
       playDFTrack(TRACK_BLUETOOTH_OFF, "bluetooth_off");
     }
-  }
-
-  // Tombol Merah = Perkenalan Otomatis (Halo Aero + Intro Aero)
-  if (lastRed == HIGH && redNow == LOW) {
-    Serial.println("[BUTTON] Red pressed -> Perkenalan Aero.");
-    setAudioPower(true);
-    delay(400);
-    playDFTrack(TRACK_HALO_AERO, "red_halo_aero");
-    delay(4000);
-    playDFTrack(TRACK_INTRO_AERO, "red_intro_aero");
   }
 
   lastWhite = whiteNow;

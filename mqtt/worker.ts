@@ -192,21 +192,11 @@ client.on("connect", () => {
   
   console.log("[Worker] Subscribed to wildcard topics: smartbox/+/telemetry, event, ack, status");
 
-  // Automatically sync local Next.js IP address to the ESP32
+  // Automatically request device status on connect
   try {
-    const localIp = getLocalIp();
-    const syncCmd = {
-      id: `sync_backend_${Date.now()}`,
-      type: "backend.set",
-      payload: {
-        url: `http://${localIp}:3000`,
-      },
-    };
-    client.publish(`smartbox/${targetDeviceId}/cmd`, JSON.stringify(syncCmd), { qos: 1 });
-    console.log(`[Worker] Sent backend sync command: http://${localIp}:3000 to device ${targetDeviceId}`);
     requestDeviceStatus(targetDeviceId, "worker_connect");
   } catch (err) {
-    console.error("[Worker] Failed to send backend sync command:", err);
+    console.error("[Worker] Failed to send status ping:", err);
   }
 });
 
