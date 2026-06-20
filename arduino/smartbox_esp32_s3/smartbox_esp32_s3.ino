@@ -134,7 +134,8 @@ const char *DEVICE_ID = "smartbox-001";
 #define TRACK_GESTURE_JUMP        11
 #define TRACK_GESTURE_WAVE        12
 #define TRACK_BLUETOOTH_OFF       13
-#define DFPLAYER_MAX_TRACK        TRACK_BLUETOOTH_OFF
+#define TRACK_TEMP_HIGH_ALARM     14
+#define DFPLAYER_MAX_TRACK        TRACK_TEMP_HIGH_ALARM
 
 #define TRACK_SYSTEM_READY        TRACK_STARTUP_READY
 #define TRACK_SHOW_TIME_TEMP      TRACK_TIME_TEMP_REALTIME
@@ -152,14 +153,14 @@ int SMOKE_THRESHOLD_OFFSET = 250;
 int GAS_THRESHOLD_OFFSET   = 400;
 int RESET_THRESHOLD_OFFSET = 150;
 
-int smokeThreshold = 1250;
-int gasThreshold   = 1400;
-int resetThreshold = 1150;
+int smokeThreshold = 1260; // 21 PPM default
+int gasThreshold   = 1380; // 23 PPM default
+int resetThreshold = 1140; // 19 PPM default
 
 int mq2Baseline = 1000;
-int gasWarningThreshold = 1300;
-int gasDangerThreshold = 1800;
-float tempThreshold = 35.0;
+int gasWarningThreshold = 1260;
+int gasDangerThreshold = 1380;
+float tempThreshold = 38.0;
 float tempOffset = 0.0;
 float gasRawFiltered = -1.0;
 
@@ -271,6 +272,7 @@ bool relay2AutoOffActive = false;
 unsigned long relay2AutoOffAt = 0;
 bool bluetoothAudioState = false;
 bool relay1ForcedByGas = false;
+bool relay1ForcedByTemp = false;
 
 bool lastGasWarning  = false;
 bool lastSmokeWarning = false;
@@ -570,12 +572,9 @@ void loadSettings() {
   SMOKE_THRESHOLD_OFFSET = preferences.getInt("smokeOffset", 250);
   GAS_THRESHOLD_OFFSET   = preferences.getInt("gasOffset", 400);
   RESET_THRESHOLD_OFFSET = preferences.getInt("resetOffset", 150);
-  smokeThreshold = MQ2_BASELINE + SMOKE_THRESHOLD_OFFSET;
-  gasThreshold   = MQ2_BASELINE + GAS_THRESHOLD_OFFSET;
-  resetThreshold = MQ2_BASELINE + RESET_THRESHOLD_OFFSET;
-  gasWarningThreshold = smokeThreshold;
-  gasDangerThreshold  = gasThreshold;
-  tempThreshold = preferences.getFloat("tempThreshold", 35.0);
+  smokeThreshold = preferences.getInt("gasWarning", 1260);
+  gasThreshold = preferences.getInt("gasDanger", 1380);
+  tempThreshold = preferences.getFloat("tempThreshold", 38.0);
   tempOffset = preferences.getFloat("tempOffset", 0.0);
   preferences.end();
   Serial.println("[SETTINGS] Loaded settings from NVS.");
@@ -986,13 +985,13 @@ void playGasWarningVoice(String gasType) {
   lastGasAudioTime = now;
   int track = -1;
   const char* reason = "";
-  if (gasType == "gas") {
-    track = TRACK_GAS_DETECTED;
-    reason = "gas_detected";
-  } else if (gasType == "smoke") {
-    track = TRACK_SMOKE_DETECTED;
-    reason = "smoke_detected";
-  }
+  
+  // Alternate warning track to support MQ-2 non-differentiation request
+  static bool alternateGasTrack = false;
+  track = alternateGasTrack ? TRACK_GAS_DETECTED : TRACK_SMOKE_DETECTED;
+  reason = alternateGasTrack ? "gas_detected" : "smoke_detected";
+  alternateGasTrack = !alternateGasTrack;
+
   if (track != -1) {
     playVoice((uint8_t)track, reason);
   }
@@ -1002,7 +1001,7 @@ void playTemperatureWarningVoice() {
   unsigned long now = millis();
   if (now - lastTempAudioTime < TEMP_VOICE_COOLDOWN_MS) return;
   lastTempAudioTime = now;
-  playVoice(TRACK_TEMP_DETECTED, "temperature_warning");
+  playVoice(TRACK_TEMP_HIGH_ALARM, "temperature_warning");
 }
 
 void playPirGreeting(String motionType) {
@@ -1765,7 +1764,7 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
   } else if (strcmp(type, "voice.play") == 0) {
     int track = data["track"] | -1;
     const char *reason = data["reason"] | "dashboard_voice_test";
-    if (track >= 1 && track <= 13) {
+    if (track >= 1 && track <= DFPLAYER_MAX_TRACK) {
       Serial.println("[CMD] voice.play received");
       Serial.printf("[DFPLAYER] Play track: %d reason: %s\n", track, reason);
       playVoice((uint8_t)track, reason);
@@ -1827,6 +1826,23 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
     setLcdOverride("KALIBRASI SENSOR", "MOHON TUNGGU", 5000);
     calibrateMQ2(samples);
     publishAck(cmdId, type, true, "Sensor gas MQ-2 berhasil dikalibrasi.");
+  } else if (strcmp(type, "gasThreshold.set") == 0) {
+    int ppm = data["ppm"] | 21;
+    smokeThreshold = ppm * 60;
+    gasThreshold = (ppm + 2) * 60;
+    resetThreshold = (ppm - 2) * 60;
+    SMOKE_THRESHOLD_OFFSET = smokeThreshold - MQ2_BASELINE;
+    GAS_THRESHOLD_OFFSET = gasThreshold - MQ2_BASELINE;
+    RESET_THRESHOLD_OFFSET = resetThreshold - MQ2_BASELINE;
+    saveSettings();
+    publishAck(cmdId, type, true, "Gas threshold updated.");
+    sendTelemetryNow();
+  } else if (strcmp(type, "tempThreshold.set") == 0) {
+    float threshold = data["threshold"] | 38.0;
+    tempThreshold = threshold;
+    saveSettings();
+    publishAck(cmdId, type, true, "Temperature threshold updated.");
+    sendTelemetryNow();
   } else if (strcmp(type, "temperatureSensor.set") == 0 || strcmp(type, "tempSensor.set") == 0) {
     tempEnabled = data["enabled"] | true;
     lastTempWarning = false;
@@ -1934,6 +1950,8 @@ void publishTelemetry(int gasRaw, float tempC, bool gasWarning, bool tempWarning
   doc["gasLevel"] = gasLevel;
   doc["smokeDetected"] = lastSmokeWarning;
   doc["temperatureHigh"] = tempWarning;
+  doc["gasThresholdPpm"] = smokeThreshold / 60;
+  doc["tempThreshold"] = tempThreshold;
   doc["pirDetected"] = pirDetected;
   doc["motionDetected"] = pirDetected;
   doc["obstacleNear"] = obstacleNear;
@@ -2037,7 +2055,9 @@ void checkWarnings(int gasRaw, float tempC, bool anyGasWarning, bool tempWarning
       gasStatusStr = "normal";
       smokeStatusStr = "normal";
       if (relay1ForcedByGas) {
-        setRelay(1, false, false);
+        if (!relay1ForcedByTemp) {
+          setRelay(1, false, false);
+        }
         relay1ForcedByGas = false;
       }
     }
@@ -2054,15 +2074,26 @@ void checkWarnings(int gasRaw, float tempC, bool anyGasWarning, bool tempWarning
     }
   }
 
-  if (tempWarning && !lastTempWarning) {
-    lastTempWarning = true;
-    playTemperatureWarningVoice();
-    publishEvent("WARNING", "temperature.high", "Suhu terdeteksi melebihi ambang batas");
-    setLcdOverride("SUHU TERDETEKSI", "CEK RUANGAN", 5000);
-  }
-
-  if (!tempWarning) {
+  if (tempWarning) {
+    if (!relay1State) setRelay(1, true, false);
+    relay1ForcedByTemp = true;
+    if (!lastTempWarning) {
+      lastTempWarning = true;
+      playTemperatureWarningVoice();
+      publishEvent("WARNING", "temperature.high", "Suhu terdeteksi melebihi ambang batas");
+      setLcdOverride("SUHU TINGGI!", "CEK RUANGAN", 5000);
+    }
+  } else {
+    if (lastTempWarning) {
+      publishEvent("INFO", "temperature.normal", "Suhu ruangan kembali normal.");
+    }
     lastTempWarning = false;
+    if (relay1ForcedByTemp) {
+      if (!relay1ForcedByGas) {
+        setRelay(1, false, false);
+      }
+      relay1ForcedByTemp = false;
+    }
   }
 }
 
@@ -2506,11 +2537,30 @@ void loop() {
 
   checkButtons();
   checkBlackButton();
-  checkAlarms();
-  checkRelaySchedules();
+  // checkAlarms(); // Dinonaktifkan secara lokal agar tidak bentrok dengan alarm server Next.js (MQTT Worker)
+  // checkRelaySchedules(); // Dinonaktifkan secara lokal agar tidak ada mismatch hari aktif, pemicuan sepenuhnya dikelola oleh MQTT Worker
   checkRelayAutoOff();
   checkBluetoothTimer();
   serviceVoiceQueue();
+
+  // Force DS3231 temperature conversion to bypass default 64-second update interval
+  static unsigned long lastTempConvAt = 0;
+  if (rtcReady && (millis() - lastTempConvAt >= 2000)) {
+    lastTempConvAt = millis();
+    Wire.beginTransmission(0x68);
+    Wire.write(0x0E);
+    Wire.endTransmission(false);
+    Wire.requestFrom(0x68, 1);
+    if (Wire.available()) {
+      uint8_t ctrl = Wire.read();
+      if (!(ctrl & 0x20)) {
+        Wire.beginTransmission(0x68);
+        Wire.write(0x0E);
+        Wire.write(ctrl | 0x20);
+        Wire.endTransmission();
+      }
+    }
+  }
 
   int gasRaw = getFilteredGas();
   float tempC = rtcReady ? rtc.getTemperature() + tempOffset : 0.0;

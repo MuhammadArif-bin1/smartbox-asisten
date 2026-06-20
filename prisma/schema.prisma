@@ -248,15 +248,21 @@ model RelaySchedule {
 }
 
 model AlarmSchedule {
-  id        String    @id @default(cuid())
-  deviceId  String    @default("smartbox-001")
-  name      String
-  time      String
-  track     Int
-  active    Boolean   @default(true)
-  lastRunAt DateTime?
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
+  id             String    @id @default(cuid())
+  deviceId       String    @default("smartbox-001")
+  name           String
+  time           String
+  track          Int
+  active         Boolean   @default(true)
+  days           String    @default("[\"monday\",\"tuesday\",\"wednesday\",\"thursday\",\"friday\",\"saturday\",\"sunday\"]")
+  buzzerActive   Boolean   @default(false)
+  buzzerDuration Int       @default(5)
+  buzzerDelay    Int       @default(2)
+  repeatCount    Int       @default(1)
+  repeatDelay    Int       @default(5)
+  lastRunAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 }
 
 model PirGreetingSetting {

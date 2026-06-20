@@ -34,6 +34,8 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
   const [obstacleNear, setObstacleNear] = useState(false);
   const [pirEnabled, setPirEnabled] = useState(true);
   const [sleepModeEnabled, setSleepModeEnabled] = useState(false);
+  const [gasThresholdPpm, setGasThresholdPpm] = useState(21);
+  const [tempThreshold, setTempThreshold] = useState(38);
 
   /* ── PIR greeting ── */
   const [pirGreetingEnabled, setPirGreetingEnabled] = useState(false);
@@ -162,7 +164,19 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
   }
 
   /* ─── Alarm schedule CRUD ─── */
-  async function saveAlarmSchedule(sch: { id?: string; name: string; time: string; track: number; active: boolean }) {
+  async function saveAlarmSchedule(sch: {
+    id?: string;
+    name: string;
+    time: string;
+    track: number;
+    active: boolean;
+    days: string;
+    buzzerActive: boolean;
+    buzzerDuration: number;
+    buzzerDelay: number;
+    repeatCount: number;
+    repeatDelay: number;
+  }) {
     try {
       const isEdit = !!sch.id;
       const url = isEdit ? `/api/alarm-schedules/${sch.id}` : "/api/alarm-schedules";
@@ -249,6 +263,16 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
     setTemperatureEnabled(next);
     if (next && tempEstimate === 0) setTempEstimate(35);
     sendDeviceCommand("tempSensor.set", { enabled: next }, `Sensor suhu ${next ? "aktif" : "mati"}`);
+  }
+
+  async function updateGasThreshold(ppm: number) {
+    setGasThresholdPpm(ppm);
+    await sendDeviceCommand("gasThreshold.set", { ppm }, `Set Ambang Gas ${ppm} PPM`, `Ambang batas gas diubah ke ${ppm} PPM`, "Gagal mengubah ambang batas gas");
+  }
+
+  async function updateTempThreshold(threshold: number) {
+    setTempThreshold(threshold);
+    await sendDeviceCommand("tempThreshold.set", { threshold }, `Set Ambang Suhu ${threshold}°C`, `Ambang batas suhu diubah ke ${threshold}°C`, "Gagal mengubah ambang batas suhu");
   }
 
   function togglePir() {
@@ -484,6 +508,8 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
             if (typeof telemetry.gasRaw === "number") setGasEstimate(Math.max(0, Math.min(4095, Math.round(telemetry.gasRaw))));
             if (typeof telemetry.gasLevel === "string") setGasLevel(telemetry.gasLevel);
             if (typeof telemetry.temperatureC === "number") setTempEstimate(roundTemperature(telemetry.temperatureC));
+            if (typeof telemetry.gasThresholdPpm === "number") setGasThresholdPpm(telemetry.gasThresholdPpm);
+            if (typeof telemetry.tempThreshold === "number") setTempThreshold(telemetry.tempThreshold);
             if (typeof telemetry.flameDetected === "boolean") setFlameDetected(telemetry.flameDetected);
             if (typeof telemetry.pirDetected === "boolean") setPirDetected(telemetry.pirDetected);
             if (typeof telemetry.obstacleNear === "boolean") setObstacleNear(telemetry.obstacleNear);
@@ -889,6 +915,7 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
   const value: SmartboxContextValue = {
     isAuthenticated, authChecked, passwordInput, loginError, setPasswordInput, submitLogin,
     gasEnabled, temperatureEnabled, visibleGasEstimate, visibleTempEstimate, gasPpm, gasPercent, tempPercent, gasWarning, tempWarning, gasState, tempState, flameDetected, pirDetected, obstacleNear, pirEnabled, sleepModeEnabled,
+    gasThresholdPpm, tempThreshold,
     pirGreetingEnabled, pirGreetingTrack, pirGreetingStart, pirGreetingEnd, pirGreetingCooldown, pirGreetingDays, pirGreetingPlayMode,
     deviceStatuses: deviceStatus, dfTrackCount, telemetrySource, tempHistory, gasHistory,
     relayState, relayAutoOffAt, relayActiveCount, relaySchedules,
@@ -896,7 +923,7 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
     mqttOnline, status, lastCommand, voiceMode, buzzerEnabled, boardLedScheduleEnabled,
     events, toast, notify, setToast,
     publish, sendDeviceCommand, toggleGas, toggleTemperature, toggleRelay, togglePir, toggleSleepMode,
-    updateAlarm, setBuzzerEnabled, setBoardLedScheduleEnabled, setVoiceMode, updatePirGreetingConfig,
+    updateAlarm, updateGasThreshold, updateTempThreshold, setBuzzerEnabled, setBoardLedScheduleEnabled, setVoiceMode, updatePirGreetingConfig,
     saveRelaySchedule, deleteRelaySchedule,
     onSaveSchedule: saveAlarmSchedule, onDeleteSchedule: deleteAlarmSchedule, onToggleScheduleActive: toggleAlarmScheduleActive, onTestPlayVoice: testPlayVoice,
   };

@@ -83,6 +83,57 @@ function SidebarStatusCards() {
   );
 }
 
+/* ─── Header Clock ─── */
+function HeaderClock() {
+  const [currentTime, setCurrentTime] = useState<Date | null>(null);
+
+  useEffect(() => {
+    setCurrentTime(new Date());
+    const interval = setInterval(() => {
+      setCurrentTime(new Date());
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  if (!currentTime) return null;
+
+  const timeFormatter = new Intl.DateTimeFormat("id-ID", {
+    timeZone: "Asia/Jakarta",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  });
+  const dateFormatter = new Intl.DateTimeFormat("id-ID", {
+    timeZone: "Asia/Jakarta",
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
+
+  const timeString = timeFormatter.format(currentTime).replace(/:/g, ".");
+  const dateString = dateFormatter.format(currentTime);
+
+  return (
+    <div className="flex flex-wrap items-center gap-4 rounded-3xl border-2 border-slate-200 bg-white px-6 py-3 shadow-md font-mono transition-all hover:border-slate-300">
+      <div className="flex items-center gap-3">
+        <span className="relative flex h-3.5 w-3.5">
+          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+          <span className="relative inline-flex rounded-full h-3.5 w-3.5 bg-blue-500"></span>
+        </span>
+        <span className="text-3xl font-black text-slate-900 tracking-widest drop-shadow-[0_0_1px_rgba(0,0,0,0.05)]">
+          {timeString}
+        </span>
+      </div>
+      <div className="hidden sm:block h-6 w-px bg-slate-200" />
+      <span className="text-sm font-sans font-bold text-slate-500 tracking-wide">
+        {dateString} <span className="text-blue-500/60 font-semibold">•</span> Asia/Jakarta (WIB)
+      </span>
+    </div>
+  );
+}
+
 /* ─── Header ─── */
 function Header() {
   const pathname = usePathname();
@@ -98,6 +149,8 @@ function Header() {
           </h1>
         </div>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          {pathname !== "/admin/alarms" && <HeaderClock />}
+
           <div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 shadow-sm">
             <div className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-600 font-bold text-white text-sm">A</div>
             <div className="hidden sm:block">

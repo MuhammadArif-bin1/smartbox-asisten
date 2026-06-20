@@ -1,0 +1,180 @@
+# Analisis Arsitektur & Rencana Pembersihan Smartbox Assistant
+
+Dokumen ini berisi analisis mendalam tentang arsitektur sistem Smartbox Assistant, komponen hardware/software yang digunakan, alur data interaksi, serta rencana pembersihan file-file redundan (tidak digunakan/duplikat) untuk meningkatkan kebersihan dan efisiensi basis kode.
+
+---
+
+## 1. Analisis Arsitektur Sistem
+
+Smartbox Assistant dirancang sebagai sistem IoT berbasis Smart Home yang mengintegrasikan kecerdasan buatan (Gemini AI), pemantauan sensor real-time, penjadwalan perangkat pintar, dan respons suara offline/online.
+
+### A. Komponen Utama Arsitektur
+
+```mermaid
+graph TD
+    subgraph Client ["Frontend (Dashboard Admin)"]
+        UI["Next.js Web App (Tailwind CSS)"]
+        Ctx["Smartbox Context (State Management)"]
+        WS["MQTT over WebSockets (Paho Client)"]
+    end
+
+    subgraph Cloud ["Cloud Infrastructure & Database"]
+        HiveMQ["HiveMQ MQTT Broker (Secure WebSocket & TCP)"]
+        NeonDB["Neon PostgreSQL Database"]
+    end
+
+    subgraph Backend ["Next.js Backend API"]
+        Prisma["Prisma ORM"]
+        API["API Routes (/api/*)"]
+        Gemini["Gemini AI (Chat, Voice, TTS)"]
+        Worker["MQTT Background Worker (Node.js Process)"]
+    end
+
+    subgraph Hardware ["Smartbox Hardware (ESP32-S3)"]
+        ESP["ESP32-S3 Board"]
+        Sensors["Sensors (MQ-2, PIR, DS3231 RTC)"]
+        Actuators["Actuators (Relay 1 & 2, Bluetooth Amp, Buzzer, LCD, DFPlayer)"]
+    end
+
+    %% Jalur Komunikasi
+    UI <-->|Fetch API| API
+    API <-->|Prisma Queries| NeonDB
+    Worker <-->|Prisma Queries| NeonDB
+    
+    UI <-->|WebSockets (Port 8884)| HiveMQ
+    Worker <-->|MQTT TCP (Port 8883)| HiveMQ
+    ESP <-->|MQTT TCP (Port 8883)| HiveMQ
+    
+    ESP -->|Upload WAV Audio via HTTP| API
+    API <-->|HTTP API Key| Gemini
+    
+    ESP <-->|I2C/GPIO/Serial| Sensors
+    ESP <-->|GPIO/Serial| Actuators
+```
+
+1. **Frontend (Aplikasi Web Next.js)**:
+   - **Teknologi**: Next.js 15 App Router, React, Tailwind CSS, Lucide React (Icons), Recharts (Visualisasi Telemetri).
+   - **Koneksi MQTT**: Menggunakan MQTT over WebSockets untuk terhubung langsung ke HiveMQ Cloud dari browser pengguna. Ini memungkinkan pembaruan UI instan secara real-time tanpa membebani server Next.js.
+   - **State Management**: `lib/smartbox-context.tsx` mengelola semua status lokal perangkat, riwayat pembacaan sensor (chart), sinkronisasi telemetri, alarm, dan interaksi kontrol.
+
+2. **Backend (Next.js Serverless & Database)**:
+   - **Database**: PostgreSQL (Neon Database) yang diakses menggunakan Prisma ORM.
+   - **API Routes**:
+     - `/api/gemini/chat-audio`: Endpoint untuk memproses transkripsi suara user (INMP441) dan menghasilkan jawaban AI menggunakan Gemini API.
+     - `/api/gemini/tts`: Mengubah teks jawaban asisten menjadi file suara MP3 dengan Gemini TTS, yang nantinya disimpan di `public/generated/` agar bisa disalin ke kartu memori DFPlayer.
+     - `/api/readings`: Menyediakan riwayat pembacaan sensor telemetri untuk chart di frontend.
+     - `/api/events`: Menyediakan log aktivitas IoT (EventLog) untuk halaman riwayat.
+     - `/api/alarm-schedules`: Menyimpan, mengubah, dan menghapus jadwal pemutaran suara alarm DFPlayer.
+     - `/api/devices/relay-schedules`: Mengelola jadwal otomatis hidup/mati relay (Stop Kontak 1 & 2).
+     - `/api/pir-greeting-settings`: Mengonfigurasi salam suara interaktif berbasis sensor gerakan PIR.
+
+3. **Background Worker (`mqtt/worker.ts`)**:
+   - Berjalan sebagai proses terpisah (Node.js daemon) yang terhubung ke HiveMQ.
+   - **Tugas**: 
+     - Mendengarkan topik telemetri (`smartbox/+/telemetry`) lalu menyimpannya ke database (`SensorReading`).
+     - Mendengarkan event dari perangkat (`smartbox/+/event`) lalu mencatatnya ke database (`EventLog`).
+     - Melakukan pengecekan jadwal relay (`RelaySchedule`) dan alarm (`AlarmSchedule`) setiap menit. Jika jadwal terpenuhi, worker akan memublikasikan perintah kontrol ke topik perintah perangkat (`smartbox/+/cmd`).
+     - Menerima konfirmasi (ACK) dari ESP32 untuk perintah yang dikirim.
+
+4. **Hardware (ESP32-S3 & Arduino Framework)**:
+   - **Suhu**: Sensor DS3231 RTC membaca waktu presisi offline dan suhu internal.
+   - **Gerakan**: Sensor PIR mendeteksi gerakan dan memicu sapaan suara.
+   - **Gas/Asap**: Sensor MQ-2 memantau kualitas udara.
+   - **Suara**: Mikrofon INMP441 menangkap suara user, sementara DFPlayer Mini memutar file audio MP3 dari kartu MicroSD.
+   - **Kontrol Daya**: Dual relay mengontrol perangkat listrik AC, ditambah transistor relay untuk menghidupkan/mematikan speaker Bluetooth.
+   - **Komunikasi**: Menggunakan library PubSubClient untuk berkomunikasi via HiveMQ MQTT Broker dan HTTPClient untuk mengunggah rekaman suara ke API Gemini Next.js.
+
+---
+
+## 2. Alur Data Utama
+
+### A. Alur Telemetri & Sinkronisasi UI
+1. ESP32-S3 memublikasikan data sensor secara periodik (setiap 3-5 detik jika terhubung) ke topik `smartbox/smartbox-001/telemetry`.
+2. Browser pengguna (Frontend) yang terlanggan ke topik tersebut langsung memperbarui UI.
+3. MQTT Worker di server menangkap pesan telemetri tersebut, mem-parsing datanya, dan menyimpannya ke tabel `SensorReading` di database Neon DB secara asinkron.
+4. Jika browser dalam keadaan offline/tidak terhubung langsung ke MQTT, frontend akan otomatis beralih mem-polling data historis dari database via `/api/readings` setiap 10 detik.
+
+### B. Alur Interaksi Suara AI (Tombol Hitam)
+1. User menekan dan menahan tombol hitam pada Smartbox.
+2. ESP32 merekam suara dari INMP441 dan menyimpannya sebagai file WAV di RAM.
+3. Setelah tombol dilepas, ESP32 mengirimkan file suara WAV via HTTP POST ke `/api/gemini/chat-audio`.
+4. Next.js Backend menerima audio, menyimpannya sementara, kemudian mengirimkannya ke Gemini API untuk ditranskripsikan dan diproses sekaligus.
+5. Gemini menghasilkan transkrip teks dan draf jawaban AI.
+6. Backend mem-parsing jawaban. Jika jawaban mendeteksi perintah kontrol (misal: *"Nyalakan stop kontak satu"*), backend akan memublikasikan perintah MQTT ke topik `smartbox/smartbox-001/cmd`.
+7. Backend memanggil Gemini TTS API untuk mengubah jawaban asisten menjadi audio (.mp3), menyimpannya di folder publik, lalu memublikasikan riwayat chat ke topik event `smartbox/smartbox-001/event`.
+8. Backend mengembalikan teks respons dan tautan audio ke ESP32. ESP32 memutar respons tersebut (atau melafalkan respons lokal) dan mengeksekusi perintah fisik yang sesuai.
+
+---
+
+## 3. Temuan File Redundan, Duplikat, dan Tidak Digunakan
+
+Selama pemeriksaan basis kode Next.js, ditemukan beberapa endpoint API, model database Prisma, dan fungsi pembantu yang sudah tidak digunakan lagi karena digantikan oleh fitur yang lebih baru dan terstruktur. Komponen-komponen ini aman untuk dihapus.
+
+### A. Rincian Endpoint API yang Redundan
+
+| Lokasi File | Fungsi Awal | Alasan Redundan / Pengganti |
+| :--- | :--- | :--- |
+| `app/api/alarms/route.ts` | Mengelola alarm pagi/siang/sore. | **Pengganti**: `app/api/alarm-schedules/route.ts` yang mendukung penambahan, pengeditan, dan penghapusan jadwal alarm dinamis (tidak terbatas 3 slot). |
+| `app/api/telemetry/route.ts` | Menerima telemetri via HTTP POST dan GET. | **Pengganti**: ESP32 menggunakan MQTT untuk telemetri. Data disimpan ke DB oleh `mqtt/worker.ts` ke dalam tabel `SensorReading`. Frontend membaca data historis dari `/api/readings/`. |
+| `app/api/smartbox/events/route.ts` | Mengambil log event. | **Pengganti**: `app/api/events/route.ts` yang membaca dari tabel `EventLog` (digunakan di halaman History). |
+| `app/api/smartbox/status/route.ts` | Update status singleton Smartbox. | **Pengganti**: MQTT Worker memperbarui status perangkat langsung ke tabel `SmartboxStatus` di database Neon DB tanpa melalui perantara API HTTP. |
+| `app/api/smartbox/voice-log/route.ts`| Menyimpan interaksi suara secara manual. | **Pengganti**: Log interaksi suara disimpan langsung ke tabel `VoiceInteraction` di dalam endpoint `/api/gemini/chat-audio` pada akhir proses interaksi. |
+
+### B. Rincian Model Prisma yang Redundan (`prisma/schema.prisma`)
+
+1. **`Alarm`**:
+   - Model lama yang memiliki id statis (`morning`, `noon`, `evening`).
+   - Digantikan sepenuhnya oleh model **`AlarmSchedule`** yang lebih fleksibel.
+2. **`SensorSnapshot`**:
+   - Digunakan oleh `/api/telemetry` yang tidak lagi aktif.
+   - Digantikan sepenuhnya oleh model **`SensorReading`**.
+3. **`DeviceEvent`**:
+   - Hanya digunakan oleh endpoint-endpoint lama yang tidak aktif (`/api/telemetry`, `/api/mqtt` POST, `/api/alarms`).
+   - Digantikan sepenuhnya oleh model **`EventLog`** (untuk riwayat aktivitas di frontend).
+4. **`AudioTrack`**:
+   - Berisi daftar pemetaan track audio DFPlayer di database (dari file `prisma/seed.ts`).
+   - Namun, frontend dan modul logika lainnya menggunakan array hardcoded `audioTracks` di file `lib/smartbox-constants.ts` secara langsung untuk performa dan kemudahan tipe data TypeScript, sehingga tabel database `AudioTrack` tidak pernah di-query sama sekali.
+
+### C. Kode Redundan di Context & Utilities
+
+1. **`lib/smartbox-context.tsx`**:
+   - State `alarms` (line 117-ish) dan fungsi `updateAlarm` (line 697-ish) didefinisikan dan diekspor oleh context, tetapi tidak pernah digunakan di halaman `app/admin/(dashboard)/alarms/page.tsx` or halaman lainnya. Halaman tersebut telah bermigrasi sepenuhnya menggunakan `alarmSchedules` dan `onSaveSchedule`.
+2. **`lib/smartbox-utils.ts`**:
+   - Fungsi `sendMqttCommand` (line 5-17) didefinisikan untuk mem-POST perintah ke `/api/mqtt`, namun tidak pernah dipanggil karena frontend mengirim pesan MQTT langsung dari sisi klien (melalui WebSockets) atau melalui perintah terstruktur `/api/device/command`.
+
+---
+
+## 4. Rencana Pembersihan Kode (Planning)
+
+Untuk memastikan pembersihan kode aman tanpa merusak fungsionalitas yang ada, berikut adalah rencana langkah demi langkah yang disarankan:
+
+### Tahap 1: Pembersihan Context & Utilities
+1. Hapus state `alarms` dan fungsi `updateAlarm` dari file `lib/smartbox-context.tsx`.
+2. Hapus fungsi `sendMqttCommand` dari file `lib/smartbox-utils.ts`.
+
+### Tahap 2: Menghapus Endpoint API yang Redundan
+1. Hapus direktori berikut beserta isinya:
+   - `app/api/alarms/`
+   - `app/api/telemetry/`
+   - `app/api/smartbox/` (seluruh folder ini karena di dalamnya hanya ada `events/`, `status/`, dan `voice-log/` yang semuanya redundan).
+
+### Tahap 3: Pembaruan Skema Database (Prisma Migration)
+1. Buka file `prisma/schema.prisma` dan hapus model-model berikut:
+   - `model Alarm`
+   - `model SensorSnapshot`
+   - `model DeviceEvent`
+   - `model AudioTrack`
+2. Modifikasi file `prisma/seed.ts` untuk menghapus bagian seeding untuk model `AudioTrack` dan `Alarm` agar proses seeding baru tidak mengalami kegagalan.
+3. Jalankan migrasi Prisma untuk memperbarui database Neon DB:
+   ```powershell
+   npx prisma migrate dev --name cleanup_unused_models
+   ```
+
+### Tahap 4: Pengujian Keseluruhan
+1. Jalankan Next.js dalam mode pengembangan (`npm run dev`) dan pastikan tidak ada error kompilasi TypeScript.
+2. Pastikan halaman alarms (`/admin/alarms`), history (`/admin/history`), dan devices (`/admin/devices`) bekerja normal dan data tetap tersinkronisasi dari MQTT/Neon DB.
+
+---
+
+> [!NOTE]
+> Semua pembersihan ini bersifat non-breaking jika dilakukan sesuai dengan tahapan di atas. Sebagian besar kode pengganti telah siap dan berjalan dengan stabil di dalam sistem.

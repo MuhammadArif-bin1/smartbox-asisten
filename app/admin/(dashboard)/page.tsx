@@ -3,6 +3,7 @@
 import { useSmartbox } from "@/lib/smartbox-context";
 import { Panel } from "@/components/ui/Panel";
 import { ControlRow } from "@/components/ui/ControlRow";
+import { Switch } from "@/components/ui/Switch";
 import { TemperatureChart } from "@/components/charts/TemperatureChart";
 import { GasChart } from "@/components/charts/GasChart";
 import { DetailedSensorCard } from "./DetailedSensorCard";
@@ -66,7 +67,7 @@ export default function MonitoringPage() {
               <div>
                 <p className="text-xs font-bold text-slate-400 mb-2 uppercase tracking-wider">Grafik Suhu</p>
                 {isOnline && ctx.visibleTempEstimate > 0 ? (
-                  <TemperatureChart value={ctx.visibleTempEstimate} series={ctx.tempHistory} />
+                   <TemperatureChart value={ctx.visibleTempEstimate} series={ctx.tempHistory} />
                 ) : (
                   <div className="flex items-center justify-center h-[280px] rounded-2xl border border-dashed border-slate-200 bg-slate-50 text-slate-400 text-sm font-bold">
                     Menunggu data...
@@ -96,8 +97,70 @@ export default function MonitoringPage() {
           </div>
         )}
         <div className="grid gap-3">
-          <ControlRow label="Sensor Gas" detail="Aktifkan atau nonaktifkan sensor gas MQ-2." enabled={ctx.gasEnabled} onToggle={ctx.toggleGas} disabled={!isOnline} />
-          <ControlRow label="Sensor Suhu" detail="Kontrol pembacaan suhu dari sensor DS3231." enabled={ctx.temperatureEnabled} onToggle={ctx.toggleTemperature} disabled={!isOnline} />
+          {/* Sensor Gas */}
+          <div className={`rounded-2xl border border-slate-200 bg-white p-4 transition-all duration-200 hover:border-slate-300 ${!isOnline ? "opacity-50 animate-pulse-slow" : ""}`}>
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <p className="text-base font-bold text-slate-900">Sensor Gas</p>
+                <p className="mt-1 text-sm text-slate-500">Aktifkan atau nonaktifkan sensor gas MQ-2.</p>
+              </div>
+              <Switch checked={ctx.gasEnabled} onChange={ctx.toggleGas} disabled={!isOnline} />
+            </div>
+            {ctx.gasEnabled && isOnline && (
+              <div className="mt-4 border-t border-slate-100 pt-3">
+                <div className="flex justify-between text-xs font-bold text-slate-500 mb-2">
+                  <span>Ambang Batas Alarm Gas:</span>
+                  <span className="text-blue-600 bg-blue-50 px-2.5 py-0.5 rounded font-mono font-black">{ctx.gasThresholdPpm} PPM</span>
+                </div>
+                <input
+                  type="range"
+                  min="5"
+                  max="50"
+                  value={ctx.gasThresholdPpm}
+                  onChange={(e) => ctx.updateGasThreshold(Number(e.target.value))}
+                  className="w-full h-1.5 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-blue-600"
+                />
+                <div className="flex justify-between text-[10px] text-slate-400 font-bold mt-1 font-mono">
+                  <span>5 PPM</span>
+                  <span>21 PPM (Default)</span>
+                  <span>50 PPM</span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Sensor Suhu */}
+          <div className={`rounded-2xl border border-slate-200 bg-white p-4 transition-all duration-200 hover:border-slate-300 ${!isOnline ? "opacity-50 animate-pulse-slow" : ""}`}>
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <p className="text-base font-bold text-slate-900">Sensor Suhu</p>
+                <p className="mt-1 text-sm text-slate-500">Kontrol pembacaan suhu dari sensor DS3231.</p>
+              </div>
+              <Switch checked={ctx.temperatureEnabled} onChange={ctx.toggleTemperature} disabled={!isOnline} />
+            </div>
+            {ctx.temperatureEnabled && isOnline && (
+              <div className="mt-4 border-t border-slate-100 pt-3">
+                <div className="flex justify-between text-xs font-bold text-slate-500 mb-2">
+                  <span>Suhu Pemicu Stop Kontak:</span>
+                  <span className="text-rose-600 bg-rose-50 px-2.5 py-0.5 rounded font-mono font-black">{ctx.tempThreshold}°C</span>
+                </div>
+                <input
+                  type="range"
+                  min="20"
+                  max="50"
+                  value={ctx.tempThreshold}
+                  onChange={(e) => ctx.updateTempThreshold(Number(e.target.value))}
+                  className="w-full h-1.5 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-rose-600"
+                />
+                <div className="flex justify-between text-[10px] text-slate-400 font-bold mt-1 font-mono">
+                  <span>20°C</span>
+                  <span>38°C (Default)</span>
+                  <span>50°C</span>
+                </div>
+              </div>
+            )}
+          </div>
+
           <ControlRow label="Sensor PIR (Gerakan)" detail="Aktifkan atau nonaktifkan deteksi gerakan." enabled={ctx.pirEnabled} onToggle={ctx.togglePir} disabled={!isOnline} />
           <ControlRow label="Sleep Mode" detail="Matikan LCD & relay jika tidak ada gerakan 1 jam." enabled={ctx.sleepModeEnabled} onToggle={ctx.toggleSleepMode} disabled={!isOnline} />
           <ControlRow

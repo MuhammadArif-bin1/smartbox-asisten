@@ -33,6 +33,12 @@ export type AlarmSchedule = {
   time: string;
   track: number;
   active: boolean;
+  days: string;
+  buzzerActive: boolean;
+  buzzerDuration: number;
+  buzzerDelay: number;
+  repeatCount: number;
+  repeatDelay: number;
   lastRunAt?: string | null;
 };
 
@@ -66,6 +72,8 @@ export type TelemetryPayload = {
   online?: boolean;
   gasLevel?: string;
   gasDetected?: boolean;
+  gasThresholdPpm?: number;
+  tempThreshold?: number;
   ip?: string;
   rssi?: number;
 };
@@ -131,6 +139,8 @@ export type SmartboxContextValue = {
   obstacleNear: boolean;
   pirEnabled: boolean;
   sleepModeEnabled: boolean;
+  gasThresholdPpm: number;
+  tempThreshold: number;
 
   /* PIR greeting */
   pirGreetingEnabled: boolean;
@@ -183,6 +193,8 @@ export type SmartboxContextValue = {
   togglePir: () => void;
   toggleSleepMode: () => void;
   updateAlarm: (id: string, field: keyof Alarm, value: string | number | boolean) => void;
+  updateGasThreshold: (ppm: number) => Promise<void>;
+  updateTempThreshold: (threshold: number) => Promise<void>;
   setBuzzerEnabled: (enabled: boolean) => void;
   setBoardLedScheduleEnabled: (enabled: boolean) => void;
   setVoiceMode: (enabled: boolean) => void;
@@ -197,7 +209,19 @@ export type SmartboxContextValue = {
   ) => Promise<void>;
   saveRelaySchedule: (sch: { id?: string; name: string; relayNumber: number; startTime: string; endTime: string; days: string; enabled: boolean }) => Promise<void>;
   deleteRelaySchedule: (id: string) => Promise<void>;
-  onSaveSchedule: (sch: { id?: string; name: string; time: string; track: number; active: boolean }) => Promise<void>;
+  onSaveSchedule: (sch: {
+    id?: string;
+    name: string;
+    time: string;
+    track: number;
+    active: boolean;
+    days: string;
+    buzzerActive: boolean;
+    buzzerDuration: number;
+    buzzerDelay: number;
+    repeatCount: number;
+    repeatDelay: number;
+  }) => Promise<void>;
   onDeleteSchedule: (id: string) => Promise<void>;
   onToggleScheduleActive: (id: string, currentActive: boolean) => Promise<void>;
   onTestPlayVoice: (track: number) => Promise<void>;

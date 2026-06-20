@@ -59,7 +59,7 @@ export default function LoginPage() {
             <input
               autoComplete="current-password"
               autoFocus
-              className="h-14 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-5 text-base font-semibold text-white placeholder-slate-600 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10"
+              className="h-14 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-5 text-base font-semibold !text-white placeholder-slate-600 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10"
               disabled={isChecking}
               onChange={(event) => setPassword(event.target.value)}
               placeholder="Masukkan password"

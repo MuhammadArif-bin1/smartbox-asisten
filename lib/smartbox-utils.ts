@@ -65,6 +65,8 @@ export function parseTelemetry(message: string): TelemetryPayload {
       buzzer: readBoolean(payload.buzzer),
       gasLevel: typeof payload.gasLevel === "string" ? payload.gasLevel : undefined,
       gasDetected: readBoolean(payload.gasDetected),
+      gasThresholdPpm: readNumber(payload.gasThresholdPpm),
+      tempThreshold: readNumber(payload.tempThreshold),
       online: readBoolean(payload.online),
       ip: typeof payload.ip === "string" ? payload.ip : undefined,
       rssi: readNumber(payload.rssi),

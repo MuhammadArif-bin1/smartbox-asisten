@@ -615,10 +615,67 @@ async function checkRelaySchedules() {
   }
 }
 
+async function triggerAlarmSequence(schedule: any, topic: string, targetDeviceId: string) {
+  const repeatCount = schedule.repeatCount || 1;
+  const repeatDelay = schedule.repeatDelay || 5;
+
+  console.log(`[Worker] Starting alarm sequence for "${schedule.name}" with ${repeatCount} repetitions`);
+
+  for (let i = 0; i < repeatCount; i++) {
+    console.log(`[Worker] Alarm "${schedule.name}" repetition ${i + 1} of ${repeatCount}`);
+
+    if (schedule.buzzerActive) {
+      // 1. Turn buzzer ON
+      const buzOnCmd = {
+        id: `cmd_alarm_buz_on_${Date.now()}`,
+        type: "buzzer.set",
+        payload: { state: true }
+      };
+      client.publish(topic, JSON.stringify(buzOnCmd), { qos: 1 });
+      console.log(`[Worker] Alarm Buzzer ON for ${schedule.buzzerDuration}s`);
+
+      // 2. Wait for buzzerDuration seconds
+      await new Promise(resolve => setTimeout(resolve, (schedule.buzzerDuration || 5) * 1000));
+
+      // 3. Turn buzzer OFF
+      const buzOffCmd = {
+        id: `cmd_alarm_buz_off_${Date.now()}`,
+        type: "buzzer.set",
+        payload: { state: false }
+      };
+      client.publish(topic, JSON.stringify(buzOffCmd), { qos: 1 });
+      console.log(`[Worker] Alarm Buzzer OFF`);
+
+      // 4. Wait for buzzerDelay seconds before playing the voice
+      await new Promise(resolve => setTimeout(resolve, (schedule.buzzerDelay || 2) * 1000));
+    }
+
+    // 5. Play voice track
+    const voiceCmd = {
+      id: `cmd_alarm_voice_${Date.now()}`,
+      type: "voice.play",
+      payload: {
+        track: schedule.track,
+        reason: "schedule_alarm",
+        label: schedule.name,
+      },
+    };
+    client.publish(topic, JSON.stringify(voiceCmd), { qos: 1 });
+    console.log(`[Worker] Alarm Voice track ${schedule.track} played`);
+
+    // 6. If not the last repetition, wait for repeatDelay seconds before starting the next sequence
+    if (i < repeatCount - 1) {
+      console.log(`[Worker] Waiting repeat delay of ${repeatDelay}s before next repetition`);
+      await new Promise(resolve => setTimeout(resolve, repeatDelay * 1000));
+    }
+  }
+  console.log(`[Worker] Alarm sequence finished for "${schedule.name}"`);
+}
+
 async function checkAlarmSchedules() {
   try {
     await refreshSchedulesCacheIfNeeded();
-    const { hour, minute, date } = getJakartaDateTime();
+    const { weekday, hour, minute, date } = getJakartaDateTime();
     const timeStr = `${hour}:${minute}`;
 
     const schedules = cachedAlarmSchedules;
@@ -629,6 +686,21 @@ async function checkAlarmSchedules() {
 
     for (const schedule of schedules) {
       if (schedule.time !== timeStr) {
+        continue;
+      }
+
+      let activeDays: string[] = [];
+      try {
+        if (schedule.days) {
+          activeDays = JSON.parse(schedule.days);
+        } else {
+          activeDays = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+        }
+      } catch {
+        activeDays = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+      }
+
+      if (activeDays.length > 0 && !activeDays.includes(weekday)) {
         continue;
       }
 
@@ -670,31 +742,24 @@ async function checkAlarmSchedules() {
       // Update local memory cache object too
       schedule.lastRunAt = new Date();
 
-      const command = {
-        id: "cmd_alarm_voice_play",
-        type: "voice.play",
-        payload: {
-          track: schedule.track,
-          reason: "schedule_alarm",
-          label: schedule.name,
-        },
-      };
+      // Trigger the alarm sequence in tandem asynchronously
+      triggerAlarmSequence(schedule, topic, targetDeviceId).catch((err) => {
+        console.error(`[Worker Alarm] Error running alarm sequence for ${schedule.name}:`, err);
+      });
 
-      client.publish(topic, JSON.stringify(command), { qos: 1 });
-      
       console.log(`[Worker] Alarm schedule triggered: ${schedule.name}`);
-      console.log(`[Worker] Publish voice.play to smartbox/${targetDeviceId}/cmd`);
-      console.log(`[Worker] Track DFPlayer: ${String(schedule.track).padStart(4, "0")}`);
 
       await retryQuery(() => prisma.eventLog.create({
         data: {
           deviceId: targetDeviceId,
           level: "INFO",
           type: "alarm.triggered",
-          message: "Alarm jadwal dipicu dan suara DFPlayer diputar.",
+          message: `Alarm jadwal "${schedule.name}" dipicu.`,
           payload: {
             track: schedule.track,
             name: schedule.name,
+            buzzerActive: schedule.buzzerActive,
+            repeatCount: schedule.repeatCount,
           },
         },
       })).catch((err) => console.error("[Worker Alarm] Error writing EventLog:", err));
