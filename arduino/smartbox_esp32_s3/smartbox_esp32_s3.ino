@@ -135,7 +135,7 @@ const char *DEVICE_ID = "smartbox-001";
 #define TRACK_GESTURE_WAVE        12
 #define TRACK_BLUETOOTH_OFF       13
 #define TRACK_TEMP_HIGH_ALARM     14
-#define DFPLAYER_MAX_TRACK        TRACK_TEMP_HIGH_ALARM
+#define DFPLAYER_MAX_TRACK        40
 
 #define TRACK_SYSTEM_READY        TRACK_STARTUP_READY
 #define TRACK_SHOW_TIME_TEMP      TRACK_TIME_TEMP_REALTIME
@@ -1761,6 +1761,7 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
     lastGasWarning = false; lastSmokeWarning = false;
     saveSettings();
     publishAck(cmdId, type, true, "Sensor updated.");
+    sendTelemetryNow();
   } else if (strcmp(type, "voice.play") == 0) {
     int track = data["track"] | -1;
     const char *reason = data["reason"] | "dashboard_voice_test";
@@ -1848,6 +1849,7 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
     lastTempWarning = false;
     saveSettings();
     publishAck(cmdId, type, true, "Temperature sensor updated.");
+    sendTelemetryNow();
   } else if (strcmp(type, "pirSensor.set") == 0) {
     pirEnabled = data["enabled"] | true;
     saveSettings();
@@ -1973,6 +1975,10 @@ void publishTelemetry(int gasRaw, float tempC, bool gasWarning, bool tempWarning
   doc["pirEnabled"] = pirEnabled;
   doc["pirGreetingEnabled"] = pirGreetingEnabled;
   doc["pirGreetingTrack"] = pirGreetingTrack;
+  doc["gasEnabled"] = gasEnabled;
+  doc["gasSensorEnabled"] = gasEnabled;
+  doc["tempEnabled"] = tempEnabled;
+  doc["tempSensorEnabled"] = tempEnabled;
   char pirStart[6];
   char pirEnd[6];
   snprintf(pirStart, sizeof(pirStart), "%02d:%02d", pirGreetingStartHour, pirGreetingStartMinute);
@@ -1987,14 +1993,15 @@ void publishTelemetry(int gasRaw, float tempC, bool gasWarning, bool tempWarning
 void sendTelemetryNow() {
   int gas = getFilteredGas();
   float temp = rtcReady ? (rtc.getTemperature() + tempOffset) : 0.0;
-  bool isGas = (gas >= gasThreshold);
-  bool isSmoke = (gas >= smokeThreshold);
+  bool isGas = gasEnabled && (gas >= gasThreshold);
+  bool isSmoke = gasEnabled && (gas >= smokeThreshold);
   String gasLevel = "normal";
   if (isGas) gasLevel = "gas";
   else if (isSmoke) gasLevel = "smoke";
   bool pir = pirEnabled && (digitalRead(PIR_PIN) == HIGH);
   bool obstacle = (digitalRead(IR_PIN) == HIGH);
-  publishTelemetry(gas, temp, isGas || isSmoke, false, pir, gasLevel, obstacle);
+  bool isTempHigh = tempEnabled && (temp > tempThreshold);
+  publishTelemetry(gas, temp, isGas || isSmoke, isTempHigh, pir, gasLevel, obstacle);
 }
 
 void sendTelemetryHttp(int gasRaw, float tempC, bool gasWarning, bool tempWarning, bool pirDetected, bool obstacleNear) {
@@ -2587,7 +2594,7 @@ void loop() {
   lastPirDetectedState = pirDetected;
 
   checkWarnings(gasRaw, tempC, gasWarning, tempWarning, pirDetected);
-  checkPirGreeting();
+  // checkPirGreeting(); // Disabled locally - delegated to server-side MQTT Worker to support multi-schedules and custom tracks
 
   updateLed12c(gasWarning, isSmoke, pirDetected, WiFi.status() == WL_CONNECTED, mqttClient.connected());
   updateLcd(gasRaw, tempC, gasWarning, tempWarning, pirDetected);

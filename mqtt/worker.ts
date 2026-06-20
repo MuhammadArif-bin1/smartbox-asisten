@@ -180,7 +180,10 @@ client.on("message", async (topic, message) => {
         ampRelay,
         bluetoothAudio,
         buzzer = false,
-        gasSensorEnabled = true,
+        gasSensorEnabled,
+        gasEnabled,
+        tempSensorEnabled,
+        tempEnabled,
       } = data;
 
       // Extract temperature value (support fallback keys)
@@ -206,6 +209,8 @@ client.on("message", async (topic, message) => {
           ? motionDetected
           : (typeof motion === "boolean" ? motion : (previousStatus?.pirDetected ?? false)));
       const finalGasDetected = Boolean(gasDetected) || gasLevel === "gas" || gasLevel === "smoke";
+      const finalGasSensorEnabled = typeof gasSensorEnabled === "boolean" ? gasSensorEnabled : (typeof gasEnabled === "boolean" ? gasEnabled : true);
+      const finalTempSensorEnabled = typeof tempSensorEnabled === "boolean" ? tempSensorEnabled : (typeof tempEnabled === "boolean" ? tempEnabled : true);
 
       await ensureDevice(deviceId, true);
 
@@ -224,7 +229,8 @@ client.on("message", async (topic, message) => {
           relay2: Boolean(relay2),
           bluetoothRelay: finalBluetooth,
           buzzer: Boolean(buzzer),
-          gasSensorEnabled: Boolean(gasSensorEnabled),
+          gasSensorEnabled: finalGasSensorEnabled,
+          tempSensorEnabled: finalTempSensorEnabled,
           createdAt: data.createdAt ? new Date(data.createdAt) : new Date(),
         },
       })).catch((err) => {
@@ -251,6 +257,8 @@ client.on("message", async (topic, message) => {
           bluetoothAudio: finalBluetooth,
           buzzer: Boolean(buzzer),
           dfPlayerReady: data.dfPlayerReady ?? false,
+          gasSensorEnabled: finalGasSensorEnabled,
+          tempSensorEnabled: finalTempSensorEnabled,
         },
         update: {
           online: true,
@@ -268,6 +276,8 @@ client.on("message", async (topic, message) => {
           bluetoothAudio: finalBluetooth,
           buzzer: Boolean(buzzer),
           dfPlayerReady: data.dfPlayerReady ?? false,
+          gasSensorEnabled: finalGasSensorEnabled,
+          tempSensorEnabled: finalTempSensorEnabled,
         }
       })).catch((err) => {
         console.error(`[Worker] Error updating SmartboxStatus telemetry:`, err);
@@ -355,6 +365,12 @@ client.on("message", async (topic, message) => {
         })).catch((err) => {
           console.error(`[Worker] Error saving SensorReading for PIR event:`, err);
         });
+
+        if (pirDetectedVal) {
+          await handlePirGreeting(deviceId).catch((err) => {
+            console.error(`[Worker] Error in handlePirGreeting:`, err);
+          });
+        }
       }
 
       await retryQuery(() => prisma.eventLog.create({
@@ -501,6 +517,137 @@ function getJakartaDateTime() {
   const date = `${map.year || "0000"}-${month}-${day}`;
   
   return { weekday, hour, minute, date };
+}
+
+async function handlePirGreeting(deviceId: string) {
+  try {
+    const { weekday, hour, minute } = getJakartaDateTime();
+    const currentMinutes = parseInt(hour, 10) * 60 + parseInt(minute, 10);
+
+    const activeSchedules = await retryQuery(() => prisma.greetingVoiceSchedule.findMany({
+      where: { active: true },
+    }));
+
+    if (activeSchedules.length === 0) {
+      console.log(`[Worker PIR Greeting] No active greeting voice schedules found.`);
+      return;
+    }
+
+    const now = new Date();
+
+    for (const schedule of activeSchedules) {
+      let activeDays: string[] = [];
+      try {
+        activeDays = JSON.parse(schedule.days);
+      } catch (e) {
+        console.error(`[Worker PIR Greeting] Error parsing days for schedule ${schedule.id}:`, e);
+        continue;
+      }
+      activeDays = activeDays.map(d => d.toLowerCase());
+
+      if (!activeDays.includes(weekday)) {
+        continue;
+      }
+
+      const [startH, startM] = schedule.startTime.split(":").map(Number);
+      const [endH, endM] = schedule.endTime.split(":").map(Number);
+      const startMinutes = startH * 60 + startM;
+      const endMinutes = endH * 60 + endM;
+
+      let isWithinTimeRange = false;
+      if (startMinutes <= endMinutes) {
+        isWithinTimeRange = currentMinutes >= startMinutes && currentMinutes <= endMinutes;
+      } else {
+        isWithinTimeRange = currentMinutes >= startMinutes || currentMinutes <= endMinutes;
+      }
+
+      if (!isWithinTimeRange) {
+        continue;
+      }
+
+      const cooldownMs = schedule.cooldown * 1000;
+      if (schedule.lastRunAt) {
+        const lastRunTime = new Date(schedule.lastRunAt).getTime();
+        const diffMs = now.getTime() - lastRunTime;
+        if (diffMs < cooldownMs) {
+          console.log(`[Worker PIR Greeting] Schedule ${schedule.name} is in cooldown. Remaining: ${Math.round((cooldownMs - diffMs) / 1000)}s`);
+          continue;
+        }
+      }
+
+      let tracksList: number[] = [];
+      try {
+        tracksList = JSON.parse(schedule.tracks);
+      } catch (e) {
+        console.error(`[Worker PIR Greeting] Error parsing tracks for schedule ${schedule.id}:`, e);
+        continue;
+      }
+
+      if (tracksList.length === 0) {
+        for (let t = 25; t <= 40; t++) {
+          tracksList.push(t);
+        }
+      }
+
+      let selectedTrack = 25;
+
+      if (schedule.mode === "random") {
+        const rndIdx = Math.floor(Math.random() * tracksList.length);
+        selectedTrack = tracksList[rndIdx];
+      } else {
+        const lastTrack = schedule.lastTrackPlayed;
+        let nextIdx = 0;
+        if (lastTrack !== null && lastTrack !== undefined) {
+          const lastIdx = tracksList.indexOf(lastTrack);
+          if (lastIdx !== -1) {
+            nextIdx = (lastIdx + 1) % tracksList.length;
+          }
+        }
+        selectedTrack = tracksList[nextIdx];
+      }
+
+      const topic = `smartbox/${deviceId}/cmd`;
+      const payload = {
+        id: `greeting_voice_${schedule.id}_${Date.now()}`,
+        type: "voice.play",
+        payload: {
+          track: selectedTrack,
+          reason: "greeting_voice",
+          scheduleId: schedule.id,
+        },
+      };
+
+      client.publish(topic, JSON.stringify(payload), { qos: 1 });
+      console.log(`[Worker PIR Greeting] Triggered track ${selectedTrack} for schedule: ${schedule.name}`);
+
+      await retryQuery(() => prisma.eventLog.create({
+        data: {
+          deviceId,
+          level: "INFO",
+          type: "greeting_voice.played",
+          message: `Jadwal '${schedule.name}' memutar sapaan suara track ${selectedTrack}`,
+          payload: {
+            track: selectedTrack,
+            scheduleId: schedule.id,
+            mode: schedule.mode,
+            time: `${hour}:${minute}`,
+          },
+        },
+      })).catch(err => console.error("[Worker PIR Greeting] Error writing EventLog:", err));
+
+      await retryQuery(() => prisma.greetingVoiceSchedule.update({
+        where: { id: schedule.id },
+        data: {
+          lastRunAt: now,
+          lastTrackPlayed: selectedTrack,
+        },
+      })).catch(err => console.error("[Worker PIR Greeting] Error updating schedule status:", err));
+
+      break;
+    }
+  } catch (err) {
+    console.error("[Worker PIR Greeting] Error processing greeting voice:", err);
+  }
 }
 
 async function checkRelaySchedules() {

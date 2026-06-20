@@ -42,6 +42,23 @@ export type AlarmSchedule = {
   lastRunAt?: string | null;
 };
 
+/* ─── GreetingVoiceSchedule (DB model) ─── */
+export type GreetingVoiceSchedule = {
+  id: string;
+  name: string;
+  active: boolean;
+  startTime: string;
+  endTime: string;
+  cooldown: number;
+  mode: string;
+  tracks: string; // JSON array of numbers
+  days: string; // JSON array of strings
+  lastTrackPlayed?: number | null;
+  lastRunAt?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
 /* ─── Telemetry payload from MQTT / ESP32 ─── */
 export type TelemetryPayload = {
   gasEnabled?: boolean;
@@ -150,6 +167,7 @@ export type SmartboxContextValue = {
   pirGreetingCooldown: number;
   pirGreetingDays: string[];
   pirGreetingPlayMode: string;
+  greetingVoiceSchedules: GreetingVoiceSchedule[];
 
   /* device */
   deviceStatuses: DeviceStatuses;
@@ -209,6 +227,19 @@ export type SmartboxContextValue = {
   ) => Promise<void>;
   saveRelaySchedule: (sch: { id?: string; name: string; relayNumber: number; startTime: string; endTime: string; days: string; enabled: boolean }) => Promise<void>;
   deleteRelaySchedule: (id: string) => Promise<void>;
+  saveGreetingVoiceSchedule: (sch: {
+    id?: string;
+    name: string;
+    active: boolean;
+    startTime: string;
+    endTime: string;
+    cooldown: number;
+    mode: string;
+    tracks: string;
+    days: string;
+  }) => Promise<void>;
+  deleteGreetingVoiceSchedule: (id: string) => Promise<void>;
+  toggleGreetingVoiceScheduleActive: (id: string, currentActive: boolean) => Promise<void>;
   onSaveSchedule: (sch: {
     id?: string;
     name: string;

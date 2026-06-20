@@ -115,6 +115,7 @@ model SensorReading {
   bluetoothRelay   Boolean
   buzzer           Boolean
   gasSensorEnabled Boolean
+  tempSensorEnabled Boolean  @default(true)
   createdAt        DateTime @default(now())
 
   device           Device   @relation(fields: [deviceId], references: [deviceId], onDelete: Cascade)
@@ -195,6 +196,8 @@ model SmartboxStatus {
   temperatureHigh Boolean  @default(false)
   pirDetected     Boolean  @default(false)
   obstacleNear    Boolean  @default(false)
+  gasSensorEnabled Boolean @default(true)
+  tempSensorEnabled Boolean @default(true)
 
   // Aktuator status
   relay1          Boolean  @default(false)
@@ -276,5 +279,21 @@ model PirGreetingSetting {
   days            String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
+}
+
+model GreetingVoiceSchedule {
+  id              String    @id @default(cuid())
+  name            String
+  active          Boolean   @default(true)
+  startTime       String    @default("07:00")
+  endTime         String    @default("22:00")
+  cooldown        Int       @default(20)
+  mode            String    @default("random") // "random" | "custom"
+  tracks          String    @default("[]")    // JSON array of tracks (e.g. "[25, 26]")
+  days            String    @default("[\"monday\",\"tuesday\",\"wednesday\",\"thursday\",\"friday\",\"saturday\",\"sunday\"]")
+  lastTrackPlayed Int?
+  lastRunAt       DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 }
 

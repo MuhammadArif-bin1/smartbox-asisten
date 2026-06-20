@@ -69,11 +69,13 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
   const [relayState, setRelayState] = useState<Record<RelayId, boolean>>({ socket1: false, socket2: false, ampli: false });
   const [relayAutoOffAt, setRelayAutoOffAt] = useState<{ socket1: number | null; socket2: number | null }>({ socket1: null, socket2: null });
   const relayPendingRef = useRef<Record<RelayId, number>>({ socket1: 0, socket2: 0, ampli: 0 });
+  const sensorPendingRef = useRef<{ gas: number; temperature: number }>({ gas: 0, temperature: 0 });
   const [relaySchedules, setRelaySchedules] = useState<RelaySchedule[]>([]);
 
   /* ── Alarms ── */
   const [alarms, setAlarms] = useState(initialAlarms);
   const [alarmSchedules, setAlarmSchedules] = useState<AlarmSchedule[]>([]);
+  const [greetingVoiceSchedules, setGreetingVoiceSchedules] = useState<GreetingVoiceSchedule[]>([]);
 
   /* ── Events ── */
   const [events, setEvents] = useState<EventLogEntry[]>([]);
@@ -232,6 +234,80 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  async function saveGreetingVoiceSchedule(sch: {
+    id?: string;
+    name: string;
+    active: boolean;
+    startTime: string;
+    endTime: string;
+    cooldown: number;
+    mode: string;
+    tracks: string;
+    days: string;
+  }) {
+    try {
+      const isEdit = !!sch.id;
+      const url = isEdit ? `/api/greeting-voice-schedules/${sch.id}` : "/api/greeting-voice-schedules";
+      const method = isEdit ? "PATCH" : "POST";
+      const response = await fetch(url, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(sch),
+      });
+      if (response.ok) {
+        const saved = await response.json();
+        setGreetingVoiceSchedules((current) => {
+          if (isEdit) return current.map((item) => (item.id === sch.id ? saved : item));
+          return [...current, saved].sort((a, b) => a.startTime.localeCompare(b.startTime));
+        });
+        notify(isEdit ? "Jadwal greeting voice berhasil diperbarui" : "Jadwal greeting voice berhasil disimpan", "success");
+      } else {
+        const result = await response.json().catch(() => null);
+        notify(result?.error || "Gagal menyimpan jadwal greeting voice", "error");
+      }
+    } catch (err) {
+      console.error("Error saving greeting voice schedule:", err);
+      notify("Gagal menyimpan jadwal greeting voice", "error");
+    }
+  }
+
+  async function deleteGreetingVoiceSchedule(id: string) {
+    try {
+      const response = await fetch(`/api/greeting-voice-schedules/${id}`, { method: "DELETE" });
+      if (response.ok) {
+        setGreetingVoiceSchedules((current) => current.filter((s) => s.id !== id));
+        notify("Jadwal greeting voice berhasil dihapus", "success");
+      } else {
+        notify("Gagal menghapus jadwal greeting voice", "error");
+      }
+    } catch (err) {
+      console.error("Error deleting greeting voice schedule:", err);
+      notify("Gagal menghapus jadwal greeting voice", "error");
+    }
+  }
+
+  async function toggleGreetingVoiceScheduleActive(id: string, currentActive: boolean) {
+    const nextActive = !currentActive;
+    setGreetingVoiceSchedules((current) =>
+      current.map((s) => (s.id === id ? { ...s, active: nextActive } : s))
+    );
+    try {
+      const response = await fetch(`/api/greeting-voice-schedules/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ active: nextActive }),
+      });
+      if (!response.ok) throw new Error("Gagal update status");
+      notify(`Greeting voice ${nextActive ? "diaktifkan" : "dinonaktifkan"}`, "info");
+    } catch (err) {
+      console.error("Error toggling greeting voice active:", err);
+      setGreetingVoiceSchedules((current) =>
+        current.map((s) => (s.id === id ? { ...s, active: currentActive } : s))
+      );
+      notify("Gagal memperbarui status greeting voice", "error");
+    }
+  }
+
   async function testPlayVoice(track: number) {
     try {
       const response = await fetch("/api/voice/play", {
@@ -254,6 +330,7 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
   function toggleGas() {
     const next = !gasEnabled;
     setGasEnabled(next);
+    sensorPendingRef.current.gas = Date.now();
     if (next && gasEstimate === 0) setGasEstimate(720);
     sendDeviceCommand("gasSensor.set", { enabled: next }, `Sensor gas ${next ? "aktif" : "mati"}`);
   }
@@ -261,6 +338,7 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
   function toggleTemperature() {
     const next = !temperatureEnabled;
     setTemperatureEnabled(next);
+    sensorPendingRef.current.temperature = Date.now();
     if (next && tempEstimate === 0) setTempEstimate(35);
     sendDeviceCommand("tempSensor.set", { enabled: next }, `Sensor suhu ${next ? "aktif" : "mati"}`);
   }
@@ -503,8 +581,13 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
               lastSeen: new Date().toLocaleTimeString("id-ID"),
             }));
 
-            if (typeof telemetry.gasEnabled === "boolean") setGasEnabled(telemetry.gasEnabled);
-            if (typeof telemetry.tempEnabled === "boolean") setTemperatureEnabled(telemetry.tempEnabled);
+            const nowTime = Date.now();
+            if (typeof telemetry.gasEnabled === "boolean" && nowTime - sensorPendingRef.current.gas > 5000) {
+              setGasEnabled(telemetry.gasEnabled);
+            }
+            if (typeof telemetry.tempEnabled === "boolean" && nowTime - sensorPendingRef.current.temperature > 5000) {
+              setTemperatureEnabled(telemetry.tempEnabled);
+            }
             if (typeof telemetry.gasRaw === "number") setGasEstimate(Math.max(0, Math.min(4095, Math.round(telemetry.gasRaw))));
             if (typeof telemetry.gasLevel === "string") setGasLevel(telemetry.gasLevel);
             if (typeof telemetry.temperatureC === "number") setTempEstimate(roundTemperature(telemetry.temperatureC));
@@ -625,6 +708,14 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
           else if (topicStr.endsWith("/ack")) {
             console.log("[MQTT Client] ACK received:", data);
             notify(`ACK: ${data.message || "Command diproses"}`, data.ok ? "success" : "error");
+            if (data.type === "gasSensor.set") {
+              sensorPendingRef.current.gas = 0;
+            } else if (data.type === "tempSensor.set" || data.type === "temperatureSensor.set") {
+              sensorPendingRef.current.temperature = 0;
+            } else if (data.type === "relay.set") {
+              relayPendingRef.current.socket1 = 0;
+              relayPendingRef.current.socket2 = 0;
+            }
           }
         });
 
@@ -731,6 +822,22 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
     loadPirGreeting();
   }, [isAuthenticated]);
 
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    async function loadGreetingVoiceSchedules() {
+      try {
+        const response = await fetch("/api/greeting-voice-schedules");
+        if (response.ok) {
+          const data = await response.json();
+          setGreetingVoiceSchedules(data);
+        }
+      } catch (err) {
+        console.error("Gagal memuat jadwal greeting voice dari database:", err);
+      }
+    }
+    loadGreetingVoiceSchedules();
+  }, [isAuthenticated]);
+
   /* ═══════════════════════════════════════════════════════════════
      EFFECTS — Telemetry history polling from Neon DB
      ═══════════════════════════════════════════════════════════════ */
@@ -744,6 +851,7 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
       temperature?: number;
       gasRaw?: number;
       gasSensorEnabled?: boolean;
+      tempSensorEnabled?: boolean;
       pirDetected?: boolean;
       relay1?: boolean;
       relay2?: boolean;
@@ -767,8 +875,13 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
             if (latest) {
               if (typeof latest.temperature === "number") setTempEstimate(latest.temperature);
               if (typeof latest.gasRaw === "number") setGasEstimate(latest.gasRaw);
-              if (typeof latest.gasSensorEnabled === "boolean") setGasEnabled(latest.gasSensorEnabled);
-              setTemperatureEnabled(true);
+              const nowTime = Date.now();
+              if (typeof latest.gasSensorEnabled === "boolean" && nowTime - sensorPendingRef.current.gas > 5000) {
+                setGasEnabled(latest.gasSensorEnabled);
+              }
+              if (typeof latest.tempSensorEnabled === "boolean" && nowTime - sensorPendingRef.current.temperature > 5000) {
+                setTemperatureEnabled(latest.tempSensorEnabled);
+              }
               if (typeof latest.pirDetected === "boolean") setPirDetected(latest.pirDetected);
 
               setRelayState((current) => {
@@ -917,6 +1030,7 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
     gasEnabled, temperatureEnabled, visibleGasEstimate, visibleTempEstimate, gasPpm, gasPercent, tempPercent, gasWarning, tempWarning, gasState, tempState, flameDetected, pirDetected, obstacleNear, pirEnabled, sleepModeEnabled,
     gasThresholdPpm, tempThreshold,
     pirGreetingEnabled, pirGreetingTrack, pirGreetingStart, pirGreetingEnd, pirGreetingCooldown, pirGreetingDays, pirGreetingPlayMode,
+    greetingVoiceSchedules,
     deviceStatuses: deviceStatus, dfTrackCount, telemetrySource, tempHistory, gasHistory,
     relayState, relayAutoOffAt, relayActiveCount, relaySchedules,
     alarms, alarmSchedules, activeAlarms,
@@ -925,6 +1039,7 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
     publish, sendDeviceCommand, toggleGas, toggleTemperature, toggleRelay, togglePir, toggleSleepMode,
     updateAlarm, updateGasThreshold, updateTempThreshold, setBuzzerEnabled, setBoardLedScheduleEnabled, setVoiceMode, updatePirGreetingConfig,
     saveRelaySchedule, deleteRelaySchedule,
+    saveGreetingVoiceSchedule, deleteGreetingVoiceSchedule, toggleGreetingVoiceScheduleActive,
     onSaveSchedule: saveAlarmSchedule, onDeleteSchedule: deleteAlarmSchedule, onToggleScheduleActive: toggleAlarmScheduleActive, onTestPlayVoice: testPlayVoice,
   };
 

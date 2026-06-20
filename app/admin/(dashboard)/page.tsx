@@ -107,10 +107,10 @@ export default function MonitoringPage() {
               <Switch checked={ctx.gasEnabled} onChange={ctx.toggleGas} disabled={!isOnline} />
             </div>
             {ctx.gasEnabled && isOnline && (
-              <div className="mt-4 border-t border-slate-100 pt-3">
-                <div className="flex justify-between text-xs font-bold text-slate-500 mb-2">
-                  <span>Ambang Batas Alarm Gas:</span>
-                  <span className="text-blue-600 bg-blue-50 px-2.5 py-0.5 rounded font-mono font-black">{ctx.gasThresholdPpm} PPM</span>
+              <div className="mt-4 border-t border-slate-100 pt-4">
+                <div className="flex flex-col gap-2 mb-4">
+                  <span className="text-lg font-bold text-slate-600">Ambang Batas Alarm Gas:</span>
+                  <span className="text-blue-600 bg-blue-50 py-2 rounded-xl font-mono font-black text-4xl text-center border border-blue-100 shadow-sm">{ctx.gasThresholdPpm} PPM</span>
                 </div>
                 <input
                   type="range"
@@ -118,11 +118,11 @@ export default function MonitoringPage() {
                   max="50"
                   value={ctx.gasThresholdPpm}
                   onChange={(e) => ctx.updateGasThreshold(Number(e.target.value))}
-                  className="w-full h-1.5 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-blue-600"
+                  className="w-full h-4 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-blue-600"
                 />
-                <div className="flex justify-between text-[10px] text-slate-400 font-bold mt-1 font-mono">
+                <div className="flex justify-between text-base text-slate-500 font-bold mt-2 font-mono">
                   <span>5 PPM</span>
-                  <span>21 PPM (Default)</span>
+                  <span className="text-slate-400">21 PPM (Default)</span>
                   <span>50 PPM</span>
                 </div>
               </div>
@@ -139,10 +139,10 @@ export default function MonitoringPage() {
               <Switch checked={ctx.temperatureEnabled} onChange={ctx.toggleTemperature} disabled={!isOnline} />
             </div>
             {ctx.temperatureEnabled && isOnline && (
-              <div className="mt-4 border-t border-slate-100 pt-3">
-                <div className="flex justify-between text-xs font-bold text-slate-500 mb-2">
-                  <span>Suhu Pemicu Stop Kontak:</span>
-                  <span className="text-rose-600 bg-rose-50 px-2.5 py-0.5 rounded font-mono font-black">{ctx.tempThreshold}°C</span>
+              <div className="mt-4 border-t border-slate-100 pt-4">
+                <div className="flex flex-col gap-2 mb-4">
+                  <span className="text-lg font-bold text-slate-600">Suhu Pemicu Stop Kontak:</span>
+                  <span className="text-rose-600 bg-rose-50 py-2 rounded-xl font-mono font-black text-4xl text-center border border-rose-100 shadow-sm">{ctx.tempThreshold}°C</span>
                 </div>
                 <input
                   type="range"
@@ -150,11 +150,11 @@ export default function MonitoringPage() {
                   max="50"
                   value={ctx.tempThreshold}
                   onChange={(e) => ctx.updateTempThreshold(Number(e.target.value))}
-                  className="w-full h-1.5 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-rose-600"
+                  className="w-full h-4 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-rose-600"
                 />
-                <div className="flex justify-between text-[10px] text-slate-400 font-bold mt-1 font-mono">
+                <div className="flex justify-between text-base text-slate-500 font-bold mt-2 font-mono">
                   <span>20°C</span>
-                  <span>38°C (Default)</span>
+                  <span className="text-slate-400">38°C (Default)</span>
                   <span>50°C</span>
                 </div>
               </div>
@@ -174,22 +174,6 @@ export default function MonitoringPage() {
               ctx.sendDeviceCommand("buzzer.set", { state: next }, `Buzzer ${next ? "aktif" : "mati"}`);
             }}
           />
-          <div className={`flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-4 transition-all duration-200 hover:border-slate-300 ${!isOnline ? "opacity-50" : ""}`}>
-            <div>
-              <p className="text-base font-bold text-slate-900">Kalibrasi Sensor Gas</p>
-              <p className="mt-1 text-sm text-slate-500 font-semibold text-slate-400">Mulai kalibrasi baseline sensor MQ-2.</p>
-            </div>
-            <button
-              onClick={() => {
-                ctx.sendDeviceCommand("sensor.calibrate", { samples: 100 }, "Kalibrasi MQ-2", "Kalibrasi dimulai", "Gagal mengirim kalibrasi");
-              }}
-              disabled={!isOnline}
-              className="h-10 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm px-4 shadow-md transition active:scale-95 disabled:bg-slate-400 disabled:cursor-not-allowed shrink-0"
-              type="button"
-            >
-              Kalibrasi
-            </button>
-          </div>
         </div>
       </Panel>
     </div>
