@@ -194,10 +194,11 @@ export default function AlarmsPage() {
       <div className="grid gap-6 lg:grid-cols-[3fr_2fr]">
         
         {/* Left Column: DFPlayer Schedules List */}
-        <Panel 
-          title="Jadwal Alarm DFPlayer" 
-          subtitle="Jadwal alarm otomatis untuk suara/sapaan otomatis melalui DFPlayer."
-        >
+        <div className="grid gap-6">
+          <Panel 
+            title="Jadwal Alarm DFPlayer" 
+            subtitle="Jadwal alarm otomatis untuk suara/sapaan otomatis melalui DFPlayer."
+          >
           <div className="grid gap-4">
             {ctx.alarmSchedules.length === 0 ? (
               <div className="text-center py-16 border-2 border-dashed border-slate-200/80 rounded-3xl bg-slate-50/50 flex flex-col items-center justify-center p-6">
