@@ -14,6 +14,19 @@ export default function DevicesPage() {
   const [testTrack, setTestTrack] = useState(1);
   const isSending = ctx.status === "sending";
 
+  const [isEditingLabel1, setIsEditingLabel1] = useState(false);
+  const [isEditingLabel2, setIsEditingLabel2] = useState(false);
+  const [tempLabel1, setTempLabel1] = useState("");
+  const [tempLabel2, setTempLabel2] = useState("");
+
+  useEffect(() => {
+    setTempLabel1(ctx.relay1Label);
+  }, [ctx.relay1Label]);
+
+  useEffect(() => {
+    setTempLabel2(ctx.relay2Label);
+  }, [ctx.relay2Label]);
+
   const [editingSchedule, setEditingSchedule] = useState<{ id?: string; name: string; relayNumber: number; startTime: string; endTime: string; days: string; enabled: boolean } | null>(null);
   const [schName, setSchName] = useState("");
   const [schRelay, setSchRelay] = useState(1);
@@ -105,7 +118,51 @@ export default function DevicesPage() {
             <div className="flex flex-col gap-2 rounded-2xl border border-slate-100 bg-slate-50/50 p-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm font-bold text-slate-900">Stop Kontak 1 (Kipas)</p>
+                  {isEditingLabel1 ? (
+                    <div className="flex items-center gap-1 mt-0.5">
+                      <input
+                        type="text"
+                        value={tempLabel1}
+                        onChange={(e) => setTempLabel1(e.target.value)}
+                        className="text-xs font-bold text-slate-900 border border-slate-300 rounded px-1.5 py-0.5 outline-none focus:border-blue-500 max-w-[120px]"
+                        autoFocus
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (tempLabel1.trim()) {
+                            ctx.saveRelay1Label(tempLabel1.trim());
+                          }
+                          setIsEditingLabel1(false);
+                        }}
+                        className="text-[10px] bg-blue-600 text-white font-extrabold px-1.5 py-0.5 rounded transition active:scale-95"
+                      >
+                        OK
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setTempLabel1(ctx.relay1Label);
+                          setIsEditingLabel1(false);
+                        }}
+                        className="text-[10px] bg-slate-100 text-slate-500 font-extrabold px-1.5 py-0.5 rounded transition active:scale-95"
+                      >
+                        Batal
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1.5">
+                      <p className="text-sm font-bold text-slate-900">{ctx.relay1Label}</p>
+                      <button
+                        type="button"
+                        onClick={() => setIsEditingLabel1(true)}
+                        className="text-slate-400 hover:text-blue-600 transition text-[10px]"
+                        title="Ubah Label"
+                      >
+                        ✏️
+                      </button>
+                    </div>
+                  )}
                   <p className="text-xs text-slate-500">Auto mati setelah 1 menit</p>
                 </div>
                 <Switch checked={ctx.relayState.socket1} disabled={isSending} onChange={() => ctx.toggleRelay("socket1")} />
@@ -117,7 +174,51 @@ export default function DevicesPage() {
             <div className="flex flex-col gap-2 rounded-2xl border border-slate-100 bg-slate-50/50 p-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm font-bold text-slate-900">Stop Kontak 2 (Charger)</p>
+                  {isEditingLabel2 ? (
+                    <div className="flex items-center gap-1 mt-0.5">
+                      <input
+                        type="text"
+                        value={tempLabel2}
+                        onChange={(e) => setTempLabel2(e.target.value)}
+                        className="text-xs font-bold text-slate-900 border border-slate-300 rounded px-1.5 py-0.5 outline-none focus:border-blue-500 max-w-[120px]"
+                        autoFocus
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (tempLabel2.trim()) {
+                            ctx.saveRelay2Label(tempLabel2.trim());
+                          }
+                          setIsEditingLabel2(false);
+                        }}
+                        className="text-[10px] bg-blue-600 text-white font-extrabold px-1.5 py-0.5 rounded transition active:scale-95"
+                      >
+                        OK
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setTempLabel2(ctx.relay2Label);
+                          setIsEditingLabel2(false);
+                        }}
+                        className="text-[10px] bg-slate-100 text-slate-500 font-extrabold px-1.5 py-0.5 rounded transition active:scale-95"
+                      >
+                        Batal
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1.5">
+                      <p className="text-sm font-bold text-slate-900">{ctx.relay2Label}</p>
+                      <button
+                        type="button"
+                        onClick={() => setIsEditingLabel2(true)}
+                        className="text-slate-400 hover:text-blue-600 transition text-[10px]"
+                        title="Ubah Label"
+                      >
+                        ✏️
+                      </button>
+                    </div>
+                  )}
                   <p className="text-xs text-slate-500">Auto mati setelah 1 menit</p>
                 </div>
                 <Switch checked={ctx.relayState.socket2} disabled={isSending} onChange={() => ctx.toggleRelay("socket2")} />
@@ -202,7 +303,9 @@ export default function DevicesPage() {
                   <div key={sch.id} className="flex flex-col sm:flex-row justify-between sm:items-center gap-3 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm hover:shadow-md transition">
                     <div>
                       <p className="text-sm font-bold text-slate-900">{sch.name}</p>
-                      <p className="text-xs text-slate-500 font-semibold mt-1">Stop Kontak {sch.relayNumber} • {sch.startTime} - {sch.endTime}</p>
+                      <p className="text-xs text-slate-500 font-semibold mt-1">
+                        {sch.relayNumber === 1 ? ctx.relay1Label : ctx.relay2Label} • {sch.startTime} - {sch.endTime}
+                      </p>
                       <div className="flex gap-1 mt-2">
                         {daysOfWeek.map((day) => {
                           const active = activeDays.includes(day.id);
@@ -245,8 +348,8 @@ export default function DevicesPage() {
               <label className="grid gap-2">
                 <span className="text-sm font-bold text-slate-500">Stop Kontak</span>
                 <select value={schRelay} onChange={(e) => setSchRelay(Number(e.target.value))} className="h-12 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold outline-none focus:border-blue-500">
-                  <option value={1}>Stop Kontak 1 (Kipas)</option>
-                  <option value={2}>Stop Kontak 2 (Charger)</option>
+                  <option value={1}>{ctx.relay1Label}</option>
+                  <option value={2}>{ctx.relay2Label}</option>
                 </select>
               </label>
               <div className="grid grid-cols-2 gap-2">

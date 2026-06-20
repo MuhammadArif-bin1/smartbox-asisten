@@ -181,6 +181,10 @@ export type SmartboxContextValue = {
   relayAutoOffAt: { socket1: number | null; socket2: number | null };
   relayActiveCount: number;
   relaySchedules: RelaySchedule[];
+  relay1Label: string;
+  relay2Label: string;
+  saveRelay1Label: (value: string) => void;
+  saveRelay2Label: (value: string) => void;
 
   /* alarms */
   alarms: Alarm[];

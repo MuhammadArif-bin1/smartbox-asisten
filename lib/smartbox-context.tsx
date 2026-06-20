@@ -2,7 +2,7 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 
 import { createContext, type FormEvent, type ReactNode, useContext, useEffect, useMemo, useRef, useState } from "react";
-import type { Alarm, AlarmSchedule, CommandStatus, DeviceStatuses, EventLogEntry, RelayId, RelaySchedule, SmartboxContextValue, Toast } from "./smartbox-types";
+import type { Alarm, AlarmSchedule, CommandStatus, DeviceStatuses, EventLogEntry, GreetingVoiceSchedule, RelayId, RelaySchedule, SmartboxContextValue, Toast } from "./smartbox-types";
 import { DASHBOARD_PASSWORD, DEFAULT_MQTT_WS_URL, defaultGasSeries, GAS_WARNING_RAW, initialAlarms, relayControls, temperatureSeries, TEMP_WARNING_C } from "./smartbox-constants";
 import { isRecord, parseTelemetry, readBoolean, readNumber, roundTemperature, sendDeviceCommandApi } from "./smartbox-utils";
 
@@ -71,6 +71,32 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
   const relayPendingRef = useRef<Record<RelayId, number>>({ socket1: 0, socket2: 0, ampli: 0 });
   const sensorPendingRef = useRef<{ gas: number; temperature: number }>({ gas: 0, temperature: 0 });
   const [relaySchedules, setRelaySchedules] = useState<RelaySchedule[]>([]);
+
+  const [relay1Label, setRelay1Label] = useState<string>("Stop Kontak 1");
+  const [relay2Label, setRelay2Label] = useState<string>("Stop Kontak 2");
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const l1 = localStorage.getItem("relay1Label");
+      const l2 = localStorage.getItem("relay2Label");
+      if (l1) setRelay1Label(l1);
+      if (l2) setRelay2Label(l2);
+    }
+  }, []);
+
+  const saveRelay1Label = (val: string) => {
+    setRelay1Label(val);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("relay1Label", val);
+    }
+  };
+
+  const saveRelay2Label = (val: string) => {
+    setRelay2Label(val);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("relay2Label", val);
+    }
+  };
 
   /* ── Alarms ── */
   const [alarms, setAlarms] = useState(initialAlarms);
@@ -379,11 +405,11 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
       ok = await sendDeviceCommand("bluetooth.set", { state: next }, `Relay Bluetooth ${next ? "aktif" : "mati"}`);
     } else {
       const relayNum = relayId === "socket2" ? 2 : 1;
-      const label = relayNum === 1 ? "Stop Kontak 1 (Kipas)" : "Stop Kontak 2 (Charger)";
+      const label = relayNum === 1 ? relay1Label : relay2Label;
       if (next) {
-        ok = await sendDeviceCommand("relay.set", { relay: relayNum, state: true, autoOffSeconds: 60, label }, `Stop Kontak ${relayNum} aktif`);
+        ok = await sendDeviceCommand("relay.set", { relay: relayNum, state: true, autoOffSeconds: 60, label }, `${label} aktif`);
       } else {
-        ok = await sendDeviceCommand("relay.set", { relay: relayNum, state: false, label }, `Stop Kontak ${relayNum} mati`);
+        ok = await sendDeviceCommand("relay.set", { relay: relayNum, state: false, label }, `${label} mati`);
       }
     }
 
@@ -1033,6 +1059,7 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
     greetingVoiceSchedules,
     deviceStatuses: deviceStatus, dfTrackCount, telemetrySource, tempHistory, gasHistory,
     relayState, relayAutoOffAt, relayActiveCount, relaySchedules,
+    relay1Label, relay2Label, saveRelay1Label, saveRelay2Label,
     alarms, alarmSchedules, activeAlarms,
     mqttOnline, status, lastCommand, voiceMode, buzzerEnabled, boardLedScheduleEnabled,
     events, toast, notify, setToast,
