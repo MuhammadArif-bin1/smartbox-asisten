@@ -130,13 +130,13 @@ async function syncDeviceStatus(deviceId: string, isOnline: boolean, metadata: S
   const metadataData = statusMetadataData(metadata);
 
   await retryQuery(() => prisma.smartboxStatus.upsert({
-      where: { deviceId },
-      create: {
-        deviceId,
-        online: isOnline,
-        lastSeenAt: now,
-        ...metadataData,
-      },
+    where: { deviceId },
+    create: {
+      deviceId,
+      online: isOnline,
+      lastSeenAt: now,
+      ...metadataData,
+    },
     update: {
       online: isOnline,
       lastSeenAt: now,
@@ -223,13 +223,13 @@ async function syncActuatorState(deviceId: string, patch: ActuatorPatch) {
 }
 client.on("connect", () => {
   console.log("[Worker] Connected to MQTT broker!");
-  
+
   // Subscribe to wildcard topics to support dynamic devices
   client.subscribe("smartbox/+/telemetry", { qos: 1 });
   client.subscribe("smartbox/+/event", { qos: 1 });
   client.subscribe("smartbox/+/ack", { qos: 1 });
   client.subscribe("smartbox/+/status", { qos: 1 });
-  
+
   console.log("[Worker] Subscribed to wildcard topics: smartbox/+/telemetry, event, ack, status");
 
   // Automatically request device status on connect.
@@ -244,14 +244,14 @@ client.on("message", async (topic, message, packet) => {
   const payloadStr = message.toString();
   console.log(`[Worker] Message received on ${topic}`);
   console.log(`[Worker] Payload: ${payloadStr}`);
-  
+
   try {
     const parts = topic.split("/");
     if (parts.length < 3) {
       console.warn(`[Worker] Ignored message with invalid topic structure: ${topic}`);
       return;
     }
-    
+
     const deviceId = parts[1];
     const messageType = parts[2];
     const data = JSON.parse(payloadStr);
@@ -284,8 +284,8 @@ client.on("message", async (topic, message, packet) => {
         console.warn(`[Worker] WARNING: Backend IP tidak sesuai. Expected=${EXPECTED_BACKEND_IP}, got=${metadata.backendIp}`);
       }
 
-      if (metadata.ip === "192.168.1.4" || metadata.ip?.startsWith("192.168.1.")) {
-        console.warn("[Worker] WARNING: ESP32 masih terhubung ke WiFi/router lama.");
+      if (metadata.ip && (metadata.ip.startsWith("10.48.31.") || metadata.ip === "10.48.31.49")) {
+        console.warn("[Worker] WARNING: ESP32 masih terhubung ke WiFi/router lama (10.48.31.x).");
         console.warn("[Worker] Solusi: erase flash ESP32 lalu upload firmware SMARTBOX_VIVO_Y29_SYNC_V2.");
       }
 
@@ -321,22 +321,22 @@ client.on("message", async (topic, message, packet) => {
       } = data;
 
       // Extract temperature value (support fallback keys)
-      const finalTemperature = typeof temperatureC === "number" 
-        ? temperatureC 
+      const finalTemperature = typeof temperatureC === "number"
+        ? temperatureC
         : (typeof temperature === "number" ? temperature : 0);
       // Extract bluetoothRelay value (support fallback keys)
-      const finalBluetooth = typeof bluetoothRelay === "boolean" 
-        ? bluetoothRelay 
-        : (typeof ampRelay === "boolean" 
-          ? ampRelay 
+      const finalBluetooth = typeof bluetoothRelay === "boolean"
+        ? bluetoothRelay
+        : (typeof ampRelay === "boolean"
+          ? ampRelay
           : (typeof bluetoothAudio === "boolean" ? bluetoothAudio : false));
       // Extract PIR detected value (support fallback keys)
       const previousStatus = typeof pirDetected === "boolean" || typeof motionDetected === "boolean" || typeof motion === "boolean"
         ? null
         : await retryQuery(() => prisma.smartboxStatus.findUnique({
-            where: { deviceId },
-            select: { pirDetected: true },
-          })).catch(() => null);
+          where: { deviceId },
+          select: { pirDetected: true },
+        })).catch(() => null);
       const finalPir = typeof pirDetected === "boolean"
         ? pirDetected
         : (typeof motionDetected === "boolean"
@@ -412,13 +412,13 @@ client.on("message", async (topic, message, packet) => {
 
       console.log(`[Worker] Saved SensorReading & updated SmartboxStatus for ${deviceId}: Temp=${finalTemperature}°C, GasRaw=${gasRaw}, Level=${gasLevel}`);
     }
-    
+
     else if (messageType === "event") {
       clearPendingRetainedOffline(deviceId);
 
       const { level = "INFO", type = "generic", message = "" } = data;
       const payloadObj = data.payload && typeof data.payload === "object" ? data.payload : {};
-      
+
       await ensureDevice(deviceId, true);
 
       const actuatorPatch: ActuatorPatch = {};
@@ -444,12 +444,12 @@ client.on("message", async (topic, message, packet) => {
 
       // Handle PIR motion event for fast real-time status update in database
       if (type === "pir.motion") {
-        const pirDetectedVal = typeof payloadObj.pirDetected === "boolean" 
-          ? payloadObj.pirDetected 
+        const pirDetectedVal = typeof payloadObj.pirDetected === "boolean"
+          ? payloadObj.pirDetected
           : (typeof data.pirDetected === "boolean" ? data.pirDetected : true);
-        
+
         console.log(`[Worker] Direct PIR injection: device ${deviceId} pirDetected=${pirDetectedVal}`);
-        
+
         // 1. Update singleton SmartboxStatus
         await retryQuery(() => prisma.smartboxStatus.upsert({
           where: { deviceId },
@@ -511,12 +511,12 @@ client.on("message", async (topic, message, packet) => {
 
       console.log(`[Worker] Logged EventLog for ${deviceId}: [${level}] ${type} - ${message}`);
     }
-    
+
     else if (messageType === "ack") {
       clearPendingRetainedOffline(deviceId);
 
       const { id: commandId, message = "" } = data;
-      
+
       await ensureDevice(deviceId, true);
 
       if (commandId) {
@@ -634,19 +634,19 @@ function getJakartaDateTime() {
   };
   const formatter = new Intl.DateTimeFormat("en-US", options);
   const parts = formatter.formatToParts(new Date());
-  
+
   const map: Record<string, string> = {};
   for (const part of parts) {
     map[part.type] = part.value;
   }
-  
+
   const weekday = map.weekday ? map.weekday.toLowerCase() : "";
   const hour = String(parseInt(map.hour || "0", 10)).padStart(2, "0");
   const minute = String(parseInt(map.minute || "0", 10)).padStart(2, "0");
   const month = String(parseInt(map.month || "0", 10)).padStart(2, "0");
   const day = String(parseInt(map.day || "0", 10)).padStart(2, "0");
   const date = `${map.year || "0000"}-${month}-${day}`;
-  
+
   return { weekday, hour, minute, date };
 }
 
@@ -655,7 +655,7 @@ async function checkRelaySchedules() {
     await refreshSchedulesCacheIfNeeded();
     const { weekday, hour, minute, date } = getJakartaDateTime();
     const timeStr = `${hour}:${minute}`;
-    
+
     const schedules = cachedRelaySchedules;
 
     const targetDeviceId = process.env.NEXT_PUBLIC_DEVICE_ID || "smartbox-001";
@@ -664,8 +664,8 @@ async function checkRelaySchedules() {
     for (const schedule of schedules) {
       let activeDays: string[] = [];
       try {
-        activeDays = typeof schedule.days === "string" 
-          ? JSON.parse(schedule.days) 
+        activeDays = typeof schedule.days === "string"
+          ? JSON.parse(schedule.days)
           : (Array.isArray(schedule.days) ? schedule.days : []);
       } catch (e) {
         console.error(`[Worker Schedule] Error parsing days for schedule ${schedule.id}:`, e);
@@ -682,7 +682,7 @@ async function checkRelaySchedules() {
           const stateKey = `${schedule.id}:on`;
           if (lastRelayTrigger.get(stateKey) !== triggerKey) {
             lastRelayTrigger.set(stateKey, triggerKey);
-            
+
             const payload = {
               id: `schedule_relay${schedule.relayNumber}_on`,
               type: "relay.set",
@@ -826,7 +826,7 @@ async function checkAlarmSchedules() {
       };
 
       client.publish(topic, JSON.stringify(command), { qos: 1 });
-      
+
       console.log("[Worker] Alarm schedule check running");
       console.log(`[Worker] Alarm schedule triggered: ${schedule.name}`);
       console.log("[Worker] Alarm schedule triggered");
@@ -846,7 +846,7 @@ async function checkAlarmSchedules() {
           },
         },
       })).catch((err) => console.error("[Worker Alarm] Error writing EventLog:", err));
-      
+
       console.log(`[Worker] Event saved: alarm.triggered`);
     }
   } catch (err) {

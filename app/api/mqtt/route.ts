@@ -61,7 +61,7 @@ export async function POST(request: Request) {
   try {
     await publishMqtt({ brokerUrl, clientId, username, password, topic: body.topic, payload });
 
-    // Log control command to database as a DeviceEvent
+    // Log control command to database as an EventLog
     try {
       const deviceId = process.env.NEXT_PUBLIC_DEVICE_ID || "smartbox-001";
       let eventType = "COMMAND_SENT";
@@ -82,18 +82,17 @@ export async function POST(request: Request) {
         message = `Mode voice command diatur ke ${enabled ? "AKTIF" : "NONAKTIF"}`;
       }
 
-      await prisma.deviceEvent.create({
+      await prisma.eventLog.create({
         data: {
           deviceId,
           type: eventType,
-          severity: "info",
+          level: "INFO",
           message,
-          topic: body.topic,
           payload: JSON.parse(JSON.stringify(payloadData)),
         },
       });
     } catch (dbError) {
-      console.error("Gagal mencatat DeviceEvent ke database:", dbError);
+      console.error("Gagal mencatat EventLog ke database:", dbError);
     }
 
     return NextResponse.json({ ok: true, topic: body.topic });

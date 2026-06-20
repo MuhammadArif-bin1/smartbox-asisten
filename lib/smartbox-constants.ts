@@ -1,4 +1,4 @@
-import type { BoardProfile, RelayId, Alarm, ViewId } from "./smartbox-types";
+import type { BoardProfile, RelayId, ViewId } from "./smartbox-types";
 
 /* ─── Navigation views ─── */
 export const views: Array<{ id: ViewId; label: string; href: string }> = [
@@ -11,11 +11,7 @@ export const views: Array<{ id: ViewId; label: string; href: string }> = [
 ];
 
 /* ─── Default alarms ─── */
-export const initialAlarms: Alarm[] = [
-  { id: "morning", label: "Pagi", time: "07:00", greeting: "Pengingat aktivitas pagi", track: 4, enabled: true },
-  { id: "noon", label: "Siang", time: "12:30", greeting: "Pengingat istirahat siang", track: 5, enabled: true },
-  { id: "evening", label: "Malam", time: "19:30", greeting: "Pengingat istirahat malam", track: 6, enabled: true },
-];
+
 
 /* ─── Audio tracks (DFPlayer) ─── */
 export const audioTracks = [

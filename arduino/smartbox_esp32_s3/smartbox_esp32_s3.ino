@@ -55,12 +55,12 @@
 // WIFI + MQTT CONFIG
 // ==========================================================
 #define FIRMWARE_VERSION "SMARTBOX_VIVO_Y29_SYNC_V2"
-#define WIFI_TARGET_NAME "vivo Y29"
-#define BACKEND_TARGET_IP "10.48.31.49"
+#define WIFI_TARGET_NAME "BAGUS"
+#define BACKEND_TARGET_IP "192.168.1.4"
 
-const char *WIFI_SSID = "vivo Y29";
-const char *WIFI_PASS = "12345678";
-const char *AI_BACKEND_URL = "http://10.48.31.49:3000/api/gemini/chat-audio";
+const char *WIFI_SSID = "BAGUS";
+const char *WIFI_PASS = "s4nsan15675";
+const char *AI_BACKEND_URL = "http://192.168.1.4:3000/api/gemini/chat-audio";
 
 const char *MQTT_HOST =
     "6559400ba6c741398aa7048b471d5a31.s1.eu.hivemq.cloud";

@@ -16,15 +16,6 @@ export type Toast = {
   tone: "success" | "error" | "info";
 };
 
-/* ─── Alarm ─── */
-export type Alarm = {
-  id: string;
-  label: string;
-  time: string;
-  greeting: string;
-  track: number;
-  enabled: boolean;
-};
 
 /* ─── AlarmSchedule (DB model) ─── */
 export type AlarmSchedule = {
@@ -155,7 +146,6 @@ export type SmartboxContextValue = {
   relaySchedules: RelaySchedule[];
 
   /* alarms */
-  alarms: Alarm[];
   alarmSchedules: AlarmSchedule[];
   activeAlarms: number;
 
@@ -182,7 +172,7 @@ export type SmartboxContextValue = {
   toggleRelay: (relayId: RelayId) => Promise<void>;
   togglePir: () => void;
   toggleSleepMode: () => void;
-  updateAlarm: (id: string, field: keyof Alarm, value: string | number | boolean) => void;
+
   setBuzzerEnabled: (enabled: boolean) => void;
   setBoardLedScheduleEnabled: (enabled: boolean) => void;
   setVoiceMode: (enabled: boolean) => void;

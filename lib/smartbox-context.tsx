@@ -2,8 +2,8 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 
 import { createContext, type FormEvent, type ReactNode, useContext, useEffect, useMemo, useRef, useState } from "react";
-import type { Alarm, AlarmSchedule, CommandStatus, DeviceStatuses, EventLogEntry, RelayId, RelaySchedule, SmartboxContextValue, Toast } from "./smartbox-types";
-import { DASHBOARD_PASSWORD, DEFAULT_MQTT_WS_URL, defaultGasSeries, GAS_WARNING_RAW, initialAlarms, relayControls, temperatureSeries, TEMP_WARNING_C } from "./smartbox-constants";
+import type { AlarmSchedule, CommandStatus, DeviceStatuses, EventLogEntry, RelayId, RelaySchedule, SmartboxContextValue, Toast } from "./smartbox-types";
+import { DASHBOARD_PASSWORD, DEFAULT_MQTT_WS_URL, defaultGasSeries, GAS_WARNING_RAW, relayControls, temperatureSeries, TEMP_WARNING_C } from "./smartbox-constants";
 import { isRecord, parseTelemetry, readBoolean, readNumber, roundTemperature, sendDeviceCommandApi } from "./smartbox-utils";
 
 /* ─── Context ─── */
@@ -141,7 +141,6 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
   const [relaySchedules, setRelaySchedules] = useState<RelaySchedule[]>([]);
 
   /* ── Alarms ── */
-  const [alarms, setAlarms] = useState(initialAlarms);
   const [alarmSchedules, setAlarmSchedules] = useState<AlarmSchedule[]>([]);
 
   /* ── Events ── */
@@ -239,9 +238,6 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
     return sendDeviceCommand(type, payload, label);
   }
 
-  function updateAlarm(id: string, field: keyof Alarm, value: string | number | boolean) {
-    setAlarms((current) => current.map((alarm) => alarm.id === id ? { ...alarm, [field]: value } : alarm));
-  }
 
   function submitLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1096,11 +1092,11 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
     pirGreetingEnabled, pirGreetingTrack, pirGreetingStart, pirGreetingEnd, pirGreetingCooldown, pirGreetingDays, pirGreetingPlayMode,
     deviceStatuses: effectiveDeviceStatus, dfTrackCount, telemetrySource, tempHistory, gasHistory,
     relayState, relayAutoOffAt, relayActiveCount, relaySchedules,
-    alarms, alarmSchedules, activeAlarms,
+    alarmSchedules, activeAlarms,
     mqttOnline, status, lastCommand, voiceMode, buzzerEnabled, boardLedScheduleEnabled,
     events, toast, notify, setToast,
     publish, sendDeviceCommand, toggleGas, toggleTemperature, toggleRelay, togglePir, toggleSleepMode,
-    updateAlarm, setBuzzerEnabled, setBoardLedScheduleEnabled, setVoiceMode, updatePirGreetingConfig,
+    setBuzzerEnabled, setBoardLedScheduleEnabled, setVoiceMode, updatePirGreetingConfig,
     saveRelaySchedule, deleteRelaySchedule,
     onSaveSchedule: saveAlarmSchedule, onDeleteSchedule: deleteAlarmSchedule, onToggleScheduleActive: toggleAlarmScheduleActive, onTestPlayVoice: testPlayVoice,
     isDemoMode, setIsDemoMode: toggleDemoMode,

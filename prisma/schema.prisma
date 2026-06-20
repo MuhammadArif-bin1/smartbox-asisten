@@ -16,71 +16,11 @@ model Device {
   deviceId     String           @unique
   lastSeenAt   DateTime?
   status       String           @default("offline")
-  alarms       Alarm[]
-  audioTracks  AudioTrack[]
   commands     DeviceCommand[]
-  deviceEvents DeviceEvent[]
   events       EventLog[]
   readings     SensorReading[]
-  snapshots    SensorSnapshot[]
 }
 
-model Alarm {
-  id         String   @id @default(cuid())
-  deviceId   String
-  label      String
-  time       String
-  timezone   String   @default("Asia/Jakarta")
-  greeting   String
-  dfTrack    Int
-  enabled    Boolean  @default(true)
-  repeatDays String[] @default(["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"])
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-  device     Device   @relation(fields: [deviceId], references: [deviceId], onDelete: Cascade)
-}
-
-model AudioTrack {
-  id          String   @id @default(cuid())
-  deviceId    String
-  fileName    String
-  label       String
-  createdAt   DateTime @default(now())
-  description String?
-  feature     String
-  track       Int
-  device      Device   @relation(fields: [deviceId], references: [deviceId], onDelete: Cascade)
-
-  @@unique([deviceId, track])
-  @@index([deviceId])
-}
-
-model SensorSnapshot {
-  id            String   @id @default(cuid())
-  deviceId      String
-  gasEnabled    Boolean  @default(true)
-  gasRaw        Int?
-  gasDetected   Boolean  @default(false)
-  tempEnabled   Boolean  @default(true)
-  temperatureC  Float?
-  flameDetected Boolean  @default(false)
-  pirDetected   Boolean  @default(false)
-  obstacleNear  Boolean  @default(false)
-  createdAt     DateTime @default(now())
-  device        Device   @relation(fields: [deviceId], references: [deviceId], onDelete: Cascade)
-}
-
-model DeviceEvent {
-  id        String   @id @default(cuid())
-  deviceId  String
-  type      String
-  severity  String   @default("info")
-  message   String
-  topic     String?
-  payload   Json?
-  createdAt DateTime @default(now())
-  device    Device   @relation(fields: [deviceId], references: [deviceId], onDelete: Cascade)
-}
 
 model PinAssignment {
   id        String   @id @default(cuid())

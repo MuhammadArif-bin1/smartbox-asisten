@@ -2,20 +2,6 @@ import type { TelemetryPayload } from "./smartbox-types";
 
 /* ─── API helpers ─── */
 
-export async function sendMqttCommand(topic: string, payload: Record<string, unknown>) {
-  const response = await fetch("/api/mqtt", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ topic, payload }),
-  });
-
-  if (!response.ok) {
-    throw new Error("Gagal mengirim command MQTT");
-  }
-
-  return response.json();
-}
-
 export async function sendDeviceCommandApi(deviceId: string, type: string, payload: Record<string, unknown>) {
   const response = await fetch("/api/device/command", {
     method: "POST",
