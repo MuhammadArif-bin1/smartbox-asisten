@@ -2501,15 +2501,25 @@ void setup() {
     dfPlayer.EQ(DFPLAYER_EQ_ROCK);
     dfplayerStatusStr = "ready";
     Serial.println("[DFPLAYER] Siap.");
-    printLcdLine(0, "DFPLAYER");
-    printLcdLine(1, "SIAP");
+    
+    // Greeting Startup: delay 2 detik lalu suara 0001 (TRACK_STARTUP_READY) muncul selama 3 detik
+    printLcdLine(0, "MEMULAI SYSTEM...");
+    printLcdLine(1, "TUNGGU SEBENTAR");
+    delay(2000);
+    
+    dfPlayer.play(TRACK_STARTUP_READY);
+    systemReadyPlayed = true; // Supaya playSystemReady() tidak mengulangnya di akhir setup()
+    
+    printLcdLine(0, "HALO SMARTBOX");
+    printLcdLine(1, "ASISTEN MULAI");
+    delay(3000);
   } else {
     dfplayerStatusStr = "not_ready";
     Serial.println("[DFPLAYER] Gagal terdeteksi.");
     printLcdLine(0, "DFPLAYER ERROR");
     printLcdLine(1, "CEK RX TX SD");
+    delay(1500);
   }
-  delay(1500);
 
   setupMicI2S();
 
