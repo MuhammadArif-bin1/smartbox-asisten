@@ -1,0 +1,13 @@
+# Configure clangd to handle Arduino .ino files correctly
+If:
+  PathMatch: .*\.ino
+CompileFlags:
+  Add:
+    - -xc++
+    - -DARDUINO=10800
+    - -DARDUINO_ARCH_ESP32
+    - -DARDUINO_ESP32_S3
+Diagnostics:
+  Suppress:
+    - "drv_compilation_delay"
+    - "expected_exactly_one_compiler_job"
