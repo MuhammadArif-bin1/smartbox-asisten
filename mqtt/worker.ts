@@ -7,6 +7,9 @@ const username = process.env.MQTT_USERNAME || process.env.NEXT_PUBLIC_MQTT_USERN
 const password = process.env.MQTT_PASSWORD || process.env.NEXT_PUBLIC_MQTT_PASSWORD;
 const targetDeviceId = process.env.NEXT_PUBLIC_DEVICE_ID || "smartbox-001";
 const RETAINED_OFFLINE_GRACE_MS = Number(process.env.MQTT_RETAINED_OFFLINE_GRACE_MS || 8000);
+const EXPECTED_FIRMWARE_VERSION = "SMARTBOX_VIVO_Y29_SYNC_V2";
+const EXPECTED_WIFI_SSID = process.env.SMARTBOX_WIFI_SSID || "vivo Y29";
+const EXPECTED_BACKEND_IP = process.env.SMARTBOX_BACKEND_IP || "10.48.31.49";
 
 console.log(`[Worker] Starting MQTT worker connecting to: ${brokerUrl}`);
 
@@ -62,6 +65,53 @@ type ActuatorPatch = {
   buzzer?: boolean;
 };
 
+type StatusMetadata = {
+  firmwareVersion?: string;
+  ssid?: string;
+  ip?: string;
+  backendIp?: string;
+  mac?: string;
+  rssi?: number;
+};
+
+function readString(value: unknown) {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function readNumber(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function extractStatusMetadata(raw: unknown): StatusMetadata {
+  if (typeof raw !== "object" || raw === null) return {};
+
+  const data = raw as Record<string, unknown>;
+  return {
+    firmwareVersion: readString(data.firmwareVersion),
+    ssid: readString(data.ssid),
+    ip: readString(data.ip),
+    backendIp: readString(data.backendIp),
+    mac: readString(data.mac),
+    rssi: readNumber(data.rssi),
+  };
+}
+
+function statusMetadataData(metadata: StatusMetadata) {
+  return {
+    ...(metadata.firmwareVersion !== undefined ? { firmwareVersion: metadata.firmwareVersion } : {}),
+    ...(metadata.ssid !== undefined ? { ssid: metadata.ssid } : {}),
+    ...(metadata.ip !== undefined ? { ip: metadata.ip } : {}),
+    ...(metadata.backendIp !== undefined ? { backendIp: metadata.backendIp } : {}),
+    ...(metadata.mac !== undefined ? { mac: metadata.mac } : {}),
+    ...(metadata.rssi !== undefined ? { rssi: Math.round(metadata.rssi) } : {}),
+  };
+}
+
 const pendingRetainedOffline = new Map<string, ReturnType<typeof setTimeout>>();
 
 function clearPendingRetainedOffline(deviceId: string) {
@@ -72,21 +122,25 @@ function clearPendingRetainedOffline(deviceId: string) {
   pendingRetainedOffline.delete(deviceId);
 }
 
-async function syncDeviceStatus(deviceId: string, isOnline: boolean) {
+async function syncDeviceStatus(deviceId: string, isOnline: boolean, metadata: StatusMetadata = {}) {
   clearPendingRetainedOffline(deviceId);
 
   await ensureDevice(deviceId, isOnline);
+  const now = new Date();
+  const metadataData = statusMetadataData(metadata);
 
   await retryQuery(() => prisma.smartboxStatus.upsert({
       where: { deviceId },
       create: {
         deviceId,
         online: isOnline,
-        lastSeenAt: new Date(),
+        lastSeenAt: now,
+        ...metadataData,
       },
     update: {
       online: isOnline,
-      lastSeenAt: new Date(),
+      lastSeenAt: now,
+      ...metadataData,
     }
   })).catch((err) => {
     console.error(`[Worker] Error syncing SmartboxStatus status:`, err);
@@ -104,7 +158,7 @@ function requestDeviceStatus(deviceId: string, reason: string) {
   console.log(`[Worker] Sent status ping to device ${deviceId} (${reason})`);
 }
 
-function scheduleRetainedOffline(deviceId: string) {
+function scheduleRetainedOffline(deviceId: string, metadata: StatusMetadata = {}) {
   clearPendingRetainedOffline(deviceId);
 
   console.warn(
@@ -113,7 +167,7 @@ function scheduleRetainedOffline(deviceId: string) {
 
   pendingRetainedOffline.set(deviceId, setTimeout(() => {
     pendingRetainedOffline.delete(deviceId);
-    syncDeviceStatus(deviceId, false).catch((err) => {
+    syncDeviceStatus(deviceId, false, metadata).catch((err) => {
       console.error(`[Worker] Error applying retained offline status for ${deviceId}:`, err);
     });
   }, RETAINED_OFFLINE_GRACE_MS));
@@ -205,31 +259,43 @@ client.on("message", async (topic, message, packet) => {
     if (messageType === "status") {
       const isOnline = data.online === true;
       const isRetainedOffline = !isOnline && packet?.retain === true;
+      const metadata = extractStatusMetadata(data);
       console.log(`[Worker] Device ${deviceId} status changed to: ${isOnline ? "ONLINE" : "OFFLINE"}`);
 
       console.log("[Worker] Status received:", data);
-      console.log("[Worker] Firmware:", data.firmwareVersion ?? "UNKNOWN_OLD_FIRMWARE");
-      console.log("[Worker] SSID:", data.ssid ?? "-");
-      console.log("[Worker] ESP32 IP:", data.ip ?? "-");
-      console.log("[Worker] Backend IP:", data.backendIp ?? "-");
-      console.log("[Worker] MAC:", data.mac ?? "-");
+      console.log("[Worker] Firmware:", metadata.firmwareVersion ?? "UNKNOWN_OLD_FIRMWARE");
+      console.log("[Worker] SSID:", metadata.ssid ?? "-");
+      console.log("[Worker] ESP32 IP:", metadata.ip ?? "-");
+      console.log("[Worker] Backend IP:", metadata.backendIp ?? "-");
+      console.log("[Worker] MAC:", metadata.mac ?? "-");
+      console.log("[Worker] RSSI:", metadata.rssi ?? "-");
 
-      if (!data.firmwareVersion) {
+      if (!metadata.firmwareVersion) {
         console.warn("[Worker] WARNING: ESP32 masih memakai firmware lama atau payload status lama.");
+      } else if (metadata.firmwareVersion !== EXPECTED_FIRMWARE_VERSION) {
+        console.warn(`[Worker] WARNING: Firmware tidak sesuai. Expected=${EXPECTED_FIRMWARE_VERSION}, got=${metadata.firmwareVersion}`);
       }
 
-      if (data.ip === "192.168.1.4") {
+      if (metadata.ssid && metadata.ssid !== EXPECTED_WIFI_SSID) {
+        console.warn(`[Worker] WARNING: SSID aktif bukan ${EXPECTED_WIFI_SSID}. SSID sekarang: ${metadata.ssid}`);
+      }
+
+      if (metadata.backendIp && metadata.backendIp !== EXPECTED_BACKEND_IP) {
+        console.warn(`[Worker] WARNING: Backend IP tidak sesuai. Expected=${EXPECTED_BACKEND_IP}, got=${metadata.backendIp}`);
+      }
+
+      if (metadata.ip === "192.168.1.4" || metadata.ip?.startsWith("192.168.1.")) {
         console.warn("[Worker] WARNING: ESP32 masih terhubung ke WiFi/router lama.");
         console.warn("[Worker] Solusi: erase flash ESP32 lalu upload firmware SMARTBOX_VIVO_Y29_SYNC_V2.");
       }
 
       if (isRetainedOffline) {
-        scheduleRetainedOffline(deviceId);
+        scheduleRetainedOffline(deviceId, metadata);
         requestDeviceStatus(deviceId, "retained_offline");
         return;
       }
 
-      await syncDeviceStatus(deviceId, isOnline);
+      await syncDeviceStatus(deviceId, isOnline, metadata);
     }
 
     else if (messageType === "telemetry") {

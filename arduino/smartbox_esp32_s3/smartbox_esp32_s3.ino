@@ -63,7 +63,7 @@ const char *WIFI_PASS = "12345678";
 const char *AI_BACKEND_URL = "http://10.48.31.49:3000/api/gemini/chat-audio";
 
 const char *MQTT_HOST =
-    "wss://6559400ba6c741398aa7048b471d5a31.s1.eu.hivemq.cloud:8884/mqtt";
+    "6559400ba6c741398aa7048b471d5a31.s1.eu.hivemq.cloud";
 const int MQTT_PORT = 8883;
 const char *MQTT_USER = "smartbox001";
 const char *MQTT_PASS = "Smartbox123!";
@@ -572,6 +572,24 @@ void publishStatus(bool online) {
   doc["millis"] = millis();
 
   publishJson(topicStatus(), doc, true);
+}
+
+String buildStatusPayload(bool online) {
+  StaticJsonDocument<512> doc;
+
+  doc["deviceId"] = DEVICE_ID;
+  doc["online"] = online;
+  doc["firmwareVersion"] = FIRMWARE_VERSION;
+  doc["ssid"] = WiFi.SSID();
+  doc["ip"] = WiFi.localIP().toString();
+  doc["backendIp"] = BACKEND_TARGET_IP;
+  doc["mac"] = WiFi.macAddress();
+  doc["rssi"] = WiFi.RSSI();
+  doc["millis"] = millis();
+
+  String output;
+  serializeJson(doc, output);
+  return output;
 }
 
 // ==========================================================
@@ -1385,9 +1403,10 @@ void connectMQTT() {
   Serial.print("[MQTT] Client ID: ");
   Serial.println(clientId);
 
+  String offlineWill = buildStatusPayload(false);
   bool connected =
       mqtt.connect(clientId.c_str(), MQTT_USER, MQTT_PASS,
-                   topicStatus().c_str(), 1, true, "{\"online\":false}");
+                   topicStatus().c_str(), 1, true, offlineWill.c_str());
 
   if (connected) {
     mqttReadyFlag = true;
@@ -1401,7 +1420,7 @@ void connectMQTT() {
     publishStatus(true);
     publishEvent("INFO", "device.online", "ESP32-S3 SmartBox online.");
 
-    showLCD("MQTT CONNECTED", "SMARTBOX ONLINE");
+    setLcdOverride("FW VIVO Y29", "SYNC V2", 4000);
     setRGB(0, 255, 0);
   } else {
     mqttReadyFlag = false;

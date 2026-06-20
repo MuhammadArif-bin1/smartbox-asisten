@@ -162,6 +162,12 @@ model SmartboxStatus {
   deviceId        String    @unique
   online          Boolean   @default(false)
   lastSeenAt      DateTime  @default(now())
+  firmwareVersion String?
+  ssid            String?
+  ip              String?
+  backendIp       String?
+  mac             String?
+  rssi            Int?
   gasRaw          Int?
   gasLevel        String    @default("normal")
   smokeDetected   Boolean   @default(false)
