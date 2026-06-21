@@ -1,7 +1,7 @@
 "use client";
 /* eslint-disable react-hooks/set-state-in-effect */
 
-import { createContext, type FormEvent, type ReactNode, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, type FormEvent, type ReactNode, useContext, useEffect, useMemo, useRef, useState, useCallback } from "react";
 import type { Alarm, AlarmSchedule, CommandStatus, DeviceStatuses, EventLogEntry, GreetingVoiceSchedule, RelayId, RelaySchedule, SmartboxContextValue, Toast } from "./smartbox-types";
 import { DASHBOARD_PASSWORD, DEFAULT_MQTT_WS_URL, defaultGasSeries, GAS_WARNING_RAW, initialAlarms, relayControls, temperatureSeries, TEMP_WARNING_C } from "./smartbox-constants";
 import { isRecord, parseTelemetry, readBoolean, readNumber, roundTemperature, sendDeviceCommandApi } from "./smartbox-utils";
@@ -72,6 +72,7 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
   const [relayState, setRelayState] = useState<Record<RelayId, boolean>>({ socket1: false, socket2: false, ampli: false });
   const [relayAutoOffAt, setRelayAutoOffAt] = useState<{ socket1: number | null; socket2: number | null }>({ socket1: null, socket2: null });
   const [relayOwner, setRelayOwner] = useState<{ socket1: string; socket2: string }>({ socket1: "none", socket2: "none" });
+  const [relayPriority, setRelayPriority] = useState<{ sensor: number; schedule: number; voice: number; manual: number }>({ sensor: 100, schedule: 80, voice: 60, manual: 40 });
   const relayPendingRef = useRef<Record<RelayId, number>>({ socket1: 0, socket2: 0, ampli: 0 });
   const sensorPendingRef = useRef<{ gas: number; temperature: number; buzzer: number }>({ gas: 0, temperature: 0, buzzer: 0 });
 
@@ -707,6 +708,15 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
                 socket2: typeof telemetry.relay2Owner === "string" ? telemetry.relay2Owner : current.socket2,
               }));
             }
+            // Sync priority
+            if (typeof telemetry.prioritySensor === "number") {
+              setRelayPriority({
+                sensor: telemetry.prioritySensor ?? 100,
+                schedule: telemetry.prioritySchedule ?? 80,
+                voice: telemetry.priorityVoice ?? 60,
+                manual: telemetry.priorityManual ?? 40,
+              });
+            }
             if (typeof telemetry.buzzer === "boolean" && nowTime - sensorPendingRef.current.buzzer > 2000) {
               _setBuzzerEnabled(telemetry.buzzer);
             }
@@ -1129,6 +1139,17 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
     return () => timers.forEach((timer) => window.clearTimeout(timer));
   }, [relayAutoOffAt]);
 
+  const updateRelayPriority = useCallback(async (sensor: number, schedule: number, voice: number, manual: number) => {
+    await sendDeviceCommand("priority.set", {
+      prioritySensor: sensor,
+      prioritySchedule: schedule,
+      priorityVoice: voice,
+      priorityManual: manual,
+    }, "Prioritas Relay");
+    setRelayPriority({ sensor, schedule, voice, manual });
+    setToast({ message: "Prioritas sistem relay telah diperbarui." });
+  }, [sendDeviceCommand]);
+
   /* ─── Context value ─── */
   const value: SmartboxContextValue = {
     isAuthenticated, authChecked, passwordInput, loginError, setPasswordInput, submitLogin,
@@ -1137,8 +1158,8 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
     pirGreetingEnabled, pirGreetingTrack, pirGreetingStart, pirGreetingEnd, pirGreetingCooldown, pirGreetingDays, pirGreetingPlayMode,
     greetingVoiceSchedules,
     deviceStatuses: deviceStatus, dfTrackCount, telemetrySource, tempHistory, gasHistory,
-    relayState, relayAutoOffAt, relayOwner, relayActiveCount, relaySchedules,
-    relay1Label, relay2Label, saveRelay1Label, saveRelay2Label,
+    relayState, relayAutoOffAt, relayOwner, relayPriority, relayActiveCount, relaySchedules,
+    relay1Label, relay2Label, saveRelay1Label, saveRelay2Label, updateRelayPriority,
     alarms, alarmSchedules, activeAlarms,
     mqttOnline, status, lastCommand, voiceMode, buzzerEnabled, boardLedScheduleEnabled,
     events, toast, notify, setToast,

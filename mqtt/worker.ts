@@ -31,9 +31,18 @@ async function retryQuery<T>(fn: () => Promise<T>, retries = 5, delay = 2000): P
   }
 }
 
+const ensureDeviceCache = new Map<string, number>();
+
 async function ensureDevice(deviceId: string, isOnline: boolean = true) {
+  const nowMs = Date.now();
+  const lastEnsured = ensureDeviceCache.get(deviceId) || 0;
+  // Skip DB call if already ensured within the last 60 seconds (unless going offline)
+  if (isOnline && nowMs - lastEnsured < 60000) {
+    return;
+  }
+
   try {
-    return await retryQuery(() => prisma.device.upsert({
+    const result = await retryQuery(() => prisma.device.upsert({
       where: { deviceId },
       update: {
         status: isOnline ? "online" : "offline",
@@ -48,10 +57,16 @@ async function ensureDevice(deviceId: string, isOnline: boolean = true) {
         lastSeenAt: new Date(),
       },
     }));
+    ensureDeviceCache.set(deviceId, nowMs);
+    return result;
   } catch (err) {
     console.error(`[Worker] Error upserting device ${deviceId}:`, err);
   }
 }
+
+const lastStatusUpdate = new Map<string, number>();
+const lastReadingUpdate = new Map<string, number>();
+const lastWarningState = new Map<string, boolean>();
 
 type ActuatorPatch = {
   relay1?: boolean;
@@ -219,45 +234,64 @@ client.on("message", async (topic, message) => {
 
       await ensureDevice(deviceId, true);
 
-      // Create new SensorReading record
-      await retryQuery(() => prisma.sensorReading.create({
-        data: {
-          deviceId,
-          temperature: finalTemperature,
-          gasRaw: typeof gasRaw === "number" ? Math.round(gasRaw) : 0,
-          gasDetected: finalGasDetected,
-          gasLevel: gasLevel || "normal",
-          temperatureHigh: Boolean(temperatureHigh),
-          pirDetected: finalPir,
-          obstacleNear: Boolean(obstacleNear),
-          relay1: Boolean(relay1),
-          relay2: Boolean(relay2),
-          bluetoothRelay: finalBluetooth,
-          buzzer: Boolean(buzzer),
-          gasSensorEnabled: finalGasSensorEnabled,
-          tempSensorEnabled: finalTempSensorEnabled,
-          createdAt: data.createdAt ? new Date(data.createdAt) : new Date(),
-        },
-      })).catch((err) => {
-        console.error(`[Worker] Error saving SensorReading:`, err);
-      });
+      const nowMs = Date.now();
+      const timeSinceLastReading = nowMs - (lastReadingUpdate.get(deviceId) || 0);
+      const timeSinceLastStatus = nowMs - (lastStatusUpdate.get(deviceId) || 0);
+      
+      const isWarning = finalGasDetected || Boolean(temperatureHigh);
+      const wasWarning = lastWarningState.get(deviceId) || false;
+      const warningChanged = isWarning !== wasWarning;
+      if (warningChanged) lastWarningState.set(deviceId, isWarning);
 
-      // Update/Sync SmartboxStatus singleton
-      await retryQuery(() => prisma.smartboxStatus.upsert({
-        where: { deviceId },
-        create: {
-          deviceId,
-          online: true,
-          lastSeenAt: new Date(),
-          gasRaw: typeof gasRaw === "number" ? Math.round(gasRaw) : 0,
-          gasLevel: gasLevel || "normal",
-          smokeDetected: gasLevel === "smoke",
-          gasDetected: gasLevel === "gas",
-          temperatureC: finalTemperature,
-          temperatureHigh: Boolean(temperatureHigh),
-          pirDetected: finalPir,
-          obstacleNear: Boolean(obstacleNear),
-          relay1: Boolean(relay1),
+      // THROTTLE: Save to DB every 15s OR if warning state changes
+      const shouldSaveReading = timeSinceLastReading >= 15000 || warningChanged;
+      // THROTTLE: Update status every 5s OR if warning state changes
+      const shouldUpdateStatus = timeSinceLastStatus >= 5000 || warningChanged;
+
+      if (shouldSaveReading) {
+        lastReadingUpdate.set(deviceId, nowMs);
+        // Create new SensorReading record
+        await retryQuery(() => prisma.sensorReading.create({
+          data: {
+            deviceId,
+            temperature: finalTemperature,
+            gasRaw: typeof gasRaw === "number" ? Math.round(gasRaw) : 0,
+            gasDetected: finalGasDetected,
+            gasLevel: gasLevel || "normal",
+            temperatureHigh: Boolean(temperatureHigh),
+            pirDetected: finalPir,
+            obstacleNear: Boolean(obstacleNear),
+            relay1: Boolean(relay1),
+            relay2: Boolean(relay2),
+            bluetoothRelay: finalBluetooth,
+            buzzer: Boolean(buzzer),
+            gasSensorEnabled: finalGasSensorEnabled,
+            tempSensorEnabled: finalTempSensorEnabled,
+            createdAt: data.createdAt ? new Date(data.createdAt) : new Date(),
+          },
+        })).catch((err) => {
+          console.error(`[Worker] Error saving SensorReading:`, err);
+        });
+      }
+
+      if (shouldUpdateStatus) {
+        lastStatusUpdate.set(deviceId, nowMs);
+        // Update/Sync SmartboxStatus singleton
+        await retryQuery(() => prisma.smartboxStatus.upsert({
+          where: { deviceId },
+          create: {
+            deviceId,
+            online: true,
+            lastSeenAt: new Date(),
+            gasRaw: typeof gasRaw === "number" ? Math.round(gasRaw) : 0,
+            gasLevel: gasLevel || "normal",
+            smokeDetected: gasLevel === "smoke",
+            gasDetected: gasLevel === "gas",
+            temperatureC: finalTemperature,
+            temperatureHigh: Boolean(temperatureHigh),
+            pirDetected: finalPir,
+            obstacleNear: Boolean(obstacleNear),
+            relay1: Boolean(relay1),
           relay2: Boolean(relay2),
           bluetoothAudio: finalBluetooth,
           buzzer: Boolean(buzzer),
@@ -287,7 +321,7 @@ client.on("message", async (topic, message) => {
       })).catch((err) => {
         console.error(`[Worker] Error updating SmartboxStatus telemetry:`, err);
       });
-
+      }
       console.log(`[Worker] Saved SensorReading & updated SmartboxStatus for ${deviceId}: Temp=${finalTemperature}°C, GasRaw=${gasRaw}, Level=${gasLevel}`);
     }
     

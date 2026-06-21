@@ -239,6 +239,53 @@ export default function DashboardDevicesPage() {
               </div>
             </div>
           </div>
+
+          {/* Prioritas Relay */}
+          <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm shadow-slate-100/50 flex flex-col">
+            <h3 className="text-base font-black text-slate-900 border-b border-slate-100 pb-3 mb-4">Prioritas Relay</h3>
+            <p className="text-xs text-slate-500 mb-4">
+              Atur nilai prioritas (0-255) untuk menentukan siapa yang berhak mengambil alih relay. Nilai tertinggi menang.
+            </p>
+            <div className="flex flex-col gap-3">
+              {[
+                { id: "sensor", label: "Sensor (Gas/Suhu)", value: ctx.relayPriority?.sensor ?? 100, color: "text-red-600 bg-red-50 border-red-200" },
+                { id: "schedule", label: "Jadwal Otomatis", value: ctx.relayPriority?.schedule ?? 80, color: "text-orange-600 bg-orange-50 border-orange-200" },
+                { id: "voice", label: "Perintah Suara", value: ctx.relayPriority?.voice ?? 60, color: "text-purple-600 bg-purple-50 border-purple-200" },
+                { id: "manual", label: "Tombol Manual", value: ctx.relayPriority?.manual ?? 40, color: "text-blue-600 bg-blue-50 border-blue-200" }
+              ].map((item) => (
+                <div key={item.id} className="flex items-center justify-between rounded-xl border border-slate-100 bg-slate-50 p-3">
+                  <div className="flex items-center gap-2">
+                    <span className={`text-[10px] font-black px-2 py-0.5 rounded border ${item.color}`}>
+                      {item.value}
+                    </span>
+                    <span className="text-sm font-bold text-slate-700">{item.label}</span>
+                  </div>
+                  <div className="flex gap-1">
+                    <button 
+                      onClick={() => {
+                        const newPrio = { ...ctx.relayPriority };
+                        newPrio[item.id as keyof typeof newPrio] = Math.max(0, item.value - 10);
+                        ctx.updateRelayPriority(newPrio.sensor, newPrio.schedule, newPrio.voice, newPrio.manual);
+                      }}
+                      className="w-8 h-8 rounded bg-white border border-slate-200 text-slate-600 font-bold hover:bg-slate-50"
+                    >
+                      -
+                    </button>
+                    <button 
+                      onClick={() => {
+                        const newPrio = { ...ctx.relayPriority };
+                        newPrio[item.id as keyof typeof newPrio] = Math.min(255, item.value + 10);
+                        ctx.updateRelayPriority(newPrio.sensor, newPrio.schedule, newPrio.voice, newPrio.manual);
+                      }}
+                      className="w-8 h-8 rounded bg-white border border-slate-200 text-slate-600 font-bold hover:bg-slate-50"
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
 
         {/* Right Column: Sensor Controls */}

@@ -278,27 +278,33 @@ unsigned long relay2AutoOffAt = 0;
 bool bluetoothAudioState = false;
 
 // ==========================================================
-// SISTEM PRIORITAS RELAY (RELAY ARBITRATION)
+// SISTEM PRIORITAS RELAY — MASTER EVALUATOR
 // ==========================================================
 enum RelayOwner {
   OWNER_NONE     = 0,
-  OWNER_MANUAL   = 1,   // Dashboard manual toggle
-  OWNER_VOICE    = 2,   // Voice command (future)
-  OWNER_SCHEDULE = 3,   // Jadwal otomatis
-  OWNER_SENSOR   = 4    // Sensor gas/suhu (keselamatan)
+  OWNER_MANUAL   = 1,
+  OWNER_VOICE    = 2,
+  OWNER_SCHEDULE = 3,
+  OWNER_SENSOR   = 4
 };
 
-struct RelayControl {
-  RelayOwner currentOwner;
-  uint8_t ownerPriority;
-};
+// Request flags per sumber — setiap sumber punya flag sendiri
+// Relay 1
+bool reqRelay1Gas      = false;  // Sensor gas ingin relay 1 ON
+bool reqRelay1Temp     = false;  // Sensor suhu ingin relay 1 ON
+bool reqRelay1Schedule = false;  // Jadwal ingin relay 1 ON
+bool reqRelay1Manual   = false;  // Manual toggle ingin relay 1 ON
+bool reqRelay1Voice    = false;  // Voice command ingin relay 1 ON
+// Relay 2
+bool reqRelay2Schedule = false;
+bool reqRelay2Manual   = false;
+bool reqRelay2Voice    = false;
 
-RelayControl relayCtrl[2] = {
-  {OWNER_NONE, 0},  // Relay 1
-  {OWNER_NONE, 0}   // Relay 2
-};
+// Current owner (hasil evaluasi, untuk ditampilkan di dashboard)
+RelayOwner relay1Owner = OWNER_NONE;
+RelayOwner relay2Owner = OWNER_NONE;
 
-// Prioritas per sumber (configurable, disimpan di NVS)
+// Prioritas per sumber (configurable)
 uint8_t prioritySensor   = 100;
 uint8_t prioritySchedule = 80;
 uint8_t priorityVoice    = 60;
@@ -307,7 +313,7 @@ uint8_t priorityManual   = 40;
 // Deteksi gas stabil (tidak terpengaruh DFPlayer)
 bool gasAboveThreshold = false;
 bool smokeAboveThreshold = false;
-bool gasChainPlayed = false;   // Flag: chain 0005→0008 sudah diputar
+bool gasChainPlayed = false;
 
 bool lastGasWarning  = false;
 bool lastSmokeWarning = false;
@@ -612,6 +618,10 @@ void loadSettings() {
   gasThreshold = preferences.getInt("gasDanger", 1380);
   tempThreshold = preferences.getFloat("tempThreshold", 38.0);
   tempOffset = preferences.getFloat("tempOffset", 0.0);
+  prioritySensor = preferences.getUChar("prioSensor", 100);
+  prioritySchedule = preferences.getUChar("prioSchedule", 80);
+  priorityVoice = preferences.getUChar("prioVoice", 60);
+  priorityManual = preferences.getUChar("prioManual", 40);
   preferences.end();
   Serial.println("[SETTINGS] Loaded settings from NVS.");
 }
@@ -640,6 +650,10 @@ void saveSettings() {
   preferences.putInt("gasDanger", gasThreshold);
   preferences.putFloat("tempThreshold", tempThreshold);
   preferences.putFloat("tempOffset", tempOffset);
+  preferences.putUChar("prioSensor", prioritySensor);
+  preferences.putUChar("prioSchedule", prioritySchedule);
+  preferences.putUChar("prioVoice", priorityVoice);
+  preferences.putUChar("prioManual", priorityManual);
   preferences.end();
   Serial.println("[SETTINGS] Saved settings to NVS.");
 }
@@ -1589,47 +1603,90 @@ const char* ownerName(RelayOwner owner) {
 // Minta akses relay. Return true jika diterima, false jika ditolak.
 bool requestRelay(int relayNum, bool state, RelayOwner requester) {
   if (relayNum < 1 || relayNum > 2) return false;
-  int idx = relayNum - 1;
-  uint8_t reqPriority = getPriority(requester);
 
-  // Jika ada owner aktif dengan prioritas LEBIH TINGGI → TOLAK
-  if (relayCtrl[idx].currentOwner != OWNER_NONE &&
-      relayCtrl[idx].currentOwner != requester &&
-      relayCtrl[idx].ownerPriority > reqPriority) {
-    Serial.printf("[RELAY-PRIO] DITOLAK: %s (prio %d) < %s (prio %d) untuk relay %d\n",
-                  ownerName(requester), reqPriority,
-                  ownerName(relayCtrl[idx].currentOwner),
-                  relayCtrl[idx].ownerPriority, relayNum);
-    return false;
+  // Cek apakah ada prioritas lebih tinggi yang sedang ON (untuk feedback ke UI)
+  if (relayNum == 1) {
+    if (requester == OWNER_MANUAL && (reqRelay1Gas || reqRelay1Temp || reqRelay1Schedule || reqRelay1Voice)) return false;
+    if (requester == OWNER_VOICE && (reqRelay1Gas || reqRelay1Temp || reqRelay1Schedule)) return false;
+    if (requester == OWNER_SCHEDULE && (reqRelay1Gas || reqRelay1Temp)) return false;
+
+    // Set flag request
+    if (requester == OWNER_MANUAL) reqRelay1Manual = state;
+    else if (requester == OWNER_VOICE) reqRelay1Voice = state;
+    else if (requester == OWNER_SCHEDULE) reqRelay1Schedule = state;
+    // SENSOR diset langsung di checkWarnings
+  } else if (relayNum == 2) {
+    if (requester == OWNER_MANUAL && (reqRelay2Schedule || reqRelay2Voice)) return false;
+    if (requester == OWNER_VOICE && reqRelay2Schedule) return false;
+
+    if (requester == OWNER_MANUAL) reqRelay2Manual = state;
+    else if (requester == OWNER_VOICE) reqRelay2Voice = state;
+    else if (requester == OWNER_SCHEDULE) reqRelay2Schedule = state;
   }
 
-  // Ambil alih atau update state
-  if (state) {
-    relayCtrl[idx].currentOwner = requester;
-    relayCtrl[idx].ownerPriority = reqPriority;
-  } else {
-    // Mematikan → lepaskan ownership
-    relayCtrl[idx].currentOwner = OWNER_NONE;
-    relayCtrl[idx].ownerPriority = 0;
-  }
-
-  setRelay(relayNum, state, false);
-  Serial.printf("[RELAY-PRIO] %s: relay %d %s oleh %s (prio %d)\n",
-                state ? "ON" : "OFF", relayNum,
-                state ? "diambil" : "dilepas",
-                ownerName(requester), reqPriority);
+  evaluateRelay(relayNum);
   return true;
 }
 
-// Lepaskan relay dari owner tertentu. Relay mati jika owner cocok.
+// Lepaskan relay dari owner tertentu.
 void releaseRelay(int relayNum, RelayOwner owner) {
-  if (relayNum < 1 || relayNum > 2) return;
-  int idx = relayNum - 1;
-  if (relayCtrl[idx].currentOwner == owner) {
-    relayCtrl[idx].currentOwner = OWNER_NONE;
-    relayCtrl[idx].ownerPriority = 0;
-    setRelay(relayNum, false, false);
-    Serial.printf("[RELAY-PRIO] Relay %d dilepas oleh %s → OFF\n", relayNum, ownerName(owner));
+  if (relayNum == 1) {
+    if (owner == OWNER_MANUAL) reqRelay1Manual = false;
+    else if (owner == OWNER_VOICE) reqRelay1Voice = false;
+    else if (owner == OWNER_SCHEDULE) reqRelay1Schedule = false;
+  } else if (relayNum == 2) {
+    if (owner == OWNER_MANUAL) reqRelay2Manual = false;
+    else if (owner == OWNER_VOICE) reqRelay2Voice = false;
+    else if (owner == OWNER_SCHEDULE) reqRelay2Schedule = false;
+  }
+  evaluateRelay(relayNum);
+}
+
+// Master Evaluator: Mengecek semua flag dan menentukan state akhir relay
+void evaluateRelay(int relayNum) {
+  if (relayNum == 1) {
+    bool newState = false;
+    RelayOwner newOwner = OWNER_NONE;
+
+    if (reqRelay1Gas || reqRelay1Temp) {
+      newState = true;
+      newOwner = OWNER_SENSOR;
+    } else if (reqRelay1Schedule) {
+      newState = true;
+      newOwner = OWNER_SCHEDULE;
+    } else if (reqRelay1Voice) {
+      newState = true;
+      newOwner = OWNER_VOICE;
+    } else if (reqRelay1Manual) {
+      newState = true;
+      newOwner = OWNER_MANUAL;
+    }
+
+    if (relay1State != newState || relay1Owner != newOwner) {
+      relay1Owner = newOwner;
+      setRelay(1, newState, false);
+      Serial.printf("[RELAY-EVAL] Relay 1 -> %s (Owner: %s)\n", newState ? "ON" : "OFF", ownerName(newOwner));
+    }
+  } else if (relayNum == 2) {
+    bool newState = false;
+    RelayOwner newOwner = OWNER_NONE;
+
+    if (reqRelay2Schedule) {
+      newState = true;
+      newOwner = OWNER_SCHEDULE;
+    } else if (reqRelay2Voice) {
+      newState = true;
+      newOwner = OWNER_VOICE;
+    } else if (reqRelay2Manual) {
+      newState = true;
+      newOwner = OWNER_MANUAL;
+    }
+
+    if (relay2State != newState || relay2Owner != newOwner) {
+      relay2Owner = newOwner;
+      setRelay(2, newState, false);
+      Serial.printf("[RELAY-EVAL] Relay 2 -> %s (Owner: %s)\n", newState ? "ON" : "OFF", ownerName(newOwner));
+    }
   }
 }
 
@@ -1792,9 +1849,9 @@ void handleRelayCommand(JsonObject data, const char *cmdId, const char *type) {
   bool accepted = requestRelay(relayNumber, state, owner);
   if (!accepted) {
     // Ditolak oleh prioritas lebih tinggi
-    int idx = relayNumber - 1;
     char msg[64];
-    snprintf(msg, sizeof(msg), "Relay %d dikunci oleh %s", relayNumber, ownerName(relayCtrl[idx].currentOwner));
+    RelayOwner currentOwner = (relayNumber == 1) ? relay1Owner : relay2Owner;
+    snprintf(msg, sizeof(msg), "Relay %d dikunci oleh %s", relayNumber, ownerName(currentOwner));
     publishAck(cmdId, type, false, msg);
     return;
   }
@@ -1903,7 +1960,8 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
     smokeAboveThreshold = false;
     // Lepaskan relay dari sensor saat sensor dimatikan
     if (!gasEnabled) {
-      releaseRelay(1, OWNER_SENSOR);
+      reqRelay1Gas = false;
+      evaluateRelay(1);
       setBuzzer(false, false);
     }
     saveSettings();
@@ -1959,6 +2017,10 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
     publishJson(topicEvent(), eventDoc, false);
   } else if (strcmp(type, "gasBuzzer.set") == 0) {
     gasBuzzerEnabled = data["enabled"] | false;
+    // Langsung matikan buzzer jika didisable dari web
+    if (!gasBuzzerEnabled && !buzzerManual) {
+      setBuzzer(false, false);
+    }
     saveSettings();
     publishAck(cmdId, type, true, gasBuzzerEnabled ? "Gas Buzzer ON" : "Gas Buzzer OFF");
     sendTelemetryNow();
@@ -1993,19 +2055,27 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
     lastSmokeWarning = false;
     gasChainPlayed = false;
     // Lepaskan relay jika dimiliki sensor (threshold mungkin dinaikkan di atas PPM)
-    releaseRelay(1, OWNER_SENSOR);
+    reqRelay1Gas = false;
+    evaluateRelay(1);
     saveSettings();
     publishAck(cmdId, type, true, "Gas threshold updated.");
     sendTelemetryNow();
   } else if (strcmp(type, "tempThreshold.set") == 0) {
     float threshold = data["threshold"] | 38.0;
     tempThreshold = threshold;
+    lastTempWarning = false;
+    reqRelay1Temp = false;
+    evaluateRelay(1);
     saveSettings();
     publishAck(cmdId, type, true, "Temperature threshold updated.");
     sendTelemetryNow();
   } else if (strcmp(type, "temperatureSensor.set") == 0 || strcmp(type, "tempSensor.set") == 0) {
     tempEnabled = data["enabled"] | true;
     lastTempWarning = false;
+    if (!tempEnabled) {
+      reqRelay1Temp = false;
+      evaluateRelay(1);
+    }
     saveSettings();
     publishAck(cmdId, type, true, "Temperature sensor updated.");
     sendTelemetryNow();
@@ -2013,6 +2083,13 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
     pirEnabled = data["enabled"] | true;
     saveSettings();
     publishAck(cmdId, type, true, "PIR sensor updated.");
+  } else if (strcmp(type, "priority.set") == 0) {
+    prioritySensor = data["prioritySensor"] | 100;
+    prioritySchedule = data["prioritySchedule"] | 80;
+    priorityVoice = data["priorityVoice"] | 60;
+    priorityManual = data["priorityManual"] | 40;
+    saveSettings();
+    publishAck(cmdId, type, true, "Relay priorities updated.");
   } else if (strcmp(type, "pirGreeting.set") == 0) {
     pirGreetingEnabled = data["enabled"] | false;
     pirGreetingTrack = data["track"] | TRACK_GESTURE_WALK;
@@ -2126,8 +2203,12 @@ void publishTelemetry(int gasRaw, float tempC, bool gasWarning, bool tempWarning
   doc["relay1AutoOffRemaining"] = relay1RemainingMs > 0 ? (relay1RemainingMs + 999UL) / 1000UL : 0;
   doc["relay2AutoOffRemaining"] = relay2RemainingMs > 0 ? (relay2RemainingMs + 999UL) / 1000UL : 0;
   // Info pemilik relay (untuk sistem prioritas di dashboard)
-  doc["relay1Owner"] = ownerName(relayCtrl[0].currentOwner);
-  doc["relay2Owner"] = ownerName(relayCtrl[1].currentOwner);
+  doc["relay1Owner"] = ownerName(relay1Owner);
+  doc["relay2Owner"] = ownerName(relay2Owner);
+  doc["prioritySensor"] = prioritySensor;
+  doc["prioritySchedule"] = prioritySchedule;
+  doc["priorityVoice"] = priorityVoice;
+  doc["priorityManual"] = priorityManual;
   doc["bluetoothRelay"] = bluetoothAktif;
   doc["bluetoothAudio"] = bluetoothAudioState;
   doc["buzzer"] = digitalRead(BUZZER_PIN) == HIGH;
@@ -2209,7 +2290,8 @@ void checkWarnings(int gasRaw, float tempC, bool anyGasWarning, bool tempWarning
       smokeStatusStr = "normal";
 
       // Nyalakan relay 1 via sistem prioritas (OWNER_SENSOR)
-      requestRelay(1, true, OWNER_SENSOR);
+      reqRelay1Gas = true;
+      evaluateRelay(1);
 
       // Play chain: 0005 (gas terdeteksi) → 0008 (relay 1 ON)
       playVoice(TRACK_GAS_DETECTED, "gas_detected");
@@ -2236,7 +2318,8 @@ void checkWarnings(int gasRaw, float tempC, bool anyGasWarning, bool tempWarning
       smokeStatusStr = "detected";
       gasStatusStr = "normal";
 
-      requestRelay(1, true, OWNER_SENSOR);
+      reqRelay1Gas = true;
+      evaluateRelay(1);
 
       playVoice(TRACK_GAS_DETECTED, "smoke_detected");
       pendingVoiceTrack = TRACK_RELAY1_ON;
@@ -2263,7 +2346,8 @@ void checkWarnings(int gasRaw, float tempC, bool anyGasWarning, bool tempWarning
       smokeStatusStr = "normal";
 
       // Lepaskan relay 1 dari sensor (jika sensor yang menguasai)
-      releaseRelay(1, OWNER_SENSOR);
+      reqRelay1Gas = false;
+      evaluateRelay(1);
     }
   }
 
@@ -2286,7 +2370,8 @@ void checkWarnings(int gasRaw, float tempC, bool anyGasWarning, bool tempWarning
       lastTempWarning = true;
 
       // Nyalakan relay 1 via sistem prioritas (OWNER_SENSOR)
-      requestRelay(1, true, OWNER_SENSOR);
+      reqRelay1Temp = true;
+      evaluateRelay(1);
 
       playVoice(TRACK_TEMP_HIGH, "temperature_warning");
       pendingVoiceTrack = TRACK_RELAY1_ON;
@@ -2301,7 +2386,8 @@ void checkWarnings(int gasRaw, float tempC, bool anyGasWarning, bool tempWarning
       publishEvent("INFO", "temperature.normal", "Suhu ruangan kembali normal.");
 
       // Lepaskan relay 1 dari sensor (jika sensor yang menguasai)
-      releaseRelay(1, OWNER_SENSOR);
+      reqRelay1Temp = false;
+      evaluateRelay(1);
     }
     lastTempWarning = false;
   }

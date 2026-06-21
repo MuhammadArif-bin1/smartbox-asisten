@@ -94,6 +94,10 @@ export type TelemetryPayload = {
   gasThresholdPpm?: number;
   tempThreshold?: number;
   gasBuzzerEnabled?: boolean;
+  prioritySensor?: number;
+  prioritySchedule?: number;
+  priorityVoice?: number;
+  priorityManual?: number;
   ip?: string;
   rssi?: number;
 };
@@ -185,12 +189,14 @@ export type SmartboxContextValue = {
   relayState: Record<RelayId, boolean>;
   relayAutoOffAt: { socket1: number | null; socket2: number | null };
   relayOwner: { socket1: string; socket2: string };
+  relayPriority: { sensor: number; schedule: number; voice: number; manual: number };
   relayActiveCount: number;
   relaySchedules: RelaySchedule[];
   relay1Label: string;
   relay2Label: string;
   saveRelay1Label: (value: string) => void;
   saveRelay2Label: (value: string) => void;
+  updateRelayPriority: (sensor: number, schedule: number, voice: number, manual: number) => void;
 
   /* alarms */
   alarms: Alarm[];
