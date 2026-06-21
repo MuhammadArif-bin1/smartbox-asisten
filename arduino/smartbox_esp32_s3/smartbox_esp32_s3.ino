@@ -2055,77 +2055,66 @@ void sendTelemetryHttp(int gasRaw, float tempC, bool gasWarning, bool tempWarnin
 }
 
 void checkWarnings(int gasRaw, float tempC, bool anyGasWarning, bool tempWarning, bool pirDetected) {
-  // 1. Tentukan status peringatan fisik dengan hysteresis
-  bool physicalGasWarning = gasEnabled && (gasRaw >= (lastGasWarning ? resetThreshold : smokeThreshold));
-  
-  float tempResetThreshold = tempThreshold - 0.5;
-  bool physicalTempWarning = tempEnabled && (tempC >= (lastTempWarning ? tempResetThreshold : tempThreshold));
-
-  // 2. Kontrol Buzzer (murni fisik, berkedip/pulse non-blocking jika aktif)
-  bool triggerBuzzer = gasBuzzerEnabled && physicalGasWarning;
-  if (triggerBuzzer) {
-    bool buzzerPulseState = (millis() % 400) < 200; // Pulse 200ms ON, 200ms OFF
-    digitalWrite(BUZZER_PIN, buzzerPulseState ? HIGH : LOW);
-  } else {
-    if (!buzzerManual) {
-      digitalWrite(BUZZER_PIN, LOW);
-    } else {
-      digitalWrite(BUZZER_PIN, HIGH);
-    }
-  }
-
-  // 3. Status DFPlayer untuk pemutaran audio
   bool dfPlayerActiveRecently = dfplayerBusy || (millis() - lastVoiceMillis < (VOICE_MIN_GAP_MS + 2500));
-  bool canPlayWarningVoice = !dfPlayerActiveRecently;
+  bool isGas = gasEnabled && !dfPlayerActiveRecently && gasRaw >= gasThreshold;
+  bool isSmoke = gasEnabled && !dfPlayerActiveRecently && gasRaw >= smokeThreshold && gasRaw < gasThreshold;
+  bool gasWarning = isGas || isSmoke;
+  // Bug 2 fix: buzzer bunyi langsung saat gas terdeteksi, tanpa syarat PIR
+  bool triggerBuzzer = gasBuzzerEnabled && gasWarning;
 
-  // 4. Proses Transisi Gas Warning
-  if (physicalGasWarning) {
+  if (isGas) {
     setBluetoothAudio(true);
-    bool isGas = (gasRaw >= gasThreshold);
-    
-    // Tentukan warna RGB led bahaya
-    if (isGas) {
-      setRgb(255, 0, 0); // Merah untuk Gas Tinggi
-      gasStatusStr = "detected";
-      smokeStatusStr = "normal";
-    } else {
-      setRgb(255, 80, 0); // Oranye untuk Asap
-      smokeStatusStr = "detected";
-      gasStatusStr = "normal";
-    }
+    setRgb(255, 0, 0);
 
     if (!lastGasWarning) {
-      // Pemicu pertama (Rising edge)
+      // Bug 3 fix: relay hanya dipaksa nyala SEKALI saat pertama kali gas terdeteksi
+      if (!relay1State) setRelay(1, true, false);
+      relay1ForcedByGas = true;
       lastGasWarning = true;
       lastSmokeWarning = false;
-      if (!relay1State) {
-        setRelay(1, true, false);
-        relay1ForcedByGas = true;
-      }
-      
-      // Mainkan 0005 lalu antrekan 0008 (Relay 1 ON)
-      playVoice(TRACK_GAS_DETECTED, isGas ? "gas_detected" : "smoke_detected");
+      gasStatusStr = "detected";
+      smokeStatusStr = "normal";
+      // Bug 1 fix: Play 0005 lalu 0008 HANYA di deteksi pertama
+      playVoice(TRACK_GAS_DETECTED, "gas_detected");
       pendingVoiceTrack = TRACK_RELAY1_ON;
-      pendingVoicePriority = getVoicePriority(isGas ? "gas_detected" : "smoke_detected");
+      pendingVoicePriority = getVoicePriority("gas_detected");
       pendingVoiceReason = "relay1_on_gas";
-      
-      publishEvent("WARNING", isGas ? "gas.detected" : "smoke.detected", isGas ? "Gas terdeteksi!" : "Asap terdeteksi!");
-      setLcdOverride(isGas ? "GAS TERDETEKSI" : "ASAP TERDETEKSI", "SEGERA PERIKSA!", 5000);
+      publishEvent("WARNING", "gas.detected", "Gas terdeteksi!");
+      setLcdOverride("GAS TERDETEKSI", "SEGERA PERIKSA!", 5000);
     } else {
-      // Alarm sudah aktif, putar reminder periodik (0005 saja)
-      if (canPlayWarningVoice) {
-        playGasWarningVoice(isGas ? "gas" : "smoke");
-      }
+      // Bug 1 fix: Gas masih tinggi → ulang 0005 saja (dengan cooldown 10s)
+      playGasWarningVoice("gas");
     }
-  } else {
-    // Penurunan kondisi (Falling edge atau dinonaktifkan)
-    if (lastGasWarning) {
-      publishEvent("INFO", "gas.cleared", "Kondisi gas/asap kembali normal.");
+  } 
+  else if (isSmoke) {
+    setBluetoothAudio(true);
+    setRgb(255, 80, 0);
+
+    if (!lastSmokeWarning) {
+      lastSmokeWarning = true;
+      lastGasWarning = false;
+      smokeStatusStr = "detected";
+      gasStatusStr = "normal";
+      playVoice(TRACK_GAS_DETECTED, "smoke_detected");
+      pendingVoiceTrack = TRACK_RELAY1_ON;
+      pendingVoicePriority = getVoicePriority("smoke_detected");
+      pendingVoiceReason = "relay1_on_smoke";
+      publishEvent("WARNING", "smoke.detected", "Asap terdeteksi!");
+      setLcdOverride("ASAP TERDETEKSI", "SEGERA PERIKSA!", 5000);
+    } else {
+      // Asap masih tinggi → ulang 0005 saja (dengan cooldown 10s)
+      playGasWarningVoice("smoke");
+    }
+  } 
+  else {
+    if (gasRaw < resetThreshold) {
+      if (lastGasWarning || lastSmokeWarning) {
+        publishEvent("INFO", "gas.cleared", "Kondisi gas/asap kembali normal.");
+      }
       lastGasWarning = false;
       lastSmokeWarning = false;
       gasStatusStr = "normal";
       smokeStatusStr = "normal";
-      
       if (relay1ForcedByGas) {
         if (!relay1ForcedByTemp) {
           setRelay(1, false, false);
@@ -2135,43 +2124,40 @@ void checkWarnings(int gasRaw, float tempC, bool anyGasWarning, bool tempWarning
     }
   }
 
-  // 5. Proses Transisi Temperature Warning
-  if (physicalTempWarning) {
+  // Bug 2 fix: buzzer logic disederhanakan — bunyi jika gas warning aktif & toggle ON
+  if (triggerBuzzer) {
+    setBuzzer(true, false);
+  } else {
+    if (!buzzerManual) {
+      setBuzzer(false, false);
+    }
+  }
+
+  if (tempWarning) {
     if (!lastTempWarning) {
-      // Pemicu pertama (Rising edge)
+      // Bug 3 fix: relay hanya dipaksa nyala SEKALI saat pertama kali suhu melebihi ambang
+      if (!relay1State) setRelay(1, true, false);
+      relay1ForcedByTemp = true;
       lastTempWarning = true;
-      if (!relay1State) {
-        setRelay(1, true, false);
-        relay1ForcedByTemp = true;
-      }
-      
-      // Mainkan 0006 lalu antrekan 0008 (Relay 1 ON)
+      // Play 0006 (suhu luar ambang) lalu 0008 (stop kontak 1 ON)
       playVoice(TRACK_TEMP_HIGH, "temperature_warning");
       pendingVoiceTrack = TRACK_RELAY1_ON;
       pendingVoicePriority = getVoicePriority("temperature_warning");
       pendingVoiceReason = "relay1_on_temp";
-      
       publishEvent("WARNING", "temperature.high", "Suhu terdeteksi melebihi ambang batas");
       setLcdOverride("SUHU TINGGI!", "CEK RUANGAN", 5000);
-    } else {
-      // Alarm sudah aktif, putar reminder periodik (0006 saja)
-      if (canPlayWarningVoice) {
-        playTemperatureWarningVoice();
-      }
     }
   } else {
-    // Penurunan kondisi (Falling edge atau dinonaktifkan)
     if (lastTempWarning) {
       playVoice(TRACK_TEMP_NORMAL, "temperature_normal");
       publishEvent("INFO", "temperature.normal", "Suhu ruangan kembali normal.");
-      lastTempWarning = false;
-      
-      if (relay1ForcedByTemp) {
-        if (!relay1ForcedByGas) {
-          setRelay(1, false, false);
-        }
-        relay1ForcedByTemp = false;
+    }
+    lastTempWarning = false;
+    if (relay1ForcedByTemp) {
+      if (!relay1ForcedByGas) {
+        setRelay(1, false, false);
       }
+      relay1ForcedByTemp = false;
     }
   }
 }
@@ -2654,8 +2640,9 @@ void loop() {
   int gasRaw = getFilteredGas();
   float tempC = rtcReady ? rtc.getTemperature() + tempOffset : 0.0;
 
-  bool isGas = gasEnabled && gasRaw >= gasThreshold;
-  bool isSmoke = gasEnabled && smokeThreshold > 0 && gasRaw >= smokeThreshold && gasRaw < gasThreshold;
+  bool dfPlayerActiveRecently = dfplayerBusy || (millis() - lastVoiceMillis < (VOICE_MIN_GAP_MS + 2500));
+  bool isGas = gasEnabled && !dfPlayerActiveRecently && gasRaw >= gasThreshold;
+  bool isSmoke = gasEnabled && !dfPlayerActiveRecently && gasRaw >= smokeThreshold && gasRaw < gasThreshold;
   bool gasWarning = isGas || isSmoke;
   bool tempWarning = tempEnabled && tempC >= tempThreshold;
   bool pirDetected = pirEnabled && digitalRead(PIR_PIN) == HIGH;
