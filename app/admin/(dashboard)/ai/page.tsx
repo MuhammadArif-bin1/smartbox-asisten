@@ -22,16 +22,12 @@ export default function AiPage() {
           ))}
         </div>
       </Panel>
-      <Panel title="Voice Command" subtitle="Kontrol suara dan clap command.">
+      <Panel title="Voice Command" subtitle="Kontrol wake word lokal Edge Impulse.">
         <ControlRow
           label="Voice Command"
-          detail="Tepuk 1 kali mati, 2 kali hidup."
+          detail="Wake word Halo_Aero lalu ucapkan perintah dalam 4 detik."
           enabled={ctx.voiceMode}
-          onToggle={() => {
-            const next = !ctx.voiceMode;
-            ctx.setVoiceMode(next);
-            ctx.publish("smartbox/voice/mode", { enabled: next }, `Voice command ${next ? "aktif" : "mati"}`);
-          }}
+          onToggle={ctx.toggleVoiceMode}
         />
       </Panel>
     </div>

@@ -75,6 +75,7 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
   const [relayPriority, setRelayPriority] = useState<{ sensor: number; schedule: number; voice: number; manual: number }>({ sensor: 100, schedule: 80, voice: 60, manual: 40 });
   const relayPendingRef = useRef<Record<RelayId, number>>({ socket1: 0, socket2: 0, ampli: 0 });
   const sensorPendingRef = useRef<{ gas: number; temperature: number; buzzer: number }>({ gas: 0, temperature: 0, buzzer: 0 });
+  const voicePendingRef = useRef(0);
 
   const setBuzzerEnabled = (enabled: boolean, isManual = false) => {
     _setBuzzerEnabled(enabled);
@@ -409,6 +410,16 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
     sendDeviceCommand("sleepMode.set", { enabled: next }, `Sleep Mode ${next ? "aktif" : "mati"}`);
   }
 
+  async function toggleVoiceMode() {
+    const next = !voiceMode;
+    voicePendingRef.current = Date.now();
+    setVoiceMode(next);
+    const ok = await sendDeviceCommand("voiceCommand.set", { enabled: next }, `Voice command ${next ? "aktif" : "mati"}`);
+    if (!ok) {
+      setVoiceMode(!next);
+    }
+  }
+
   async function toggleRelay(relayId: RelayId) {
     const next = !relayState[relayId];
     const previousAutoOffAt = relayId === "ampli" ? null : relayAutoOffAt[relayId];
@@ -649,6 +660,7 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
             if (typeof telemetry.gasThresholdPpm === "number") setGasThresholdPpm(telemetry.gasThresholdPpm);
             if (typeof telemetry.tempThreshold === "number") setTempThreshold(telemetry.tempThreshold);
             if (typeof telemetry.gasBuzzerEnabled === "boolean") setGasBuzzerEnabled(telemetry.gasBuzzerEnabled);
+            if (typeof telemetry.voiceMode === "boolean" && nowTime - voicePendingRef.current > 2000) setVoiceMode(telemetry.voiceMode);
             if (typeof telemetry.flameDetected === "boolean") setFlameDetected(telemetry.flameDetected);
             if (typeof telemetry.pirDetected === "boolean") setPirDetected(telemetry.pirDetected);
             if (typeof telemetry.obstacleNear === "boolean") setObstacleNear(telemetry.obstacleNear);
@@ -1147,7 +1159,7 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
       priorityManual: manual,
     }, "Prioritas Relay");
     setRelayPriority({ sensor, schedule, voice, manual });
-    setToast({ message: "Prioritas sistem relay telah diperbarui." });
+    setToast({ id: Date.now(), message: "Prioritas sistem relay telah diperbarui.", tone: "success" });
   }, [sendDeviceCommand]);
 
   /* ─── Context value ─── */
@@ -1164,7 +1176,7 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
     mqttOnline, status, lastCommand, voiceMode, buzzerEnabled, boardLedScheduleEnabled,
     events, toast, notify, setToast,
     publish, sendDeviceCommand, toggleGas, toggleTemperature, toggleRelay, togglePir, toggleSleepMode,
-    updateAlarm, updateGasThreshold, updateTempThreshold, setBuzzerEnabled, setBoardLedScheduleEnabled, setVoiceMode, updatePirGreetingConfig,
+    updateAlarm, updateGasThreshold, updateTempThreshold, setBuzzerEnabled, setBoardLedScheduleEnabled, setVoiceMode, toggleVoiceMode, updatePirGreetingConfig,
     saveRelaySchedule, deleteRelaySchedule,
     saveGreetingVoiceSchedule, deleteGreetingVoiceSchedule, toggleGreetingVoiceScheduleActive,
     onSaveSchedule: saveAlarmSchedule, onDeleteSchedule: deleteAlarmSchedule, onToggleScheduleActive: toggleAlarmScheduleActive, onTestPlayVoice: testPlayVoice,

@@ -94,6 +94,9 @@ export type TelemetryPayload = {
   gasThresholdPpm?: number;
   tempThreshold?: number;
   gasBuzzerEnabled?: boolean;
+  voiceMode?: boolean;
+  voiceCommandEnabled?: boolean;
+  voiceWakeActive?: boolean;
   prioritySensor?: number;
   prioritySchedule?: number;
   priorityVoice?: number;
@@ -232,6 +235,7 @@ export type SmartboxContextValue = {
   setBuzzerEnabled: (enabled: boolean, isManual?: boolean) => void;
   setBoardLedScheduleEnabled: (enabled: boolean) => void;
   setVoiceMode: (enabled: boolean) => void;
+  toggleVoiceMode: () => Promise<void>;
   updatePirGreetingConfig: (
     enabled: boolean,
     track: number,

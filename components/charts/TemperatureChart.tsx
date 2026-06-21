@@ -1,98 +1,160 @@
 "use client";
 
-import { temperatureSeries } from "@/lib/smartbox-constants";
+import { TEMP_WARNING_C, temperatureSeries } from "@/lib/smartbox-constants";
 
-export function TemperatureChart({ value, series = temperatureSeries }: { value: number; series?: number[] }) {
-  // Map series to SVG coordinates. Range: 20°C to 45°C (height = 160)
-  // X range: 60 to 580. Y range: 60 to 220
-  const points = series
-    .map((temp, index) => {
-      const x = 60 + index * 30;
-      const y = 220 - ((Math.max(20, Math.min(45, temp)) - 20) / 25) * 160;
-      return `${x},${y}`;
-    })
-    .join(" ");
+const chartBox = {
+  left: 70,
+  right: 592,
+  top: 62,
+  bottom: 232,
+};
 
-  const isHigh = value >= 35;
-  const strokeColor = isHigh ? "#ef4444" : "#2563eb"; // Red if hot, Blue if normal
-  const fillColor = isHigh ? "rgba(239,68,68,0.08)" : "rgba(37,99,235,0.08)";
+const tempMin = 20;
+const tempMax = 45;
+const chartWidth = chartBox.right - chartBox.left;
+const chartHeight = chartBox.bottom - chartBox.top;
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function tempToY(temp: number) {
+  const safeTemp = clamp(temp, tempMin, tempMax);
+  return chartBox.bottom - ((safeTemp - tempMin) / (tempMax - tempMin)) * chartHeight;
+}
+
+function indexToX(index: number, total: number) {
+  if (total <= 1) return chartBox.left;
+  return chartBox.left + (index / (total - 1)) * chartWidth;
+}
+
+export function TemperatureChart({
+  value,
+  series = temperatureSeries,
+  threshold = TEMP_WARNING_C,
+}: {
+  value: number;
+  series?: number[];
+  threshold?: number;
+}) {
+  const samples = series.length > 0 ? series : [value];
+  const plottedPoints = samples.map((temp, index) => ({
+    x: indexToX(index, samples.length),
+    y: tempToY(temp),
+    value: temp,
+  }));
+
+  const linePoints = plottedPoints.map((point) => `${point.x},${point.y}`).join(" ");
+  const firstPoint = plottedPoints[0];
+  const lastPoint = plottedPoints[plottedPoints.length - 1];
+  const areaPoints = firstPoint && lastPoint
+    ? `${firstPoint.x},${chartBox.bottom} ${linePoints} ${lastPoint.x},${chartBox.bottom}`
+    : "";
+
+  const isHigh = value >= threshold;
+  const strokeColor = isHigh ? "#e11d48" : "#2563eb";
   const statusLabel = isHigh ? "Suhu Tinggi" : "Normal";
-
-  const yWarning = 220 - ((35 - 20) / 25) * 160; // 35 °C warning threshold Y coordinate
+  const thresholdY = tempToY(threshold);
+  const latestY = tempToY(value);
 
   return (
-    <div className="overflow-hidden rounded-3xl border border-slate-100 bg-gradient-to-b from-white to-slate-50/50 p-6 shadow-sm">
-      <div className="mb-2 flex items-center justify-between">
-        <span className="text-xs font-black uppercase tracking-wider text-slate-400">Grafik Suhu Ruangan</span>
-        <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-bold ${
-          isHigh ? "bg-red-50 text-red-600" : "bg-blue-50 text-blue-600"
-        }`}>
-          <span className={`h-1.5 w-1.5 rounded-full ${
-            isHigh ? "bg-red-500 animate-pulse" : "bg-blue-500"
-          }`} />
-          {statusLabel}
-        </span>
+    <div className="relative overflow-hidden rounded-[28px] border border-blue-100/80 bg-white p-5 shadow-[0_24px_70px_-44px_rgba(15,23,42,0.7)] ring-1 ring-white/80">
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-32 bg-gradient-to-b from-blue-50/90 to-transparent" />
+
+      <div className="relative flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <p className="text-[11px] font-black uppercase tracking-[0.2em] text-blue-500">Grafik Suhu Ruangan</p>
+          <div className="mt-3 flex items-end gap-3">
+            <span className="font-mono text-4xl font-black leading-none text-slate-950">
+              {value.toFixed(1)}
+            </span>
+            <span className="pb-1.5 text-base font-black text-slate-500">{"\u00b0C"}</span>
+          </div>
+          <p className="mt-1 text-xs font-semibold text-slate-500">Live 3 menit terakhir</p>
+        </div>
+
+        <div className="flex flex-wrap justify-end gap-2">
+          <span className="inline-flex items-center gap-2 rounded-full border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-black text-rose-600 shadow-sm">
+            <span className="h-2 w-2 rounded-full bg-rose-500" />
+            Batas {threshold.toFixed(0)}{"\u00b0C"}
+          </span>
+          <span className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-black shadow-sm ${
+            isHigh
+              ? "border-rose-200 bg-rose-50 text-rose-600"
+              : "border-blue-200 bg-blue-50 text-blue-700"
+          }`}>
+            <span className={`h-2 w-2 rounded-full ${isHigh ? "animate-pulse bg-rose-500" : "bg-blue-500"}`} />
+            {statusLabel}
+          </span>
+        </div>
       </div>
 
-      <svg className="w-full h-auto aspect-[620/270]" viewBox="0 0 620 270" role="img" aria-label="Grafik suhu ruangan dalam Celcius">
-        {/* Y Axis Grid lines & Labels */}
+      <svg className="relative mt-4 h-auto w-full aspect-[640/300]" viewBox="0 0 640 300" role="img" aria-label="Grafik suhu ruangan dalam Celcius">
+        <defs>
+          <linearGradient id="temperatureAreaGradient" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor={strokeColor} stopOpacity="0.24" />
+            <stop offset="100%" stopColor={strokeColor} stopOpacity="0.03" />
+          </linearGradient>
+          <filter id="temperatureLineGlow" x="-20%" y="-40%" width="140%" height="180%">
+            <feDropShadow dx="0" dy="8" stdDeviation="8" floodColor={strokeColor} floodOpacity="0.24" />
+          </filter>
+        </defs>
+
+        <rect x="0" y="0" width="640" height="300" rx="26" fill="#f8fafc" />
+        <rect x={chartBox.left} y={chartBox.top} width={chartWidth} height={thresholdY - chartBox.top} rx="16" fill="#fff1f2" opacity="0.55" />
+        <rect x={chartBox.left} y={thresholdY} width={chartWidth} height={chartBox.bottom - thresholdY} rx="16" fill="#eff6ff" opacity="0.55" />
+
         {[20, 25, 30, 35, 40, 45].map((val) => {
-          const y = 220 - ((val - 20) / 25) * 160;
+          const y = tempToY(val);
           return (
-            <g key={val} className="opacity-40">
-              <line x1="60" x2="580" y1={y} y2={y} stroke="#cbd5e1" strokeDasharray="3 3" strokeWidth="1" />
-              <text x="20" y={y + 4} fill="#64748b" fontSize="11" fontWeight="700" className="font-sans">{val} °C</text>
+            <g key={val}>
+              <line x1={chartBox.left} x2={chartBox.right} y1={y} y2={y} stroke="#cbd5e1" strokeDasharray="4 8" strokeWidth="1" />
+              <text x="24" y={y + 4} fill="#64748b" fontSize="11" fontWeight="800" className="font-sans">
+                {val}{"\u00b0C"}
+              </text>
             </g>
           );
         })}
 
-        {/* Warning Threshold Line (35°C) */}
-        <g>
-          <line x1="60" x2="580" y1={yWarning} y2={yWarning} stroke="#ef4444" strokeDasharray="6 4" strokeWidth="2.5" className="opacity-90" />
-          <text x="320" y={yWarning - 8} fill="#ef4444" fontSize="16" fontWeight="900" className="font-sans uppercase tracking-widest">⚠️ BATAS PANAS (35°C)</text>
-        </g>
+        <line x1={chartBox.left} x2={chartBox.right} y1={thresholdY} y2={thresholdY} stroke="#e11d48" strokeDasharray="9 8" strokeWidth="2.5" />
+        <circle cx={chartBox.right} cy={thresholdY} r="4" fill="#e11d48" stroke="#ffffff" strokeWidth="2" />
 
-        {/* Area Fill */}
-        {points && (
-          <polyline points={`60,220 ${points} 570,220`} fill={fillColor} stroke="none" />
+        {areaPoints && <polyline points={areaPoints} fill="url(#temperatureAreaGradient)" stroke="none" />}
+
+        {linePoints && (
+          <polyline
+            points={linePoints}
+            fill="none"
+            filter="url(#temperatureLineGlow)"
+            stroke={strokeColor}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="4.5"
+          />
         )}
 
-        {/* Line Path */}
-        {points && (
-          <polyline points={points} fill="none" stroke={strokeColor} strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" />
-        )}
+        {plottedPoints.map((point, index) => (
+          <circle
+            key={`${point.value}-${index}`}
+            cx={point.x}
+            cy={point.y}
+            r={index === plottedPoints.length - 1 ? "5.5" : "4"}
+            fill={strokeColor}
+            stroke="#ffffff"
+            strokeWidth="2"
+          />
+        ))}
 
-        {/* Data Points */}
-        {series.map((temp, index) => {
-          const x = 60 + index * 30;
-          const y = 220 - ((Math.max(20, Math.min(45, temp)) - 20) / 25) * 160;
-          return (
-            <circle
-              key={`${temp}-${index}`}
-              cx={x}
-              cy={y}
-              r="4.5"
-              fill={strokeColor}
-              stroke="#ffffff"
-              strokeWidth="1.5"
-              className="transition-all duration-300"
-            />
-          );
-        })}
-
-        {/* X Axis Timeline Labels */}
-        <g className="opacity-60">
-          <line x1="60" x2="580" y1="225" y2="225" stroke="#cbd5e1" strokeWidth="1.5" />
-          <text x="60" y="245" fill="#64748b" fontSize="11" fontWeight="700" textAnchor="start">3 menit lalu</text>
-          <text x="320" y="245" fill="#64748b" fontSize="11" fontWeight="700" textAnchor="middle">1.5 menit lalu</text>
-          <text x="580" y="245" fill="#64748b" fontSize="11" fontWeight="700" textAnchor="end">Sekarang</text>
+        <g>
+          <line x1={chartBox.left} x2={chartBox.right} y1={chartBox.bottom + 5} y2={chartBox.bottom + 5} stroke="#cbd5e1" strokeWidth="1.5" />
+          <text x={chartBox.left} y="265" fill="#64748b" fontSize="11" fontWeight="800" textAnchor="start">3 menit lalu</text>
+          <text x={(chartBox.left + chartBox.right) / 2} y="265" fill="#64748b" fontSize="11" fontWeight="800" textAnchor="middle">1.5 menit lalu</text>
+          <text x={chartBox.right} y="265" fill="#64748b" fontSize="11" fontWeight="800" textAnchor="end">Sekarang</text>
         </g>
 
-        {/* Floating current value display */}
         <g>
-          <rect x="68" y="48" width="130" height="52" rx="14" fill="#0f172a" />
-          <text x="84" y="73" fill="white" fontSize="18" fontWeight="900" className="font-mono">{value.toFixed(1)} °C</text>
-          <text x="84" y="90" fill="#94a3b8" fontSize="10" fontWeight="700" className="font-sans uppercase tracking-wider">Suhu Ruang</text>
+          <line x1={chartBox.right - 18} x2={chartBox.right - 18} y1={latestY - 18} y2={latestY + 18} stroke={strokeColor} strokeWidth="1.5" strokeOpacity="0.25" />
+          <circle cx={chartBox.right - 18} cy={latestY} r="7" fill={strokeColor} stroke="#ffffff" strokeWidth="3" />
         </g>
       </svg>
     </div>

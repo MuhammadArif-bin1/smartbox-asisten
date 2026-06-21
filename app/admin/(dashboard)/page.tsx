@@ -9,21 +9,23 @@ import { DetailedSensorCard } from "./DetailedSensorCard";
 export default function MonitoringPage() {
   const ctx = useSmartbox();
   const isOnline = ctx.deviceStatuses.esp32;
-  const lastUpdate = isOnline ? (ctx.deviceStatuses.lastSeen && ctx.deviceStatuses.lastSeen !== "-" ? ctx.deviceStatuses.lastSeen : "Baru saja") : "-";
+  const tempUnit = "\u00b0C";
+  const lastUpdate = isOnline
+    ? (ctx.deviceStatuses.lastSeen && ctx.deviceStatuses.lastSeen !== "-" ? ctx.deviceStatuses.lastSeen : "Baru saja")
+    : "-";
 
   return (
     <div className="grid gap-6">
-      {/* Detail Kondisi Ruangan - Full Width */}
       <Panel title="Detail Kondisi Ruangan" subtitle={`Sumber data: ${ctx.telemetrySource}`}>
-        <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
           <DetailedSensorCard
             title="Suhu Ruangan"
-            value={isOnline ? (ctx.visibleTempEstimate > 0 ? `${ctx.visibleTempEstimate.toFixed(1)}°C` : "Menunggu data...") : "Tidak Terhubung"}
+            value={isOnline ? (ctx.visibleTempEstimate > 0 ? `${ctx.visibleTempEstimate.toFixed(1)}${tempUnit}` : "Menunggu data...") : "Tidak Terhubung"}
             status={ctx.tempState}
             lastSeen={lastUpdate}
             online={isOnline}
             accent="blue"
-            threshold={isOnline ? `Pemicu Stop Kontak: ${ctx.tempThreshold}°C` : undefined}
+            threshold={isOnline ? `Pemicu Stop Kontak: ${ctx.tempThreshold}${tempUnit}` : undefined}
             icon={
               <svg className="h-6 w-6 text-blue-600" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M14 4v10.5a4.5 4.5 0 11-4 0V4a2 2 0 114 0z" />
@@ -62,20 +64,24 @@ export default function MonitoringPage() {
         </div>
       </Panel>
 
-      {/* Grafik Sensor Real-time - Full Width with larger grids */}
-      <Panel title="Grafik Sensor Real-time" subtitle="Monitoring grafik sensor suhu dan gas.">
-        <div className="grid gap-6 md:grid-cols-2">
+      <Panel title="Grafik Sensor Real-time" subtitle="Monitoring tren sensor dengan zona aman, waspada, dan batas alarm.">
+        <div className="grid gap-5 xl:grid-cols-2">
           {isOnline && ctx.visibleTempEstimate > 0 ? (
-             <TemperatureChart value={ctx.visibleTempEstimate} series={ctx.tempHistory} />
+            <TemperatureChart value={ctx.visibleTempEstimate} series={ctx.tempHistory} threshold={ctx.tempThreshold} />
           ) : (
-            <div className="flex items-center justify-center min-h-[320px] rounded-3xl border border-dashed border-slate-200 bg-slate-50 text-slate-400 text-sm font-bold p-6">
+            <div className="flex min-h-[390px] items-center justify-center rounded-[28px] border border-dashed border-slate-200 bg-white p-6 text-sm font-bold text-slate-400 shadow-[0_24px_70px_-44px_rgba(15,23,42,0.45)]">
               Menunggu data suhu...
             </div>
           )}
           {isOnline ? (
-            <GasChart value={ctx.visibleGasEstimate} series={ctx.gasHistory} />
+            <GasChart
+              value={ctx.visibleGasEstimate}
+              series={ctx.gasHistory}
+              warningPpm={ctx.gasThresholdPpm}
+              dangerPpm={ctx.gasThresholdPpm + 2}
+            />
           ) : (
-            <div className="flex items-center justify-center min-h-[320px] rounded-3xl border border-dashed border-slate-200 bg-slate-50 text-slate-400 text-sm font-bold p-6">
+            <div className="flex min-h-[390px] items-center justify-center rounded-[28px] border border-dashed border-slate-200 bg-white p-6 text-sm font-bold text-slate-400 shadow-[0_24px_70px_-44px_rgba(15,23,42,0.45)]">
               Tidak terhubung.
             </div>
           )}

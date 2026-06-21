@@ -26,6 +26,7 @@
   - LiquidCrystal_I2C
   - DFRobotDFPlayerMini
   - Adafruit NeoPixel
+  - Smartbox_asistent_inferencing (Edge Impulse)
 
   Catatan:
   - Relay 1/2 memakai LOW LEVEL TRIGGER, jadi ON = LOW dan OFF = HIGH.
@@ -68,6 +69,11 @@
 #include <WiFiClientSecure.h>
 #include <Wire.h>
 #include <driver/i2s.h>
+#include <Smartbox_asistent_inferencing.h>
+
+#if !defined(EI_CLASSIFIER_SENSOR) || EI_CLASSIFIER_SENSOR != EI_CLASSIFIER_SENSOR_MICROPHONE
+#error "Smartbox_asistent_inferencing harus berupa model microphone."
+#endif
 
 // ==========================================================
 // 1. WIFI & MQTT CLOUD CONFIG
@@ -310,6 +316,31 @@ uint8_t prioritySchedule = 80;
 uint8_t priorityVoice    = 60;
 uint8_t priorityManual   = 40;
 
+// ==========================================================
+// EDGE IMPULSE VOICE COMMAND - SMARTBOX ASISTENT
+// ==========================================================
+const float EDGE_WAKE_CONFIDENCE = 0.90f;
+const float EDGE_COMMAND_CONFIDENCE = 0.89f;
+const float EDGE_MIN_MARGIN = 0.08f;
+const unsigned long EDGE_COMMAND_WINDOW_MS = 4000;
+const unsigned long EDGE_COMMAND_COOLDOWN_MS = 1800;
+const unsigned long EDGE_DFPLAYER_MUTE_MS = 2500;
+const size_t EDGE_I2S_READ_SAMPLES = 512;
+
+int16_t *edgeVoiceBuffers[2] = {NULL, NULL};
+uint8_t edgeVoiceFillBuffer = 0;
+uint8_t edgeVoiceReadyBuffer = 0;
+size_t edgeVoiceSampleCount = 0;
+bool edgeVoiceBufferReady = false;
+bool edgeVoiceReady = false;
+bool edgeWakeActive = false;
+unsigned long edgeWakeListenAt = 0;
+unsigned long edgeWakeExpiresAt = 0;
+unsigned long lastEdgeCommandAt = 0;
+unsigned long edgeVoiceSuppressedUntil = 0;
+int32_t edgeI2sBuffer[EDGE_I2S_READ_SAMPLES];
+bool edgeDebug = false;
+
 // Deteksi gas stabil (tidak terpengaruh DFPlayer)
 bool gasAboveThreshold = false;
 bool smokeAboveThreshold = false;
@@ -446,6 +477,11 @@ void playGasWarningVoice(String gasType);
 void playTemperatureWarningVoice();
 void playPirGreeting(String motionType);
 void publishVoicePlayedEvent(int track, const char* source);
+void initEdgeVoiceCommand();
+void resetEdgeVoiceBuffers();
+void serviceEdgeVoiceCommand();
+void handleEdgeVoiceLabel(const char *label, float confidence);
+bool executeVoiceRelayCommand(uint8_t relayNumber, bool state, int voiceTrack, const char *reason);
 void handleWhiteButtonQuickPress();
 void sendRecordedAudio();
 void updateRecording();
@@ -468,6 +504,7 @@ void led12cOff();
 void blinkLed12c(int times, int delayMs);
 void updateLed12c(bool gasWarning, bool smokeWarning, bool pirDetected, bool wifiConnected, bool mqttConnected);
 void playScheduledAlarm(int track, const char *timeStr);
+void evaluateRelay(int relayNum);
 
 // ==========================================================
 // 10. MQTT TOPICS
@@ -618,6 +655,7 @@ void loadSettings() {
   gasThreshold = preferences.getInt("gasDanger", 1380);
   tempThreshold = preferences.getFloat("tempThreshold", 38.0);
   tempOffset = preferences.getFloat("tempOffset", 0.0);
+  voiceMode = preferences.getBool("voiceMode", true);
   prioritySensor = preferences.getUChar("prioSensor", 100);
   prioritySchedule = preferences.getUChar("prioSchedule", 80);
   priorityVoice = preferences.getUChar("prioVoice", 60);
@@ -650,6 +688,7 @@ void saveSettings() {
   preferences.putInt("gasDanger", gasThreshold);
   preferences.putFloat("tempThreshold", tempThreshold);
   preferences.putFloat("tempOffset", tempOffset);
+  preferences.putBool("voiceMode", voiceMode);
   preferences.putUChar("prioSensor", prioritySensor);
   preferences.putUChar("prioSchedule", prioritySchedule);
   preferences.putUChar("prioVoice", priorityVoice);
@@ -1355,18 +1394,22 @@ void checkRelayAutoOff() {
 
   if (relay1AutoOffActive && (long)(now - relay1AutoOffAt) >= 0) {
     relay1AutoOffActive = false;
-    Serial.println("[RELAY] Relay 1 OFF by auto-off");
-    setRelay(1, false, false);
-    setLcdOverride("STOP KONTAK 1", "KIPAS OFF", 3000);
-    publishEvent("INFO", "relay1.auto_off", "Stop Kontak 1 otomatis mati setelah 1 menit.");
+    Serial.println("[RELAY] Relay 1 auto-off melepas request manual");
+    releaseRelay(1, OWNER_MANUAL);
+    if (!relay1State) {
+      setLcdOverride("STOP KONTAK 1", "KIPAS OFF", 3000);
+    }
+    publishEvent("INFO", "relay1.auto_off", "Stop Kontak 1 melepas kontrol manual setelah 1 menit.");
   }
 
   if (relay2AutoOffActive && (long)(now - relay2AutoOffAt) >= 0) {
     relay2AutoOffActive = false;
-    Serial.println("[RELAY] Relay 2 OFF by auto-off");
-    setRelay(2, false, false);
-    setLcdOverride("STOP KONTAK 2", "CHARGER OFF", 3000);
-    publishEvent("INFO", "relay2.auto_off", "Stop Kontak 2 otomatis mati setelah 1 menit.");
+    Serial.println("[RELAY] Relay 2 auto-off melepas request manual");
+    releaseRelay(2, OWNER_MANUAL);
+    if (!relay2State) {
+      setLcdOverride("STOP KONTAK 2", "CHARGER OFF", 3000);
+    }
+    publishEvent("INFO", "relay2.auto_off", "Stop Kontak 2 melepas kontrol manual setelah 1 menit.");
   }
 }
 
@@ -1600,30 +1643,95 @@ const char* ownerName(RelayOwner owner) {
   }
 }
 
+uint8_t ownerTieRank(RelayOwner owner) {
+  switch (owner) {
+    case OWNER_SENSOR:   return 4;
+    case OWNER_SCHEDULE: return 3;
+    case OWNER_VOICE:    return 2;
+    case OWNER_MANUAL:   return 1;
+    default:             return 0;
+  }
+}
+
+bool ownerBeats(RelayOwner challenger, RelayOwner current) {
+  if (challenger == OWNER_NONE) return false;
+  if (current == OWNER_NONE) return true;
+
+  uint8_t challengerPriority = getPriority(challenger);
+  uint8_t currentPriority = getPriority(current);
+  if (challengerPriority != currentPriority) {
+    return challengerPriority > currentPriority;
+  }
+
+  return ownerTieRank(challenger) > ownerTieRank(current);
+}
+
+bool relayOwnerRequested(int relayNum, RelayOwner owner) {
+  if (relayNum == 1) {
+    if (owner == OWNER_SENSOR) return reqRelay1Gas || reqRelay1Temp;
+    if (owner == OWNER_SCHEDULE) return reqRelay1Schedule;
+    if (owner == OWNER_VOICE) return reqRelay1Voice;
+    if (owner == OWNER_MANUAL) return reqRelay1Manual;
+  } else if (relayNum == 2) {
+    if (owner == OWNER_SCHEDULE) return reqRelay2Schedule;
+    if (owner == OWNER_VOICE) return reqRelay2Voice;
+    if (owner == OWNER_MANUAL) return reqRelay2Manual;
+  }
+  return false;
+}
+
+RelayOwner dominantRelayOwner(int relayNum) {
+  RelayOwner best = OWNER_NONE;
+  RelayOwner owners[] = {OWNER_MANUAL, OWNER_VOICE, OWNER_SCHEDULE, OWNER_SENSOR};
+
+  for (uint8_t i = 0; i < 4; i++) {
+    RelayOwner candidate = owners[i];
+    if (!relayOwnerRequested(relayNum, candidate)) continue;
+    if (ownerBeats(candidate, best)) best = candidate;
+  }
+
+  return best;
+}
+
+void setRelayOwnerRequest(int relayNum, RelayOwner owner, bool state) {
+  if (relayNum == 1) {
+    if (owner == OWNER_MANUAL) reqRelay1Manual = state;
+    else if (owner == OWNER_VOICE) reqRelay1Voice = state;
+    else if (owner == OWNER_SCHEDULE) reqRelay1Schedule = state;
+  } else if (relayNum == 2) {
+    if (owner == OWNER_MANUAL) reqRelay2Manual = state;
+    else if (owner == OWNER_VOICE) reqRelay2Voice = state;
+    else if (owner == OWNER_SCHEDULE) reqRelay2Schedule = state;
+  }
+}
+
+void clearLowerPriorityRelayRequests(int relayNum, RelayOwner requester) {
+  RelayOwner owners[] = {OWNER_MANUAL, OWNER_VOICE, OWNER_SCHEDULE};
+  for (uint8_t i = 0; i < 3; i++) {
+    RelayOwner owner = owners[i];
+    if (owner == requester) continue;
+    if (relayOwnerRequested(relayNum, owner) && ownerBeats(requester, owner)) {
+      setRelayOwnerRequest(relayNum, owner, false);
+    }
+  }
+}
+
 // Minta akses relay. Return true jika diterima, false jika ditolak.
 bool requestRelay(int relayNum, bool state, RelayOwner requester) {
   if (relayNum < 1 || relayNum > 2) return false;
 
-  // Cek apakah ada prioritas lebih tinggi yang sedang ON (untuk feedback ke UI)
-  if (relayNum == 1) {
-    if (requester == OWNER_MANUAL && (reqRelay1Gas || reqRelay1Temp || reqRelay1Schedule || reqRelay1Voice)) return false;
-    if (requester == OWNER_VOICE && (reqRelay1Gas || reqRelay1Temp || reqRelay1Schedule)) return false;
-    if (requester == OWNER_SCHEDULE && (reqRelay1Gas || reqRelay1Temp)) return false;
-
-    // Set flag request
-    if (requester == OWNER_MANUAL) reqRelay1Manual = state;
-    else if (requester == OWNER_VOICE) reqRelay1Voice = state;
-    else if (requester == OWNER_SCHEDULE) reqRelay1Schedule = state;
-    // SENSOR diset langsung di checkWarnings
-  } else if (relayNum == 2) {
-    if (requester == OWNER_MANUAL && (reqRelay2Schedule || reqRelay2Voice)) return false;
-    if (requester == OWNER_VOICE && reqRelay2Schedule) return false;
-
-    if (requester == OWNER_MANUAL) reqRelay2Manual = state;
-    else if (requester == OWNER_VOICE) reqRelay2Voice = state;
-    else if (requester == OWNER_SCHEDULE) reqRelay2Schedule = state;
+  RelayOwner currentOwner = dominantRelayOwner(relayNum);
+  if (currentOwner != OWNER_NONE && currentOwner != requester && ownerBeats(currentOwner, requester)) {
+    Serial.printf("[RELAY-PRIO] Relay %d request %s ditolak, owner aktif %s lebih tinggi.\n",
+                  relayNum, ownerName(requester), ownerName(currentOwner));
+    return false;
   }
 
+  if (!state) {
+    clearLowerPriorityRelayRequests(relayNum, requester);
+  }
+
+  setRelayOwnerRequest(relayNum, requester, state);
   evaluateRelay(relayNum);
   return true;
 }
@@ -1645,22 +1753,8 @@ void releaseRelay(int relayNum, RelayOwner owner) {
 // Master Evaluator: Mengecek semua flag dan menentukan state akhir relay
 void evaluateRelay(int relayNum) {
   if (relayNum == 1) {
-    bool newState = false;
-    RelayOwner newOwner = OWNER_NONE;
-
-    if (reqRelay1Gas || reqRelay1Temp) {
-      newState = true;
-      newOwner = OWNER_SENSOR;
-    } else if (reqRelay1Schedule) {
-      newState = true;
-      newOwner = OWNER_SCHEDULE;
-    } else if (reqRelay1Voice) {
-      newState = true;
-      newOwner = OWNER_VOICE;
-    } else if (reqRelay1Manual) {
-      newState = true;
-      newOwner = OWNER_MANUAL;
-    }
+    RelayOwner newOwner = dominantRelayOwner(1);
+    bool newState = newOwner != OWNER_NONE;
 
     if (relay1State != newState || relay1Owner != newOwner) {
       relay1Owner = newOwner;
@@ -1668,19 +1762,8 @@ void evaluateRelay(int relayNum) {
       Serial.printf("[RELAY-EVAL] Relay 1 -> %s (Owner: %s)\n", newState ? "ON" : "OFF", ownerName(newOwner));
     }
   } else if (relayNum == 2) {
-    bool newState = false;
-    RelayOwner newOwner = OWNER_NONE;
-
-    if (reqRelay2Schedule) {
-      newState = true;
-      newOwner = OWNER_SCHEDULE;
-    } else if (reqRelay2Voice) {
-      newState = true;
-      newOwner = OWNER_VOICE;
-    } else if (reqRelay2Manual) {
-      newState = true;
-      newOwner = OWNER_MANUAL;
-    }
+    RelayOwner newOwner = dominantRelayOwner(2);
+    bool newState = newOwner != OWNER_NONE;
 
     if (relay2State != newState || relay2Owner != newOwner) {
       relay2Owner = newOwner;
@@ -1700,6 +1783,270 @@ void setupMicI2S() {
   i2s_pin_config_t pin_config = {.bck_io_num = MIC_SCK, .ws_io_num = MIC_WS, .data_out_num = I2S_PIN_NO_CHANGE, .data_in_num = MIC_SD};
   i2s_driver_install(MIC_I2S_PORT, &i2s_config, 0, NULL);
   i2s_set_pin(MIC_I2S_PORT, &pin_config);
+}
+
+void *allocateEdgeVoiceBuffer(size_t bytes) {
+  void *buffer = NULL;
+  if (psramFound()) {
+    buffer = ps_malloc(bytes);
+  }
+  if (buffer == NULL) {
+    buffer = malloc(bytes);
+  }
+  return buffer;
+}
+
+bool edgeLabelEquals(const char *label, const char *target) {
+  if (label == NULL || target == NULL) return false;
+
+  while (*label == ' ') label++;
+  size_t labelLen = strlen(label);
+  while (labelLen > 0 && label[labelLen - 1] == ' ') {
+    labelLen--;
+  }
+
+  size_t targetLen = strlen(target);
+  return labelLen == targetLen && strncmp(label, target, targetLen) == 0;
+}
+
+int edgeVoiceSignalGetData(size_t offset, size_t length, float *outPtr) {
+  if (edgeVoiceBuffers[edgeVoiceReadyBuffer] == NULL) return -1;
+
+  for (size_t i = 0; i < length; i++) {
+    outPtr[i] = (float)edgeVoiceBuffers[edgeVoiceReadyBuffer][offset + i];
+  }
+
+  return 0;
+}
+
+void resetEdgeVoiceBuffers() {
+  edgeVoiceSampleCount = 0;
+  edgeVoiceBufferReady = false;
+  edgeVoiceFillBuffer = 0;
+  edgeVoiceReadyBuffer = 0;
+  i2s_zero_dma_buffer(MIC_I2S_PORT);
+}
+
+void initEdgeVoiceCommand() {
+  size_t bufferBytes = EI_CLASSIFIER_SLICE_SIZE * sizeof(int16_t);
+  edgeVoiceBuffers[0] = (int16_t *)allocateEdgeVoiceBuffer(bufferBytes);
+  edgeVoiceBuffers[1] = (int16_t *)allocateEdgeVoiceBuffer(bufferBytes);
+
+  if (edgeVoiceBuffers[0] == NULL || edgeVoiceBuffers[1] == NULL) {
+    Serial.printf("[EDGE] Gagal alokasi buffer voice command (%d bytes x2).\n", (int)bufferBytes);
+    edgeVoiceReady = false;
+    return;
+  }
+
+  resetEdgeVoiceBuffers();
+  run_classifier_init();
+  edgeVoiceReady = true;
+
+  Serial.println("[EDGE] Smartbox_asistent_inferencing siap.");
+  Serial.printf("[EDGE] Sample count: %d, slice: %d, freq: %d Hz\n",
+                EI_CLASSIFIER_RAW_SAMPLE_COUNT,
+                EI_CLASSIFIER_SLICE_SIZE,
+                EI_CLASSIFIER_FREQUENCY);
+}
+
+void feedEdgeVoiceSamples() {
+  if (!edgeVoiceReady || edgeVoiceBuffers[edgeVoiceFillBuffer] == NULL) return;
+  if (edgeVoiceBufferReady) return;
+
+  size_t bytesRead = 0;
+  esp_err_t err = i2s_read(MIC_I2S_PORT, edgeI2sBuffer, sizeof(edgeI2sBuffer), &bytesRead, 0);
+  if (err != ESP_OK || bytesRead == 0) return;
+
+  size_t samplesRead = bytesRead / sizeof(int32_t);
+  for (size_t i = 0; i < samplesRead; i++) {
+    int32_t sample = edgeI2sBuffer[i] >> 14;
+    if (sample > 32767) sample = 32767;
+    if (sample < -32768) sample = -32768;
+
+    edgeVoiceBuffers[edgeVoiceFillBuffer][edgeVoiceSampleCount++] = (int16_t)sample;
+    if (edgeVoiceSampleCount >= EI_CLASSIFIER_SLICE_SIZE) {
+      edgeVoiceReadyBuffer = edgeVoiceFillBuffer;
+      edgeVoiceFillBuffer ^= 1;
+      edgeVoiceSampleCount = 0;
+      edgeVoiceBufferReady = true;
+      break;
+    }
+  }
+}
+
+void publishEdgeVoiceEvent(const char *type, const char *label, float confidence, const char *message) {
+  StaticJsonDocument<384> doc;
+  doc["deviceId"] = DEVICE_ID;
+  doc["level"] = "INFO";
+  doc["type"] = type;
+  doc["message"] = message;
+  doc["millis"] = millis();
+  JsonObject payload = doc.createNestedObject("payload");
+  payload["label"] = label;
+  payload["confidence"] = confidence;
+  payload["wakeActive"] = edgeWakeActive;
+  publishJson(topicEvent(), doc, false);
+}
+
+bool executeVoiceRelayCommand(uint8_t relayNumber, bool state, int voiceTrack, const char *reason) {
+  bool accepted = requestRelay(relayNumber, state, OWNER_VOICE);
+  if (!accepted) {
+    RelayOwner currentOwner = relayNumber == 1 ? relay1Owner : relay2Owner;
+    char line2[17];
+    snprintf(line2, sizeof(line2), "LOCK %s", ownerName(currentOwner));
+    setLcdOverride("VOICE DITOLAK", line2, 3000);
+    publishEvent("WARNING", "voice.relay_blocked", "Perintah suara relay ditolak oleh prioritas lebih tinggi.");
+    return false;
+  }
+
+  if (!state) {
+    if (relayNumber == 1) relay1AutoOffActive = false;
+    if (relayNumber == 2) relay2AutoOffActive = false;
+  }
+
+  bool relayStateAfter = relayNumber == 1 ? relay1State : relay2State;
+  if (relayStateAfter == state) {
+    playVoice((uint8_t)voiceTrack, reason);
+  }
+
+  char line1[17];
+  char line2[17];
+  snprintf(line1, sizeof(line1), "VOICE RELAY %d", relayNumber);
+  snprintf(line2, sizeof(line2), "%s", state ? "ON" : "OFF");
+  setLcdOverride(line1, line2, 3000);
+  publishEvent("INFO", state ? "voice.relay_on" : "voice.relay_off", "Perintah suara relay berhasil dieksekusi.");
+  sendTelemetryNow();
+  return true;
+}
+
+void handleEdgeVoiceLabel(const char *label, float confidence) {
+  unsigned long now = millis();
+  if (label == NULL || edgeLabelEquals(label, "Noise")) return;
+
+  if (edgeLabelEquals(label, "Halo_Aero")) {
+    if (confidence < EDGE_WAKE_CONFIDENCE) return;
+    if (now - lastEdgeCommandAt < EDGE_COMMAND_COOLDOWN_MS) return;
+
+    edgeWakeActive = true;
+    edgeWakeListenAt = now + EDGE_DFPLAYER_MUTE_MS;
+    edgeWakeExpiresAt = edgeWakeListenAt + EDGE_COMMAND_WINDOW_MS;
+    edgeVoiceSuppressedUntil = edgeWakeListenAt;
+    lastEdgeCommandAt = now;
+
+    int responseTrack = random(TRACK_YES_SIR, TRACK_COMMAND + 1);
+    playVoice((uint8_t)responseTrack, "edge_wake_halo_aero");
+    setLcdOverride("HALO AERO", "PERINTAH 4 DETIK", 3000);
+    publishEdgeVoiceEvent("voice.wake", label, confidence, "Wake word Halo Aero terdeteksi.");
+    resetEdgeVoiceBuffers();
+    return;
+  }
+
+  if (!edgeWakeActive) return;
+  if (now < edgeWakeListenAt) return;
+  if ((long)(now - edgeWakeExpiresAt) > 0) {
+    edgeWakeActive = false;
+    setLcdOverride("VOICE COMMAND", "TIMEOUT", 1500);
+    return;
+  }
+  if (confidence < EDGE_COMMAND_CONFIDENCE) return;
+  if (now - lastEdgeCommandAt < EDGE_COMMAND_COOLDOWN_MS) return;
+
+  bool handled = true;
+
+  if (edgeLabelEquals(label, "bluetooth_mode")) {
+    nyalakanBluetooth();
+  } else if (edgeLabelEquals(label, "matikan_bluetooth")) {
+    if (bluetoothAktif) matikanBluetooth();
+    else playVoice(TRACK_BLUETOOTH_OFF, "edge_voice_bluetooth_already_off");
+  } else if (edgeLabelEquals(label, "port_satu_on")) {
+    executeVoiceRelayCommand(1, true, TRACK_RELAY1_ON, "edge_voice_relay1_on");
+  } else if (edgeLabelEquals(label, "matikan_port_satu")) {
+    executeVoiceRelayCommand(1, false, TRACK_RELAY1_OFF, "edge_voice_relay1_off");
+  } else if (edgeLabelEquals(label, "port_dua_on")) {
+    executeVoiceRelayCommand(2, true, TRACK_RELAY2_ON, "edge_voice_relay2_on");
+  } else if (edgeLabelEquals(label, "matikan_port_dua")) {
+    executeVoiceRelayCommand(2, false, TRACK_RELAY2_OFF, "edge_voice_relay2_off");
+  } else if (
+    edgeLabelEquals(label, "ai_mode") ||
+    edgeLabelEquals(label, "calibration") ||
+    edgeLabelEquals(label, "matikan_ai")
+  ) {
+    setLcdOverride("VOICE COMMAND", "BELUM AKTIF", 2500);
+    publishEdgeVoiceEvent("voice.command_ignored", label, confidence, "Label voice command belum digunakan.");
+  } else {
+    handled = false;
+  }
+
+  if (handled) {
+    edgeWakeActive = false;
+    lastEdgeCommandAt = now;
+    edgeVoiceSuppressedUntil = now + EDGE_COMMAND_COOLDOWN_MS;
+    publishEdgeVoiceEvent("voice.command", label, confidence, "Perintah suara diproses.");
+    resetEdgeVoiceBuffers();
+  }
+}
+
+void serviceEdgeVoiceCommand() {
+  if (!edgeVoiceReady) return;
+
+  unsigned long now = millis();
+  if (!voiceMode) {
+    edgeWakeActive = false;
+    resetEdgeVoiceBuffers();
+    return;
+  }
+
+  if (edgeWakeActive && (long)(now - edgeWakeExpiresAt) > 0) {
+    edgeWakeActive = false;
+  }
+
+  if (isRecording || dfplayerBusy || now < edgeVoiceSuppressedUntil) {
+    resetEdgeVoiceBuffers();
+    return;
+  }
+
+  feedEdgeVoiceSamples();
+  if (!edgeVoiceBufferReady) return;
+
+  edgeVoiceBufferReady = false;
+
+  signal_t signal;
+  signal.total_length = EI_CLASSIFIER_SLICE_SIZE;
+  signal.get_data = &edgeVoiceSignalGetData;
+
+  ei_impulse_result_t result = {0};
+  EI_IMPULSE_ERROR classifierResult = run_classifier_continuous(&signal, &result, edgeDebug);
+  if (classifierResult != EI_IMPULSE_OK) {
+    Serial.printf("[EDGE] Classifier error: %d\n", classifierResult);
+    resetEdgeVoiceBuffers();
+    return;
+  }
+
+  const char *bestLabel = "";
+  float bestValue = 0.0f;
+  float secondValue = 0.0f;
+
+  for (size_t i = 0; i < EI_CLASSIFIER_LABEL_COUNT; i++) {
+    float value = result.classification[i].value;
+    if (value > bestValue) {
+      secondValue = bestValue;
+      bestValue = value;
+      bestLabel = result.classification[i].label;
+    } else if (value > secondValue) {
+      secondValue = value;
+    }
+  }
+
+  float margin = bestValue - secondValue;
+  if (bestValue >= 0.75f) {
+    Serial.printf("[EDGE] Label: %s conf=%.3f margin=%.3f\n", bestLabel, bestValue, margin);
+  }
+
+  bool isWakeCandidate = edgeLabelEquals(bestLabel, "Halo_Aero") && bestValue >= EDGE_WAKE_CONFIDENCE;
+  bool isCommandCandidate = edgeWakeActive && bestValue >= EDGE_COMMAND_CONFIDENCE;
+  if ((isWakeCandidate || isCommandCandidate) && margin >= EDGE_MIN_MARGIN) {
+    handleEdgeVoiceLabel(bestLabel, bestValue);
+  }
 }
 
 void connectWiFi() {
@@ -1799,6 +2146,7 @@ void connectMqtt() {
     mqttClient.subscribe("smartbox/buzzer/set");
     mqttClient.subscribe("smartbox/alarm/set");
     mqttClient.subscribe("smartbox/voice/mode");
+    mqttClient.subscribe("smartbox/voiceCommand/set");
     mqttClient.subscribe("smartbox/sensor/gas");
     mqttClient.subscribe("smartbox/sensor/temperature");
 
@@ -1940,6 +2288,9 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
   const char *cmdId = doc["id"] | "";
   const char *type = doc["type"] | "";
   JsonObject data = doc["payload"].as<JsonObject>();
+  if (data.isNull()) {
+    data = doc["data"].as<JsonObject>();
+  }
   if (data.isNull()) data = doc.as<JsonObject>();
 
   // Detect type from topic if empty (for direct MQTT publishes)
@@ -1947,6 +2298,8 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
     if (topic.endsWith("/buzzer/set")) type = "buzzer.set";
     else if (topic.endsWith("/relay/set")) type = "relay.set";
     else if (topic.endsWith("/alarm/set")) type = "alarm.set";
+    else if (topic.endsWith("/voice/mode")) type = "voice.mode";
+    else if (topic.endsWith("/voiceCommand/set")) type = "voiceCommand.set";
   }
 
   Serial.printf("[CMD] %s received\n", type);
@@ -1981,6 +2334,25 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
   } else if (strcmp(type, "dfplayer.stop") == 0) {
     stopDfTrack();
     publishAck(cmdId, type, true, "DFPlayer dihentikan.");
+  } else if (strcmp(type, "voice.mode") == 0 || strcmp(type, "voiceCommand.set") == 0) {
+    bool enabled = voiceMode;
+    if (!data["enabled"].isNull()) {
+      enabled = data["enabled"] | voiceMode;
+    } else if (!data["state"].isNull()) {
+      enabled = data["state"] | voiceMode;
+    }
+
+    voiceMode = enabled;
+    if (!voiceMode) {
+      edgeWakeActive = false;
+      resetEdgeVoiceBuffers();
+    }
+
+    saveSettings();
+    setLcdOverride("VOICE COMMAND", voiceMode ? "AKTIF" : "NONAKTIF", 3000);
+    publishAck(cmdId, type, true, voiceMode ? "Voice command aktif." : "Voice command nonaktif.");
+    publishEvent("INFO", "voice.mode", voiceMode ? "Voice command Edge Impulse diaktifkan." : "Voice command Edge Impulse dinonaktifkan.");
+    sendTelemetryNow();
   } else if (strcmp(type, "alarm.set") == 0) {
     handleAlarmCommand(data, cmdId, type);
   } else if (strcmp(type, "alarm.trigger") == 0) {
@@ -2088,8 +2460,11 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
     prioritySchedule = data["prioritySchedule"] | 80;
     priorityVoice = data["priorityVoice"] | 60;
     priorityManual = data["priorityManual"] | 40;
+    evaluateRelay(1);
+    evaluateRelay(2);
     saveSettings();
     publishAck(cmdId, type, true, "Relay priorities updated.");
+    sendTelemetryNow();
   } else if (strcmp(type, "pirGreeting.set") == 0) {
     pirGreetingEnabled = data["enabled"] | false;
     pirGreetingTrack = data["track"] | TRACK_GESTURE_WALK;
@@ -2223,6 +2598,9 @@ void publishTelemetry(int gasRaw, float tempC, bool gasWarning, bool tempWarning
   doc["gasBuzzerEnabled"] = gasBuzzerEnabled;
   doc["tempEnabled"] = tempEnabled;
   doc["tempSensorEnabled"] = tempEnabled;
+  doc["voiceMode"] = voiceMode;
+  doc["voiceCommandEnabled"] = voiceMode;
+  doc["voiceWakeActive"] = edgeWakeActive;
   char pirStart[6];
   char pirEnd[6];
   snprintf(pirStart, sizeof(pirStart), "%02d:%02d", pirGreetingStartHour, pirGreetingStartMinute);
@@ -2522,10 +2900,15 @@ void handleBlackButtonQuickPress() {
 void handleBlackButtonLongPress() {
   Serial.println("[BUTTON] Black long press - AI voice question");
 
+  edgeVoiceSuppressedUntil = millis() + ((MAX_RECORD_TIME_SEC + 2) * 1000UL);
+  edgeWakeActive = false;
+  resetEdgeVoiceBuffers();
+
   setLcdOverride("AI MENDENGAR", "SILAKAN BICARA", 3000);
   publishEvent("INFO", "button.black.long", "Tombol hitam tahan: mode tanya AI.");
 
   bool ok = recordAndSendVoiceToAI();
+  resetEdgeVoiceBuffers();
 
   if (ok) {
     setLcdOverride("AI MENJAWAB", "CEK WEBSITE", 4000);
@@ -2738,6 +3121,7 @@ void checkButtons() {
 void setup() {
   Serial.begin(115200);
   delay(1000);
+  randomSeed((uint32_t)micros());
 
   Serial.println();
   Serial.println("========== SMARTBOX BOOT ==========");
@@ -2811,6 +3195,7 @@ void setup() {
   }
 
   setupMicI2S();
+  initEdgeVoiceCommand();
 
   secureClient.setInsecure();
   mqttClient.setServer(MQTT_HOST, MQTT_PORT);
@@ -2848,6 +3233,7 @@ void loop() {
   checkRelayAutoOff();
   checkBluetoothTimer();
   serviceVoiceQueue();
+  serviceEdgeVoiceCommand();
 
   // Force DS3231 temperature conversion to bypass default 64-second update interval
   static unsigned long lastTempConvAt = 0;

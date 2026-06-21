@@ -209,6 +209,15 @@ export default function DashboardDevicesPage() {
                 ctx.sendDeviceCommand("buzzer.set", { state: next }, `Buzzer ${next ? "aktif" : "mati"}`);
               }} />
             </div>
+            <div className="mb-4">
+              <ControlRow
+                label="Voice Command Halo Aero"
+                detail="Wake word Halo_Aero dan perintah lokal Edge Impulse."
+                enabled={ctx.voiceMode}
+                onToggle={ctx.toggleVoiceMode}
+                disabled={!isOnline || isSending}
+              />
+            </div>
             <div className="rounded-2xl border border-slate-100 bg-slate-50/50 p-4">
               <p className="text-sm font-bold text-slate-900 mb-3">Test DFPlayer Suara</p>
               <div className="flex gap-2">
