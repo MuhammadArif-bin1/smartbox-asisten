@@ -2017,8 +2017,9 @@ void sendTelemetryHttp(int gasRaw, float tempC, bool gasWarning, bool tempWarnin
 }
 
 void checkWarnings(int gasRaw, float tempC, bool anyGasWarning, bool tempWarning, bool pirDetected) {
-  bool isGas = gasEnabled && gasRaw >= gasThreshold;
-  bool isSmoke = gasEnabled && gasRaw >= smokeThreshold && gasRaw < gasThreshold;
+  bool dfPlayerActiveRecently = dfplayerBusy || (millis() - lastVoiceMillis < (VOICE_MIN_GAP_MS + 2500));
+  bool isGas = gasEnabled && !dfPlayerActiveRecently && gasRaw >= gasThreshold;
+  bool isSmoke = gasEnabled && !dfPlayerActiveRecently && gasRaw >= smokeThreshold && gasRaw < gasThreshold;
   bool gasWarning = isGas || isSmoke;
   bool triggerBuzzer = (gasWarning && pirDetected) || (gasEnabled && gasRaw >= 1300);
 
@@ -2582,8 +2583,9 @@ void loop() {
   int gasRaw = getFilteredGas();
   float tempC = rtcReady ? rtc.getTemperature() + tempOffset : 0.0;
 
-  bool isGas = gasEnabled && gasRaw >= gasThreshold;
-  bool isSmoke = gasEnabled && gasRaw >= smokeThreshold && gasRaw < gasThreshold;
+  bool dfPlayerActiveRecently = dfplayerBusy || (millis() - lastVoiceMillis < (VOICE_MIN_GAP_MS + 2500));
+  bool isGas = gasEnabled && !dfPlayerActiveRecently && gasRaw >= gasThreshold;
+  bool isSmoke = gasEnabled && !dfPlayerActiveRecently && gasRaw >= smokeThreshold && gasRaw < gasThreshold;
   bool gasWarning = isGas || isSmoke;
   bool tempWarning = tempEnabled && tempC >= tempThreshold;
   bool pirDetected = pirEnabled && digitalRead(PIR_PIN) == HIGH;
