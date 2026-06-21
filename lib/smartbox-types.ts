@@ -217,7 +217,7 @@ export type SmartboxContextValue = {
   updateAlarm: (id: string, field: keyof Alarm, value: string | number | boolean) => void;
   updateGasThreshold: (ppm: number) => Promise<void>;
   updateTempThreshold: (threshold: number) => Promise<void>;
-  setBuzzerEnabled: (enabled: boolean) => void;
+  setBuzzerEnabled: (enabled: boolean, isManual?: boolean) => void;
   setBoardLedScheduleEnabled: (enabled: boolean) => void;
   setVoiceMode: (enabled: boolean) => void;
   updatePirGreetingConfig: (
@@ -261,4 +261,6 @@ export type SmartboxContextValue = {
   onToggleScheduleActive: (id: string, currentActive: boolean) => Promise<void>;
   onTestPlayVoice: (track: number) => Promise<void>;
   setToast: (toast: Toast | null) => void;
+  pirCount: number;
+  resetPirCount: () => void;
 };

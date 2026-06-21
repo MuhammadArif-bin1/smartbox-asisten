@@ -66,8 +66,8 @@ export default function DashboardPage() {
       ),
     },
     {
-      title: "Device Control",
-      subtitle: "Kelola stop kontak, relay Bluetooth, alarm buzzer, dan uji track suara secara real-time.",
+      title: "Pusat Kontrol Manual",
+      subtitle: "Kendali manual saklar stop kontak, uji coba trek suara DFPlayer, dan manajemen parameter sensitivitas sensor secara real-time.",
       href: "/admin/dashboard/devices",
       activeCount: activeRelaysCount,
       totalCount: 3,

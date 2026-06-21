@@ -34,7 +34,7 @@ export function GasChart({ value, series }: { value: number; series: number[] })
   const yBahaya = 220 - (23 / 50) * 160;  // 23 PPM
 
   return (
-    <div className="overflow-hidden rounded-3xl border border-slate-100 bg-gradient-to-b from-white to-slate-50/50 p-4 shadow-sm">
+    <div className="overflow-hidden rounded-3xl border border-slate-100 bg-gradient-to-b from-white to-slate-50/50 p-6 shadow-sm">
       <div className="mb-2 flex items-center justify-between">
         <span className="text-xs font-black uppercase tracking-wider text-slate-400">Grafik Gas & Asap</span>
         <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-bold ${
@@ -51,7 +51,7 @@ export function GasChart({ value, series }: { value: number; series: number[] })
         </span>
       </div>
       
-      <svg className="h-[260px] w-full" viewBox="0 0 620 270" role="img" aria-label="Grafik kadar gas/asap dalam PPM">
+      <svg className="w-full h-auto aspect-[620/270]" viewBox="0 0 620 270" role="img" aria-label="Grafik kadar gas/asap dalam PPM">
         {/* Y Grid lines & Labels */}
         {[0, 10, 20, 30, 40, 50].map((val) => {
           const y = 220 - (val / 50) * 160;
@@ -65,14 +65,14 @@ export function GasChart({ value, series }: { value: number; series: number[] })
 
         {/* Warning Threshold Line (21 PPM) */}
         <g>
-          <line x1="60" x2="580" y1={yWaspada} y2={yWaspada} stroke="#f97316" strokeDasharray="6 4" strokeWidth="1.5" className="opacity-60" />
-          <text x="440" y={yWaspada - 6} fill="#f97316" fontSize="9" fontWeight="800" className="opacity-80 font-sans uppercase tracking-wider">Asap (21 PPM)</text>
+          <line x1="60" x2="580" y1={yWaspada} y2={yWaspada} stroke="#f97316" strokeDasharray="6 4" strokeWidth="2.5" className="opacity-90" />
+          <text x="320" y={yWaspada - 8} fill="#f97316" fontSize="16" fontWeight="900" className="font-sans uppercase tracking-widest">⚠️ ASAP (21 PPM)</text>
         </g>
 
         {/* Danger Threshold Line (23 PPM) */}
         <g>
-          <line x1="60" x2="580" y1={yBahaya} y2={yBahaya} stroke="#ef4444" strokeDasharray="6 4" strokeWidth="1.5" className="opacity-60" />
-          <text x="440" y={yBahaya - 6} fill="#ef4444" fontSize="9" fontWeight="800" className="opacity-80 font-sans uppercase tracking-wider">Gas/Bahaya (23 PPM)</text>
+          <line x1="60" x2="580" y1={yBahaya} y2={yBahaya} stroke="#ef4444" strokeDasharray="6 4" strokeWidth="2.5" className="opacity-90" />
+          <text x="320" y={yBahaya - 8} fill="#ef4444" fontSize="16" fontWeight="900" className="font-sans uppercase tracking-widest">🚨 GAS/BAHAYA (23 PPM)</text>
         </g>
 
         {/* Area Fill */}

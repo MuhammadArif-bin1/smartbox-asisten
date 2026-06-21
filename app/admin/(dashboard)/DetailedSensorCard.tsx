@@ -8,6 +8,7 @@ export function DetailedSensorCard({
   online,
   accent,
   icon,
+  onReset,
 }: {
   title: string;
   value: string;
@@ -16,6 +17,7 @@ export function DetailedSensorCard({
   online: boolean;
   accent: "blue" | "emerald" | "orange";
   icon: React.ReactNode;
+  onReset?: () => void;
 }) {
   const accentBorder = {
     blue: "border-blue-100 hover:border-blue-200",
@@ -39,7 +41,22 @@ export function DetailedSensorCard({
       </div>
       <div className="mt-4">
         <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
-          <h3 className="text-2xl font-black text-slate-900 break-words">{value}</h3>
+          <div className="flex items-center gap-3">
+            <h3 className="text-2xl font-black text-slate-900 break-words">{value}</h3>
+            {onReset && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onReset();
+                }}
+                className="inline-flex items-center gap-1 rounded-lg bg-orange-50 px-2.5 py-1 text-[10px] font-black text-orange-600 border border-orange-100 hover:bg-orange-100 active:scale-95 transition"
+                title="Reset Hitungan"
+              >
+                🔄 Reset
+              </button>
+            )}
+          </div>
           {status && status !== "Offline" && status !== "Tidak Terhubung" && (
             <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-bold border ${
               status === "Bahaya" || status === "Ada Gerakan" || status === "Peringatan"

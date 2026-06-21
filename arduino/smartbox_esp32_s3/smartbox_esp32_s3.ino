@@ -564,8 +564,8 @@ void loadSettings() {
   if (PIR_GREETING_COOLDOWN < 10000) PIR_GREETING_COOLDOWN = 10000;
   pirGreetingPlayMode = preferences.getString("pirGreetMode", "cooldown");
   pirGreetingDaysMask = preferences.getUChar("pirGreetDays", 0x7F);
-  if (pirGreetingTrack < TRACK_GESTURE_WALK || pirGreetingTrack > TRACK_GESTURE_WAVE) {
-    pirGreetingTrack = TRACK_GESTURE_WALK;
+  if (pirGreetingTrack < 1 || pirGreetingTrack > DFPLAYER_MAX_TRACK) {
+    pirGreetingTrack = 25;
   }
   mq2Baseline = preferences.getInt("mq2Baseline", 1000);
   MQ2_BASELINE = mq2Baseline;
@@ -812,7 +812,7 @@ void startVoiceNow(uint8_t track, const char* reason, uint8_t priority) {
   Serial.print(" reason: ");
   Serial.println(reason);
 
-  dfPlayer.play(track);
+  dfPlayer.playMp3Folder(track);
   lastVoiceMillis = millis();
   dfplayerBusy = true;
   dfplayerBusyUntil = lastVoiceMillis + VOICE_MIN_GAP_MS;
@@ -1170,8 +1170,8 @@ void checkPirGreeting() {
   lastMotionDetectedTime = currentMillis;
   pirGreetingPlayedThisWindow = true;
 
-  if (pirGreetingTrack < TRACK_GESTURE_WALK || pirGreetingTrack > TRACK_GESTURE_WAVE) {
-    pirGreetingTrack = TRACK_GESTURE_WALK;
+  if (pirGreetingTrack < 1 || pirGreetingTrack > DFPLAYER_MAX_TRACK) {
+    pirGreetingTrack = 25;
   }
 
   playVoice((uint8_t)pirGreetingTrack, "pir_greeting");
@@ -1781,7 +1781,7 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
   } else if (strcmp(type, "alarm.trigger") == 0) {
     int track = data["track"] | -1;
     const char *timeStr = data["time"] | "";
-    if (track >= 1 && track <= 13) {
+    if (track >= 1 && track <= DFPLAYER_MAX_TRACK) {
       playScheduledAlarm(track, timeStr);
       publishAck(cmdId, type, true, "Alarm jadwal dipicu.");
     } else {
@@ -1857,8 +1857,8 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
   } else if (strcmp(type, "pirGreeting.set") == 0) {
     pirGreetingEnabled = data["enabled"] | false;
     pirGreetingTrack = data["track"] | TRACK_GESTURE_WALK;
-    if (pirGreetingTrack < TRACK_GESTURE_WALK || pirGreetingTrack > TRACK_GESTURE_WAVE) {
-      pirGreetingTrack = TRACK_GESTURE_WALK;
+    if (pirGreetingTrack < 1 || pirGreetingTrack > DFPLAYER_MAX_TRACK) {
+      pirGreetingTrack = 25;
     }
 
     const char* startTime = data["startTime"] | "07:00";
@@ -2507,7 +2507,7 @@ void setup() {
     printLcdLine(1, "TUNGGU SEBENTAR");
     delay(2000);
     
-    dfPlayer.play(TRACK_STARTUP_READY);
+    dfPlayer.playMp3Folder(TRACK_STARTUP_READY);
     systemReadyPlayed = true; // Supaya playSystemReady() tidak mengulangnya di akhir setup()
     
     printLcdLine(0, "HALO SMARTBOX");

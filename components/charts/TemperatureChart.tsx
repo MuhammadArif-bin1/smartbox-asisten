@@ -21,7 +21,7 @@ export function TemperatureChart({ value, series = temperatureSeries }: { value:
   const yWarning = 220 - ((35 - 20) / 25) * 160; // 35 °C warning threshold Y coordinate
 
   return (
-    <div className="overflow-hidden rounded-3xl border border-slate-100 bg-gradient-to-b from-white to-slate-50/50 p-4 shadow-sm">
+    <div className="overflow-hidden rounded-3xl border border-slate-100 bg-gradient-to-b from-white to-slate-50/50 p-6 shadow-sm">
       <div className="mb-2 flex items-center justify-between">
         <span className="text-xs font-black uppercase tracking-wider text-slate-400">Grafik Suhu Ruangan</span>
         <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-bold ${
@@ -34,7 +34,7 @@ export function TemperatureChart({ value, series = temperatureSeries }: { value:
         </span>
       </div>
 
-      <svg className="h-[260px] w-full" viewBox="0 0 620 270" role="img" aria-label="Grafik suhu ruangan dalam Celcius">
+      <svg className="w-full h-auto aspect-[620/270]" viewBox="0 0 620 270" role="img" aria-label="Grafik suhu ruangan dalam Celcius">
         {/* Y Axis Grid lines & Labels */}
         {[20, 25, 30, 35, 40, 45].map((val) => {
           const y = 220 - ((val - 20) / 25) * 160;
@@ -48,8 +48,8 @@ export function TemperatureChart({ value, series = temperatureSeries }: { value:
 
         {/* Warning Threshold Line (35°C) */}
         <g>
-          <line x1="60" x2="580" y1={yWarning} y2={yWarning} stroke="#ef4444" strokeDasharray="6 4" strokeWidth="1.5" className="opacity-60" />
-          <text x="440" y={yWarning - 6} fill="#ef4444" fontSize="9" fontWeight="800" className="opacity-80 font-sans uppercase tracking-wider">Batas Panas (35°C)</text>
+          <line x1="60" x2="580" y1={yWarning} y2={yWarning} stroke="#ef4444" strokeDasharray="6 4" strokeWidth="2.5" className="opacity-90" />
+          <text x="320" y={yWarning - 8} fill="#ef4444" fontSize="16" fontWeight="900" className="font-sans uppercase tracking-widest">⚠️ BATAS PANAS (35°C)</text>
         </g>
 
         {/* Area Fill */}

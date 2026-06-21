@@ -31,6 +31,8 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
   const [gasLevel, setGasLevel] = useState<string>("normal");
   const [flameDetected, setFlameDetected] = useState(false);
   const [pirDetected, setPirDetected] = useState<boolean | null>(null);
+  const [pirCount, setPirCount] = useState(0);
+  const prevPirDetectedRef = useRef<boolean | null>(null);
   const [obstacleNear, setObstacleNear] = useState(false);
   const [pirEnabled, setPirEnabled] = useState(true);
   const [sleepModeEnabled, setSleepModeEnabled] = useState(false);
@@ -62,14 +64,21 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<CommandStatus>("idle");
   const [lastCommand, setLastCommand] = useState("Belum ada command dikirim");
   const [voiceMode, setVoiceMode] = useState(true);
-  const [buzzerEnabled, setBuzzerEnabled] = useState(false);
+  const [buzzerEnabled, _setBuzzerEnabled] = useState(false);
   const [boardLedScheduleEnabled, setBoardLedScheduleEnabled] = useState(true);
 
   /* ── Relay ── */
   const [relayState, setRelayState] = useState<Record<RelayId, boolean>>({ socket1: false, socket2: false, ampli: false });
   const [relayAutoOffAt, setRelayAutoOffAt] = useState<{ socket1: number | null; socket2: number | null }>({ socket1: null, socket2: null });
   const relayPendingRef = useRef<Record<RelayId, number>>({ socket1: 0, socket2: 0, ampli: 0 });
-  const sensorPendingRef = useRef<{ gas: number; temperature: number }>({ gas: 0, temperature: 0 });
+  const sensorPendingRef = useRef<{ gas: number; temperature: number; buzzer: number }>({ gas: 0, temperature: 0, buzzer: 0 });
+
+  const setBuzzerEnabled = (enabled: boolean, isManual = false) => {
+    _setBuzzerEnabled(enabled);
+    if (isManual) {
+      sensorPendingRef.current.buzzer = Date.now();
+    }
+  };
   const [relaySchedules, setRelaySchedules] = useState<RelaySchedule[]>([]);
 
   const [relay1Label, setRelay1Label] = useState<string>("Stop Kontak 1");
@@ -608,10 +617,10 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
             }));
 
             const nowTime = Date.now();
-            if (typeof telemetry.gasEnabled === "boolean" && nowTime - sensorPendingRef.current.gas > 5000) {
+            if (typeof telemetry.gasEnabled === "boolean" && nowTime - sensorPendingRef.current.gas > 2000) {
               setGasEnabled(telemetry.gasEnabled);
             }
-            if (typeof telemetry.tempEnabled === "boolean" && nowTime - sensorPendingRef.current.temperature > 5000) {
+            if (typeof telemetry.tempEnabled === "boolean" && nowTime - sensorPendingRef.current.temperature > 2000) {
               setTemperatureEnabled(telemetry.tempEnabled);
             }
             if (typeof telemetry.gasRaw === "number") setGasEstimate(Math.max(0, Math.min(4095, Math.round(telemetry.gasRaw))));
@@ -649,14 +658,14 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
             setRelayState((current) => {
               const now = Date.now();
               const updated = { ...current };
-              if (now - relayPendingRef.current.socket1 > 5000) {
-                updated.socket1 = telemetry.relay1 === true;
+              if (typeof telemetry.relay1 === "boolean" && now - relayPendingRef.current.socket1 > 2000) {
+                updated.socket1 = telemetry.relay1;
               }
-              if (now - relayPendingRef.current.socket2 > 5000) {
-                updated.socket2 = telemetry.relay2 === true;
+              if (typeof telemetry.relay2 === "boolean" && now - relayPendingRef.current.socket2 > 2000) {
+                updated.socket2 = telemetry.relay2;
               }
-              if (now - relayPendingRef.current.ampli > 5000) {
-                updated.ampli = telemetry.bluetoothRelay === true;
+              if (typeof telemetry.bluetoothRelay === "boolean" && now - relayPendingRef.current.ampli > 2000) {
+                updated.ampli = telemetry.bluetoothRelay;
               }
               return updated;
             });
@@ -670,7 +679,9 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
             } else if (telemetry.relay2 === true && typeof telemetry.relay2AutoOffRemaining === "number" && telemetry.relay2AutoOffRemaining > 0) {
               setRelayAutoOffAt((current) => ({ ...current, socket2: Date.now() + telemetry.relay2AutoOffRemaining! * 1000 }));
             }
-            setBuzzerEnabled(telemetry.buzzer === true);
+            if (typeof telemetry.buzzer === "boolean" && nowTime - sensorPendingRef.current.buzzer > 2000) {
+              _setBuzzerEnabled(telemetry.buzzer);
+            }
           }
 
           else if (topicStr.endsWith("/event")) {
@@ -690,7 +701,6 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
               const autoOffSeconds = readNumber(eventPayload.autoOffSeconds) ?? 0;
               const rid = relayNumber === 1 ? "socket1" : relayNumber === 2 ? "socket2" : null;
               if (rid && typeof relayEnabled === "boolean") {
-                relayPendingRef.current[rid] = 0;
                 setRelayState((current) => ({ ...current, [rid]: relayEnabled }));
                 setRelayAutoOffAt((current) => ({
                   ...current,
@@ -699,11 +709,9 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
               }
             } else if (data.type === "relay1.auto_off" || data.type === "relay2.auto_off") {
               const rid = data.type === "relay1.auto_off" ? "socket1" : "socket2";
-              relayPendingRef.current[rid] = 0;
               setRelayState((current) => ({ ...current, [rid]: false }));
               setRelayAutoOffAt((current) => ({ ...current, [rid]: null }));
             } else if (data.type === "bluetooth.on" || data.type === "bluetooth.off") {
-              relayPendingRef.current.ampli = 0;
               setRelayState((current) => ({ ...current, ampli: data.type === "bluetooth.on" }));
             } else if (data.type === "buzzer.updated") {
               const buzzerState = readBoolean(eventPayload.state);
@@ -738,9 +746,6 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
               sensorPendingRef.current.gas = 0;
             } else if (data.type === "tempSensor.set" || data.type === "temperatureSensor.set") {
               sensorPendingRef.current.temperature = 0;
-            } else if (data.type === "relay.set") {
-              relayPendingRef.current.socket1 = 0;
-              relayPendingRef.current.socket2 = 0;
             }
           }
         });
@@ -798,6 +803,38 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
     }, 1000);
     return () => clearInterval(checkTimeout);
   }, [isAuthenticated, lastTelemetryTime, telemetrySource]);
+
+  /* ═══════════════════════════════════════════════════════════════
+     EFFECTS — PIR motion count tracker
+     ═══════════════════════════════════════════════════════════════ */
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const stored = localStorage.getItem("pir_count");
+      if (stored) setPirCount(Number(stored));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (pirDetected === true && prevPirDetectedRef.current !== true) {
+      setPirCount((prev) => {
+        const next = prev + 1;
+        if (typeof window !== "undefined") {
+          localStorage.setItem("pir_count", String(next));
+        }
+        return next;
+      });
+    }
+    prevPirDetectedRef.current = pirDetected;
+  }, [pirDetected]);
+
+  const resetPirCount = () => {
+    setPirCount(0);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("pir_count", "0");
+    }
+    notify("Hitungan gerakan PIR direset ke 0", "info");
+  };
 
   /* ═══════════════════════════════════════════════════════════════
      EFFECTS — Load schedules & settings from DB
@@ -902,29 +939,39 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
               if (typeof latest.temperature === "number") setTempEstimate(latest.temperature);
               if (typeof latest.gasRaw === "number") setGasEstimate(latest.gasRaw);
               const nowTime = Date.now();
-              if (typeof latest.gasSensorEnabled === "boolean" && nowTime - sensorPendingRef.current.gas > 5000) {
-                setGasEnabled(latest.gasSensorEnabled);
-              }
-              if (typeof latest.tempSensorEnabled === "boolean" && nowTime - sensorPendingRef.current.temperature > 5000) {
-                setTemperatureEnabled(latest.tempSensorEnabled);
-              }
+              const lastTime = new Date(latest.createdAt).getTime();
+              const isRecent = (nowTime - lastTime) < 25000;
+
               if (typeof latest.pirDetected === "boolean") setPirDetected(latest.pirDetected);
 
-              setRelayState((current) => {
-                const now = Date.now();
-                const updated = { ...current };
-                if (now - relayPendingRef.current.socket1 > 5000) updated.socket1 = latest.relay1 === true;
-                if (now - relayPendingRef.current.socket2 > 5000) updated.socket2 = latest.relay2 === true;
-                if (now - relayPendingRef.current.ampli > 5000) updated.ampli = latest.bluetoothRelay === true;
-                return updated;
-              });
-              if (latest.relay1 === false) setRelayAutoOffAt((current) => ({ ...current, socket1: null }));
-              if (latest.relay2 === false) setRelayAutoOffAt((current) => ({ ...current, socket2: null }));
-              setBuzzerEnabled(latest.buzzer === true);
+              if (!mqttOnline && isRecent) {
+                if (typeof latest.gasSensorEnabled === "boolean" && nowTime - sensorPendingRef.current.gas > 15000) {
+                  setGasEnabled(latest.gasSensorEnabled);
+                }
+                if (typeof latest.tempSensorEnabled === "boolean" && nowTime - sensorPendingRef.current.temperature > 15000) {
+                  setTemperatureEnabled(latest.tempSensorEnabled);
+                }
 
-              const lastTime = new Date(latest.createdAt).getTime();
-              const now = Date.now();
-              const isRecent = (now - lastTime) < 25000;
+                setRelayState((current) => {
+                  const now = Date.now();
+                  const updated = { ...current };
+                  if (typeof latest.relay1 === "boolean" && now - relayPendingRef.current.socket1 > 15000) {
+                    updated.socket1 = latest.relay1;
+                  }
+                  if (typeof latest.relay2 === "boolean" && now - relayPendingRef.current.socket2 > 15000) {
+                    updated.socket2 = latest.relay2;
+                  }
+                  if (typeof latest.bluetoothRelay === "boolean" && now - relayPendingRef.current.ampli > 15000) {
+                    updated.ampli = latest.bluetoothRelay;
+                  }
+                  return updated;
+                });
+                if (latest.relay1 === false) setRelayAutoOffAt((current) => ({ ...current, socket1: null }));
+                if (latest.relay2 === false) setRelayAutoOffAt((current) => ({ ...current, socket2: null }));
+                if (typeof latest.buzzer === "boolean" && nowTime - sensorPendingRef.current.buzzer > 15000) {
+                  _setBuzzerEnabled(latest.buzzer);
+                }
+              }
 
               if (isRecent) {
                 if (telemetrySource !== "ESP32 telemetry") {
@@ -1068,6 +1115,7 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
     saveRelaySchedule, deleteRelaySchedule,
     saveGreetingVoiceSchedule, deleteGreetingVoiceSchedule, toggleGreetingVoiceScheduleActive,
     onSaveSchedule: saveAlarmSchedule, onDeleteSchedule: deleteAlarmSchedule, onToggleScheduleActive: toggleAlarmScheduleActive, onTestPlayVoice: testPlayVoice,
+    pirCount, resetPirCount,
   };
 
   return <SmartboxContext.Provider value={value}>{children}</SmartboxContext.Provider>;
