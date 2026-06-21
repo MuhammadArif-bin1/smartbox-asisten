@@ -3,9 +3,8 @@ import type { BoardProfile, RelayId, Alarm, ViewId } from "./smartbox-types";
 /* ─── Navigation views ─── */
 export const views: Array<{ id: ViewId; label: string; href: string }> = [
   { id: "monitoring", label: "Monitoring", href: "/admin" },
-  { id: "devices", label: "Devices Control", href: "/admin/devices" },
+  { id: "dashboard", label: "Dashboard", href: "/admin/dashboard" },
   { id: "ai", label: "AI Assistant", href: "/admin/ai" },
-  { id: "alarms", label: "Alarm Jadwal", href: "/admin/alarms" },
   { id: "history", label: "Riwayat", href: "/admin/history" },
   { id: "settings", label: "Pengaturan", href: "/admin/settings" },
 ];

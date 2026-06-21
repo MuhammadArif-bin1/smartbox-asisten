@@ -11,6 +11,11 @@ import { ToastMessage } from "@/components/ui/Toast";
 /* ─── View title resolver ─── */
 const titleMap: Record<string, string> = {
   "/admin": "Monitoring",
+  "/admin/dashboard": "Dashboard",
+  "/admin/dashboard/greeting-voice": "Jadwal Greeting Voice",
+  "/admin/dashboard/alarm-dfplayer": "Jadwal Alarm DFPlayer",
+  "/admin/dashboard/relay-schedules": "Jadwal Stop Kontak",
+  "/admin/dashboard/devices": "Devices Control",
   "/admin/devices": "Devices Control",
   "/admin/ai": "AI Assistant",
   "/admin/alarms": "Alarm Jadwal",
@@ -149,7 +154,7 @@ function Header() {
           </h1>
         </div>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-          {pathname !== "/admin/alarms" && <HeaderClock />}
+          {!pathname.startsWith("/admin/dashboard") && <HeaderClock />}
 
           <div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 shadow-sm">
             <div className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-600 font-bold text-white text-sm">A</div>
