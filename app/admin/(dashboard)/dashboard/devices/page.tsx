@@ -101,9 +101,17 @@ export default function DashboardDevicesPage() {
                         </button>
                       </div>
                     )}
-                    <p className="text-xs text-slate-500">Auto mati setelah 1 menit</p>
+                    <p className="text-xs text-slate-500">
+                      {ctx.relayOwner.socket1 !== "none" && ctx.relayOwner.socket1 !== "manual" 
+                        ? `🔒 Dikunci oleh ${ctx.relayOwner.socket1 === "sensor" ? "Sensor" : ctx.relayOwner.socket1 === "schedule" ? "Jadwal" : ctx.relayOwner.socket1 === "voice" ? "Voice" : ctx.relayOwner.socket1}`
+                        : "Auto mati setelah 1 menit"}
+                    </p>
                   </div>
-                  <Switch checked={ctx.relayState.socket1} disabled={isSending} onChange={() => ctx.toggleRelay("socket1")} />
+                  <Switch 
+                    checked={ctx.relayState.socket1} 
+                    disabled={isSending || (ctx.relayOwner.socket1 !== "none" && ctx.relayOwner.socket1 !== "manual")} 
+                    onChange={() => ctx.toggleRelay("socket1")} 
+                  />
                 </div>
                 {ctx.relayState.socket1 && ctx.relayAutoOffAt.socket1 && (
                   <AutoOffCountdown deadline={ctx.relayAutoOffAt.socket1} />
@@ -158,9 +166,17 @@ export default function DashboardDevicesPage() {
                         </button>
                       </div>
                     )}
-                    <p className="text-xs text-slate-500">Auto mati setelah 1 menit</p>
+                    <p className="text-xs text-slate-500">
+                      {ctx.relayOwner.socket2 !== "none" && ctx.relayOwner.socket2 !== "manual" 
+                        ? `🔒 Dikunci oleh ${ctx.relayOwner.socket2 === "sensor" ? "Sensor" : ctx.relayOwner.socket2 === "schedule" ? "Jadwal" : ctx.relayOwner.socket2 === "voice" ? "Voice" : ctx.relayOwner.socket2}`
+                        : "Auto mati setelah 1 menit"}
+                    </p>
                   </div>
-                  <Switch checked={ctx.relayState.socket2} disabled={isSending} onChange={() => ctx.toggleRelay("socket2")} />
+                  <Switch 
+                    checked={ctx.relayState.socket2} 
+                    disabled={isSending || (ctx.relayOwner.socket2 !== "none" && ctx.relayOwner.socket2 !== "manual")} 
+                    onChange={() => ctx.toggleRelay("socket2")} 
+                  />
                 </div>
                 {ctx.relayState.socket2 && ctx.relayAutoOffAt.socket2 && (
                   <AutoOffCountdown deadline={ctx.relayAutoOffAt.socket2} />

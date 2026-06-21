@@ -71,6 +71,7 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
   /* ── Relay ── */
   const [relayState, setRelayState] = useState<Record<RelayId, boolean>>({ socket1: false, socket2: false, ampli: false });
   const [relayAutoOffAt, setRelayAutoOffAt] = useState<{ socket1: number | null; socket2: number | null }>({ socket1: null, socket2: null });
+  const [relayOwner, setRelayOwner] = useState<{ socket1: string; socket2: string }>({ socket1: "none", socket2: "none" });
   const relayPendingRef = useRef<Record<RelayId, number>>({ socket1: 0, socket2: 0, ampli: 0 });
   const sensorPendingRef = useRef<{ gas: number; temperature: number; buzzer: number }>({ gas: 0, temperature: 0, buzzer: 0 });
 
@@ -699,6 +700,13 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
             } else if (telemetry.relay2 === true && typeof telemetry.relay2AutoOffRemaining === "number" && telemetry.relay2AutoOffRemaining > 0) {
               setRelayAutoOffAt((current) => ({ ...current, socket2: Date.now() + telemetry.relay2AutoOffRemaining! * 1000 }));
             }
+            // Sync relay owner (sistem prioritas)
+            if (typeof telemetry.relay1Owner === "string" || typeof telemetry.relay2Owner === "string") {
+              setRelayOwner((current) => ({
+                socket1: typeof telemetry.relay1Owner === "string" ? telemetry.relay1Owner : current.socket1,
+                socket2: typeof telemetry.relay2Owner === "string" ? telemetry.relay2Owner : current.socket2,
+              }));
+            }
             if (typeof telemetry.buzzer === "boolean" && nowTime - sensorPendingRef.current.buzzer > 2000) {
               _setBuzzerEnabled(telemetry.buzzer);
             }
@@ -1129,7 +1137,7 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
     pirGreetingEnabled, pirGreetingTrack, pirGreetingStart, pirGreetingEnd, pirGreetingCooldown, pirGreetingDays, pirGreetingPlayMode,
     greetingVoiceSchedules,
     deviceStatuses: deviceStatus, dfTrackCount, telemetrySource, tempHistory, gasHistory,
-    relayState, relayAutoOffAt, relayActiveCount, relaySchedules,
+    relayState, relayAutoOffAt, relayOwner, relayActiveCount, relaySchedules,
     relay1Label, relay2Label, saveRelay1Label, saveRelay2Label,
     alarms, alarmSchedules, activeAlarms,
     mqttOnline, status, lastCommand, voiceMode, buzzerEnabled, boardLedScheduleEnabled,

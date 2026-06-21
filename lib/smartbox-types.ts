@@ -83,6 +83,8 @@ export type TelemetryPayload = {
   relay2?: boolean;
   relay1AutoOffRemaining?: number;
   relay2AutoOffRemaining?: number;
+  relay1Owner?: string;  // "none" | "manual" | "schedule" | "sensor" | "voice"
+  relay2Owner?: string;
   bluetoothRelay?: boolean;
   ampRelay?: boolean;
   buzzer?: boolean;
@@ -182,6 +184,7 @@ export type SmartboxContextValue = {
   /* relay */
   relayState: Record<RelayId, boolean>;
   relayAutoOffAt: { socket1: number | null; socket2: number | null };
+  relayOwner: { socket1: string; socket2: string };
   relayActiveCount: number;
   relaySchedules: RelaySchedule[];
   relay1Label: string;

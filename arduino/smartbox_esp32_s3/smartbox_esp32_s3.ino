@@ -276,8 +276,38 @@ unsigned long relay1AutoOffAt = 0;
 bool relay2AutoOffActive = false;
 unsigned long relay2AutoOffAt = 0;
 bool bluetoothAudioState = false;
-bool relay1ForcedByGas = false;
-bool relay1ForcedByTemp = false;
+
+// ==========================================================
+// SISTEM PRIORITAS RELAY (RELAY ARBITRATION)
+// ==========================================================
+enum RelayOwner {
+  OWNER_NONE     = 0,
+  OWNER_MANUAL   = 1,   // Dashboard manual toggle
+  OWNER_VOICE    = 2,   // Voice command (future)
+  OWNER_SCHEDULE = 3,   // Jadwal otomatis
+  OWNER_SENSOR   = 4    // Sensor gas/suhu (keselamatan)
+};
+
+struct RelayControl {
+  RelayOwner currentOwner;
+  uint8_t ownerPriority;
+};
+
+RelayControl relayCtrl[2] = {
+  {OWNER_NONE, 0},  // Relay 1
+  {OWNER_NONE, 0}   // Relay 2
+};
+
+// Prioritas per sumber (configurable, disimpan di NVS)
+uint8_t prioritySensor   = 100;
+uint8_t prioritySchedule = 80;
+uint8_t priorityVoice    = 60;
+uint8_t priorityManual   = 40;
+
+// Deteksi gas stabil (tidak terpengaruh DFPlayer)
+bool gasAboveThreshold = false;
+bool smokeAboveThreshold = false;
+bool gasChainPlayed = false;   // Flag: chain 0005→0008 sudah diputar
 
 bool lastGasWarning  = false;
 bool lastSmokeWarning = false;
@@ -1533,6 +1563,76 @@ void setRelay(uint8_t relayNumber, bool state, bool withVoice, bool publishStatu
   sendTelemetryNow();
 }
 
+// ==========================================================
+// SISTEM PRIORITAS RELAY — requestRelay / releaseRelay
+// ==========================================================
+uint8_t getPriority(RelayOwner owner) {
+  switch (owner) {
+    case OWNER_SENSOR:   return prioritySensor;
+    case OWNER_SCHEDULE: return prioritySchedule;
+    case OWNER_VOICE:    return priorityVoice;
+    case OWNER_MANUAL:   return priorityManual;
+    default:             return 0;
+  }
+}
+
+const char* ownerName(RelayOwner owner) {
+  switch (owner) {
+    case OWNER_SENSOR:   return "sensor";
+    case OWNER_SCHEDULE: return "schedule";
+    case OWNER_VOICE:    return "voice";
+    case OWNER_MANUAL:   return "manual";
+    default:             return "none";
+  }
+}
+
+// Minta akses relay. Return true jika diterima, false jika ditolak.
+bool requestRelay(int relayNum, bool state, RelayOwner requester) {
+  if (relayNum < 1 || relayNum > 2) return false;
+  int idx = relayNum - 1;
+  uint8_t reqPriority = getPriority(requester);
+
+  // Jika ada owner aktif dengan prioritas LEBIH TINGGI → TOLAK
+  if (relayCtrl[idx].currentOwner != OWNER_NONE &&
+      relayCtrl[idx].currentOwner != requester &&
+      relayCtrl[idx].ownerPriority > reqPriority) {
+    Serial.printf("[RELAY-PRIO] DITOLAK: %s (prio %d) < %s (prio %d) untuk relay %d\n",
+                  ownerName(requester), reqPriority,
+                  ownerName(relayCtrl[idx].currentOwner),
+                  relayCtrl[idx].ownerPriority, relayNum);
+    return false;
+  }
+
+  // Ambil alih atau update state
+  if (state) {
+    relayCtrl[idx].currentOwner = requester;
+    relayCtrl[idx].ownerPriority = reqPriority;
+  } else {
+    // Mematikan → lepaskan ownership
+    relayCtrl[idx].currentOwner = OWNER_NONE;
+    relayCtrl[idx].ownerPriority = 0;
+  }
+
+  setRelay(relayNum, state, false);
+  Serial.printf("[RELAY-PRIO] %s: relay %d %s oleh %s (prio %d)\n",
+                state ? "ON" : "OFF", relayNum,
+                state ? "diambil" : "dilepas",
+                ownerName(requester), reqPriority);
+  return true;
+}
+
+// Lepaskan relay dari owner tertentu. Relay mati jika owner cocok.
+void releaseRelay(int relayNum, RelayOwner owner) {
+  if (relayNum < 1 || relayNum > 2) return;
+  int idx = relayNum - 1;
+  if (relayCtrl[idx].currentOwner == owner) {
+    relayCtrl[idx].currentOwner = OWNER_NONE;
+    relayCtrl[idx].ownerPriority = 0;
+    setRelay(relayNum, false, false);
+    Serial.printf("[RELAY-PRIO] Relay %d dilepas oleh %s → OFF\n", relayNum, ownerName(owner));
+  }
+}
+
 void setBuzzer(bool state, bool manualMode = false) {
   if (manualMode) buzzerManual = state;
   digitalWrite(BUZZER_PIN, state ? HIGH : LOW);
@@ -1671,29 +1771,36 @@ void handleRelayCommand(JsonObject data, const char *cmdId, const char *type) {
   int autoOffSeconds = data["autoOffSeconds"] | 0;
   const char *source = data["source"] | "";
 
-  if (state && autoOffSeconds == 0 && strcmp(source, "schedule") != 0) {
-    autoOffSeconds = 60;
-  }
-
   if (relayNumber < 1 || relayNumber > 2) {
     publishAck(cmdId, type, false, "Relay tidak valid.");
     Serial.printf("[RELAY] Relay %d tidak valid.\n", relayNumber);
     return;
   }
 
-  setRelay(relayNumber, state, false, false);
+  // Tentukan owner berdasarkan source
+  RelayOwner owner = OWNER_MANUAL;
+  if (strstr(source, "schedule") != NULL) owner = OWNER_SCHEDULE;
+  else if (strcmp(source, "sensor") == 0) owner = OWNER_SENSOR;
+  else if (strcmp(source, "voice") == 0) owner = OWNER_VOICE;
 
-  // Bug 3 fix: Saat user mematikan relay 1 manual, reset flag forced agar
-  // checkWarnings tidak memaksa relay nyala kembali
-  if (!state && relayNumber == 1) {
-    relay1ForcedByGas = false;
-    relay1ForcedByTemp = false;
+  // Default auto-off 60s hanya untuk manual (bukan schedule/sensor)
+  if (state && autoOffSeconds == 0 && owner == OWNER_MANUAL) {
+    autoOffSeconds = 60;
   }
 
-  // Bug 5 fix: Play voice saat relay diubah dari dashboard (bukan dari schedule/schedule_delete)
-  // Schedule sudah mengirim voice.play terpisah dari worker
-  bool isFromSchedule = (strlen(source) > 0 && strstr(source, "schedule") != NULL);
-  if (!isFromSchedule) {
+  // Gunakan sistem prioritas
+  bool accepted = requestRelay(relayNumber, state, owner);
+  if (!accepted) {
+    // Ditolak oleh prioritas lebih tinggi
+    int idx = relayNumber - 1;
+    char msg[64];
+    snprintf(msg, sizeof(msg), "Relay %d dikunci oleh %s", relayNumber, ownerName(relayCtrl[idx].currentOwner));
+    publishAck(cmdId, type, false, msg);
+    return;
+  }
+
+  // Play voice saat relay diubah dari dashboard (bukan dari schedule/sensor)
+  if (owner == OWNER_MANUAL) {
     if (relayNumber == 1) {
       playVoice(state ? TRACK_RELAY1_ON : TRACK_RELAY1_OFF, "relay1_manual");
     } else if (relayNumber == 2) {
@@ -1791,6 +1898,14 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
   else if (strcmp(type, "gasSensor.set") == 0) {
     gasEnabled = data["enabled"] | true;
     lastGasWarning = false; lastSmokeWarning = false;
+    gasChainPlayed = false;
+    gasAboveThreshold = false;
+    smokeAboveThreshold = false;
+    // Lepaskan relay dari sensor saat sensor dimatikan
+    if (!gasEnabled) {
+      releaseRelay(1, OWNER_SENSOR);
+      setBuzzer(false, false);
+    }
     saveSettings();
     publishAck(cmdId, type, true, "Sensor updated.");
     sendTelemetryNow();
@@ -1868,10 +1983,17 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
     int ppm = data["ppm"] | 21;
     smokeThreshold = ppm * 60;
     gasThreshold = (ppm + 2) * 60;
-    resetThreshold = (ppm - 2) * 60;
+    // Hysteresis otomatis: resetThreshold 15% lebih rendah dari smokeThreshold
+    resetThreshold = smokeThreshold - (smokeThreshold * 15 / 100);
     SMOKE_THRESHOLD_OFFSET = smokeThreshold - MQ2_BASELINE;
     GAS_THRESHOLD_OFFSET = gasThreshold - MQ2_BASELINE;
     RESET_THRESHOLD_OFFSET = resetThreshold - MQ2_BASELINE;
+    // Reset warning state saat threshold berubah
+    lastGasWarning = false;
+    lastSmokeWarning = false;
+    gasChainPlayed = false;
+    // Lepaskan relay jika dimiliki sensor (threshold mungkin dinaikkan di atas PPM)
+    releaseRelay(1, OWNER_SENSOR);
     saveSettings();
     publishAck(cmdId, type, true, "Gas threshold updated.");
     sendTelemetryNow();
@@ -1982,7 +2104,7 @@ String getIsoTimestamp() {
 }
 
 void publishTelemetry(int gasRaw, float tempC, bool gasWarning, bool tempWarning, bool pirDetected, const String &gasLevel, bool obstacleNear) {
-  StaticJsonDocument<1024> doc;
+  StaticJsonDocument<1536> doc;
   doc["deviceId"] = DEVICE_ID;
   doc["temperatureC"] = tempC;
   doc["gasRaw"] = gasRaw;
@@ -2003,6 +2125,9 @@ void publishTelemetry(int gasRaw, float tempC, bool gasWarning, bool tempWarning
     relay2AutoOffActive && (long)(relay2AutoOffAt - nowMs) > 0 ? relay2AutoOffAt - nowMs : 0;
   doc["relay1AutoOffRemaining"] = relay1RemainingMs > 0 ? (relay1RemainingMs + 999UL) / 1000UL : 0;
   doc["relay2AutoOffRemaining"] = relay2RemainingMs > 0 ? (relay2RemainingMs + 999UL) / 1000UL : 0;
+  // Info pemilik relay (untuk sistem prioritas di dashboard)
+  doc["relay1Owner"] = ownerName(relayCtrl[0].currentOwner);
+  doc["relay2Owner"] = ownerName(relayCtrl[1].currentOwner);
   doc["bluetoothRelay"] = bluetoothAktif;
   doc["bluetoothAudio"] = bluetoothAudioState;
   doc["buzzer"] = digitalRead(BUZZER_PIN) == HIGH;
@@ -2055,76 +2180,96 @@ void sendTelemetryHttp(int gasRaw, float tempC, bool gasWarning, bool tempWarnin
 }
 
 void checkWarnings(int gasRaw, float tempC, bool anyGasWarning, bool tempWarning, bool pirDetected) {
-  bool dfPlayerActiveRecently = dfplayerBusy || (millis() - lastVoiceMillis < (VOICE_MIN_GAP_MS + 2500));
-  bool isGas = gasEnabled && !dfPlayerActiveRecently && gasRaw >= gasThreshold;
-  bool isSmoke = gasEnabled && !dfPlayerActiveRecently && gasRaw >= smokeThreshold && gasRaw < gasThreshold;
-  bool gasWarning = isGas || isSmoke;
-  // Bug 2 fix: buzzer bunyi langsung saat gas terdeteksi, tanpa syarat PIR
-  bool triggerBuzzer = gasBuzzerEnabled && gasWarning;
+  // ═══════════════════════════════════════════════════════════
+  // DETEKSI GAS STABIL (tidak terpengaruh DFPlayer)
+  // ═══════════════════════════════════════════════════════════
+  gasAboveThreshold = gasEnabled && gasRaw >= gasThreshold;
+  smokeAboveThreshold = gasEnabled && gasRaw >= smokeThreshold && gasRaw < gasThreshold;
+  bool anyGasActive = gasAboveThreshold || smokeAboveThreshold;
 
-  if (isGas) {
+  // Boleh putar suara? (terpisah dari deteksi)
+  bool canPlayVoice = !dfplayerBusy && (millis() - lastVoiceMillis >= (VOICE_MIN_GAP_MS + 2500));
+
+  // Buzzer stabil: ikut deteksi gas yang stabil, bukan yang berkedip
+  bool triggerBuzzer = gasBuzzerEnabled && anyGasActive;
+
+  // ═══════════════════════════════════════════════════════════
+  // GAS TERDETEKSI (stabil, tidak flicker)
+  // ═══════════════════════════════════════════════════════════
+  if (gasAboveThreshold) {
     setBluetoothAudio(true);
     setRgb(255, 0, 0);
 
     if (!lastGasWarning) {
-      // Bug 3 fix: relay hanya dipaksa nyala SEKALI saat pertama kali gas terdeteksi
-      if (!relay1State) setRelay(1, true, false);
-      relay1ForcedByGas = true;
+      // === DETEKSI PERTAMA ===
       lastGasWarning = true;
       lastSmokeWarning = false;
+      gasChainPlayed = false;
       gasStatusStr = "detected";
       smokeStatusStr = "normal";
-      // Bug 1 fix: Play 0005 lalu 0008 HANYA di deteksi pertama
+
+      // Nyalakan relay 1 via sistem prioritas (OWNER_SENSOR)
+      requestRelay(1, true, OWNER_SENSOR);
+
+      // Play chain: 0005 (gas terdeteksi) → 0008 (relay 1 ON)
       playVoice(TRACK_GAS_DETECTED, "gas_detected");
       pendingVoiceTrack = TRACK_RELAY1_ON;
       pendingVoicePriority = getVoicePriority("gas_detected");
       pendingVoiceReason = "relay1_on_gas";
+
       publishEvent("WARNING", "gas.detected", "Gas terdeteksi!");
       setLcdOverride("GAS TERDETEKSI", "SEGERA PERIKSA!", 5000);
-    } else {
-      // Bug 1 fix: Gas masih tinggi → ulang 0005 saja (dengan cooldown 10s)
+    } else if (canPlayVoice) {
+      // === GAS MASIH TINGGI → ulang 0005 saja (cooldown 10s) ===
+      gasChainPlayed = true; // Chain sudah selesai
       playGasWarningVoice("gas");
     }
-  } 
-  else if (isSmoke) {
+  }
+  else if (smokeAboveThreshold) {
     setBluetoothAudio(true);
     setRgb(255, 80, 0);
 
     if (!lastSmokeWarning) {
       lastSmokeWarning = true;
       lastGasWarning = false;
+      gasChainPlayed = false;
       smokeStatusStr = "detected";
       gasStatusStr = "normal";
+
+      requestRelay(1, true, OWNER_SENSOR);
+
       playVoice(TRACK_GAS_DETECTED, "smoke_detected");
       pendingVoiceTrack = TRACK_RELAY1_ON;
       pendingVoicePriority = getVoicePriority("smoke_detected");
       pendingVoiceReason = "relay1_on_smoke";
+
       publishEvent("WARNING", "smoke.detected", "Asap terdeteksi!");
       setLcdOverride("ASAP TERDETEKSI", "SEGERA PERIKSA!", 5000);
-    } else {
-      // Asap masih tinggi → ulang 0005 saja (dengan cooldown 10s)
+    } else if (canPlayVoice) {
+      gasChainPlayed = true;
       playGasWarningVoice("smoke");
     }
-  } 
+  }
   else {
+    // Gas di bawah threshold — cek apakah sudah di bawah resetThreshold (hysteresis)
     if (gasRaw < resetThreshold) {
       if (lastGasWarning || lastSmokeWarning) {
         publishEvent("INFO", "gas.cleared", "Kondisi gas/asap kembali normal.");
       }
       lastGasWarning = false;
       lastSmokeWarning = false;
+      gasChainPlayed = false;
       gasStatusStr = "normal";
       smokeStatusStr = "normal";
-      if (relay1ForcedByGas) {
-        if (!relay1ForcedByTemp) {
-          setRelay(1, false, false);
-        }
-        relay1ForcedByGas = false;
-      }
+
+      // Lepaskan relay 1 dari sensor (jika sensor yang menguasai)
+      releaseRelay(1, OWNER_SENSOR);
     }
   }
 
-  // Bug 2 fix: buzzer logic disederhanakan — bunyi jika gas warning aktif & toggle ON
+  // ═══════════════════════════════════════════════════════════
+  // BUZZER (stabil, tidak berkedip)
+  // ═══════════════════════════════════════════════════════════
   if (triggerBuzzer) {
     setBuzzer(true, false);
   } else {
@@ -2133,13 +2278,16 @@ void checkWarnings(int gasRaw, float tempC, bool anyGasWarning, bool tempWarning
     }
   }
 
+  // ═══════════════════════════════════════════════════════════
+  // SUHU TINGGI
+  // ═══════════════════════════════════════════════════════════
   if (tempWarning) {
     if (!lastTempWarning) {
-      // Bug 3 fix: relay hanya dipaksa nyala SEKALI saat pertama kali suhu melebihi ambang
-      if (!relay1State) setRelay(1, true, false);
-      relay1ForcedByTemp = true;
       lastTempWarning = true;
-      // Play 0006 (suhu luar ambang) lalu 0008 (stop kontak 1 ON)
+
+      // Nyalakan relay 1 via sistem prioritas (OWNER_SENSOR)
+      requestRelay(1, true, OWNER_SENSOR);
+
       playVoice(TRACK_TEMP_HIGH, "temperature_warning");
       pendingVoiceTrack = TRACK_RELAY1_ON;
       pendingVoicePriority = getVoicePriority("temperature_warning");
@@ -2151,14 +2299,11 @@ void checkWarnings(int gasRaw, float tempC, bool anyGasWarning, bool tempWarning
     if (lastTempWarning) {
       playVoice(TRACK_TEMP_NORMAL, "temperature_normal");
       publishEvent("INFO", "temperature.normal", "Suhu ruangan kembali normal.");
+
+      // Lepaskan relay 1 dari sensor (jika sensor yang menguasai)
+      releaseRelay(1, OWNER_SENSOR);
     }
     lastTempWarning = false;
-    if (relay1ForcedByTemp) {
-      if (!relay1ForcedByGas) {
-        setRelay(1, false, false);
-      }
-      relay1ForcedByTemp = false;
-    }
   }
 }
 
