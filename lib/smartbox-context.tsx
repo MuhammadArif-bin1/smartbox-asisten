@@ -38,6 +38,7 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
   const [sleepModeEnabled, setSleepModeEnabled] = useState(false);
   const [gasThresholdPpm, setGasThresholdPpm] = useState(21);
   const [tempThreshold, setTempThreshold] = useState(38);
+  const [gasBuzzerEnabled, setGasBuzzerEnabled] = useState(false);
 
   /* ── PIR greeting ── */
   const [pirGreetingEnabled, setPirGreetingEnabled] = useState(false);
@@ -65,7 +66,6 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
   const [lastCommand, setLastCommand] = useState("Belum ada command dikirim");
   const [voiceMode, setVoiceMode] = useState(true);
   const [buzzerEnabled, _setBuzzerEnabled] = useState(false);
-  const [gasBuzzerWarningEnabled, setGasBuzzerWarningEnabled] = useState(true);
   const [boardLedScheduleEnabled, setBoardLedScheduleEnabled] = useState(true);
 
   /* ── Relay ── */
@@ -379,12 +379,6 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
     sendDeviceCommand("tempSensor.set", { enabled: next }, `Sensor suhu ${next ? "aktif" : "mati"}`);
   }
 
-  function toggleGasBuzzerWarning() {
-    const next = !gasBuzzerWarningEnabled;
-    setGasBuzzerWarningEnabled(next);
-    sendDeviceCommand("gasBuzzerWarning.set", { enabled: next }, `Buzzer gas ${next ? "aktif" : "mati"}`);
-  }
-
   async function updateGasThreshold(ppm: number) {
     setGasThresholdPpm(ppm);
     await sendDeviceCommand("gasThreshold.set", { ppm }, `Set Ambang Gas ${ppm} PPM`, `Ambang batas gas diubah ke ${ppm} PPM`, "Gagal mengubah ambang batas gas");
@@ -399,6 +393,12 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
     const next = !pirEnabled;
     setPirEnabled(next);
     sendDeviceCommand("pirSensor.set", { enabled: next }, `Sensor PIR ${next ? "aktif" : "mati"}`);
+  }
+
+  async function toggleGasBuzzer() {
+    const next = !gasBuzzerEnabled;
+    setGasBuzzerEnabled(next);
+    await sendDeviceCommand("gasBuzzer.set", { enabled: next }, `Buzzer gas ${next ? "aktif" : "mati"}`);
   }
 
   function toggleSleepMode() {
@@ -510,6 +510,10 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
 
   async function deleteRelaySchedule(id: string) {
     try {
+      // Bug 4 fix: Ambil relay number sebelum dihapus dari state
+      const targetSchedule = relaySchedules.find((s) => s.id === id);
+      const relayNumber = targetSchedule?.relayNumber ?? 1;
+
       const response = await fetch(`/api/devices/relay-schedules/${id}`, { method: "DELETE" });
       if (response.ok) {
         setRelaySchedules((current) => current.filter((s) => s.id !== id));
@@ -519,6 +523,13 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
           "relaySchedule.delete",
           { id },
           "Sync Hapus Jadwal"
+        );
+
+        // Bug 4 fix: Safety net — kirim relay.set OFF langsung untuk memastikan relay mati
+        await sendDeviceCommand(
+          "relay.set",
+          { relay: relayNumber, state: false, source: "schedule_delete" },
+          `Matikan relay ${relayNumber} (jadwal dihapus)`
         );
 
         notify("Jadwal berhasil dihapus", "success");
@@ -635,7 +646,7 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
             if (typeof telemetry.temperatureC === "number") setTempEstimate(roundTemperature(telemetry.temperatureC));
             if (typeof telemetry.gasThresholdPpm === "number") setGasThresholdPpm(telemetry.gasThresholdPpm);
             if (typeof telemetry.tempThreshold === "number") setTempThreshold(telemetry.tempThreshold);
-            if (typeof telemetry.gasBuzzerWarningEnabled === "boolean") setGasBuzzerWarningEnabled(telemetry.gasBuzzerWarningEnabled);
+            if (typeof telemetry.gasBuzzerEnabled === "boolean") setGasBuzzerEnabled(telemetry.gasBuzzerEnabled);
             if (typeof telemetry.flameDetected === "boolean") setFlameDetected(telemetry.flameDetected);
             if (typeof telemetry.pirDetected === "boolean") setPirDetected(telemetry.pirDetected);
             if (typeof telemetry.obstacleNear === "boolean") setObstacleNear(telemetry.obstacleNear);
@@ -666,13 +677,14 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
             setRelayState((current) => {
               const now = Date.now();
               const updated = { ...current };
-              if (typeof telemetry.relay1 === "boolean" && now - relayPendingRef.current.socket1 > 2000) {
+              // Naikkan timeout dari 2s ke 10s agar telemetry tidak menimpa toggle manual
+              if (typeof telemetry.relay1 === "boolean" && now - relayPendingRef.current.socket1 > 10000) {
                 updated.socket1 = telemetry.relay1;
               }
-              if (typeof telemetry.relay2 === "boolean" && now - relayPendingRef.current.socket2 > 2000) {
+              if (typeof telemetry.relay2 === "boolean" && now - relayPendingRef.current.socket2 > 10000) {
                 updated.socket2 = telemetry.relay2;
               }
-              if (typeof telemetry.bluetoothRelay === "boolean" && now - relayPendingRef.current.ampli > 2000) {
+              if (typeof telemetry.bluetoothRelay === "boolean" && now - relayPendingRef.current.ampli > 10000) {
                 updated.ampli = telemetry.bluetoothRelay;
               }
               return updated;
@@ -709,7 +721,11 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
               const autoOffSeconds = readNumber(eventPayload.autoOffSeconds) ?? 0;
               const rid = relayNumber === 1 ? "socket1" : relayNumber === 2 ? "socket2" : null;
               if (rid && typeof relayEnabled === "boolean") {
-                setRelayState((current) => ({ ...current, [rid]: relayEnabled }));
+                // Hanya update jika tidak ada pending toggle manual (10 detik guard)
+                const pendingAge = Date.now() - relayPendingRef.current[rid];
+                if (pendingAge > 10000) {
+                  setRelayState((current) => ({ ...current, [rid]: relayEnabled }));
+                }
                 setRelayAutoOffAt((current) => ({
                   ...current,
                   [rid]: relayEnabled && autoOffSeconds > 0 ? Date.now() + autoOffSeconds * 1000 : null,
@@ -1109,16 +1125,16 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
   const value: SmartboxContextValue = {
     isAuthenticated, authChecked, passwordInput, loginError, setPasswordInput, submitLogin,
     gasEnabled, temperatureEnabled, visibleGasEstimate, visibleTempEstimate, gasPpm, gasPercent, tempPercent, gasWarning, tempWarning, gasState, tempState, flameDetected, pirDetected, obstacleNear, pirEnabled, sleepModeEnabled,
-    gasThresholdPpm, tempThreshold,
+    gasThresholdPpm, tempThreshold, gasBuzzerEnabled, toggleGasBuzzer,
     pirGreetingEnabled, pirGreetingTrack, pirGreetingStart, pirGreetingEnd, pirGreetingCooldown, pirGreetingDays, pirGreetingPlayMode,
     greetingVoiceSchedules,
     deviceStatuses: deviceStatus, dfTrackCount, telemetrySource, tempHistory, gasHistory,
     relayState, relayAutoOffAt, relayActiveCount, relaySchedules,
     relay1Label, relay2Label, saveRelay1Label, saveRelay2Label,
     alarms, alarmSchedules, activeAlarms,
-    mqttOnline, status, lastCommand, voiceMode, buzzerEnabled, gasBuzzerWarningEnabled, boardLedScheduleEnabled,
+    mqttOnline, status, lastCommand, voiceMode, buzzerEnabled, boardLedScheduleEnabled,
     events, toast, notify, setToast,
-    publish, sendDeviceCommand, toggleGas, toggleTemperature, toggleGasBuzzerWarning, toggleRelay, togglePir, toggleSleepMode,
+    publish, sendDeviceCommand, toggleGas, toggleTemperature, toggleRelay, togglePir, toggleSleepMode,
     updateAlarm, updateGasThreshold, updateTempThreshold, setBuzzerEnabled, setBoardLedScheduleEnabled, setVoiceMode, updatePirGreetingConfig,
     saveRelaySchedule, deleteRelaySchedule,
     saveGreetingVoiceSchedule, deleteGreetingVoiceSchedule, toggleGreetingVoiceScheduleActive,

@@ -35,19 +35,20 @@
   GPIO39/GPIO40.
 
   DFPlayer Track Mapping:
-  0001.mp3 = smartbox assistant siap digunakan
+  0001.mp3 = smartbox assistant siap digunakan (startup)
   0002.mp3 = menampilkan jam dan suhu real-time
   0003.mp3 = bluetooth diaktifkan
-  0004.mp3 = selamat pagi tuan
-  0005.mp3 = selamat siang tuan
-  0006.mp3 = selamat sore tuan
-  0007.mp3 = asap terdeteksi
-  0008.mp3 = gas terdeteksi
-  0009.mp3 = suhu terdeteksi
-  0010.mp3 = gerakan terdeteksi (walk)
-  0011.mp3 = gerakan melompat terdeteksi (jump)
-  0012.mp3 = gerakan melambaikan tangan (wave)
-  0013.mp3 = bluetooth dimatikan
+  0004.mp3 = bluetooth dimatikan
+  0005.mp3 = gas atau asap terdeteksi
+  0006.mp3 = sensor suhu di luar ambang batas
+  0007.mp3 = sensor suhu kembali normal
+  0008.mp3 = stop kontak 1 dinyalakan
+  0009.mp3 = stop kontak 1 dimatikan
+  0010.mp3 = stop kontak 2 dinyalakan
+  0011.mp3 = stop kontak 2 dimatikan
+  0012.mp3 = iya tuan
+  0013.mp3 = siap membantu
+  0014.mp3 = perintah
 */
 
 #include <Adafruit_NeoPixel.h>
@@ -121,21 +122,32 @@ const char *DEVICE_ID = "smartbox-001";
 // ==========================================================
 // 4. TRACK MAPPING DFPLAYER
 // ==========================================================
-#define TRACK_STARTUP_READY          1
-#define TRACK_TIME_TEMP_REALTIME     2
-#define TRACK_BLUETOOTH_ACTIVE       3
-#define TRACK_BLUETOOTH_OFF          4
-#define TRACK_GAS_SMOKE_WARNING      5
-#define TRACK_TEMP_HIGH_ALARM        6
-#define TRACK_TEMP_NORMAL            7
-#define TRACK_RELAY1_ON              8
-#define TRACK_RELAY1_OFF             9
-#define TRACK_RELAY2_ON              10
-#define TRACK_RELAY2_OFF             11
-#define TRACK_IYA_TUAN               12
-#define TRACK_SIAP_MEMBANTU          13
-#define TRACK_PERINTAH               14
-#define DFPLAYER_MAX_TRACK           40
+#define TRACK_STARTUP_READY       1
+#define TRACK_TIME_TEMP_REALTIME  2
+#define TRACK_BLUETOOTH_ACTIVE    3
+#define TRACK_BLUETOOTH_OFF       4    // BARU: Bluetooth dimatikan
+#define TRACK_GAS_DETECTED        5    // BARU: Gas atau asap terdeteksi
+#define TRACK_TEMP_HIGH           6    // BARU: Sensor suhu di luar ambang batas
+#define TRACK_TEMP_NORMAL         7    // BARU: Sensor suhu kembali normal
+#define TRACK_RELAY1_ON           8    // BARU: Stop Kontak 1 dinyalakan
+#define TRACK_RELAY1_OFF          9    // BARU: Stop Kontak 1 dimatikan
+#define TRACK_RELAY2_ON           10   // BARU: Stop Kontak 2 dinyalakan
+#define TRACK_RELAY2_OFF          11   // BARU: Stop Kontak 2 dimatikan
+#define TRACK_YES_SIR             12   // Iya tuan
+#define TRACK_READY_HELP          13   // Siap membantu
+#define TRACK_COMMAND             14   // Perintah
+#define DFPLAYER_MAX_TRACK        40
+
+#define TRACK_ALARM_MORNING       12   // Default sapaan respons
+#define TRACK_ALARM_AFTERNOON     13
+#define TRACK_ALARM_EVENING       14
+#define TRACK_SMOKE_DETECTED      5    // MQ-2 gas/asap sama-sama menggunakan track 5
+#define TRACK_TEMP_HIGH_ALARM     6    // Suhu luar ambang menggunakan track 6
+
+#define TRACK_GESTURE_WALK        25
+#define TRACK_GESTURE_JUMP        26
+#define TRACK_GESTURE_WAVE        27
+
 
 // ==========================================================
 // 5. KALIBRASI MQ-2 - KONFIGURASI MANUAL
@@ -255,7 +267,7 @@ bool gasEnabled = true;
 bool tempEnabled = true;
 bool voiceMode = true;
 bool buzzerManual = false;
-bool gasBuzzerWarningEnabled = true;
+bool gasBuzzerEnabled = false;
 
 bool relay1State = false;
 bool relay2State = false;
@@ -547,7 +559,7 @@ void loadSettings() {
   pirEnabled = preferences.getBool("pirEnabled", true);
   gasEnabled = preferences.getBool("gasEnabled", true);
   tempEnabled = preferences.getBool("tempEnabled", true);
-  gasBuzzerWarningEnabled = preferences.getBool("gasBuzzWarn", true);
+  gasBuzzerEnabled = preferences.getBool("gasBuzzer", false);
   pirGreetingEnabled = preferences.getBool("pirGreetEn", false);
   pirGreetingTrack = preferences.getInt("pirGreetTrk", TRACK_GESTURE_WALK);
   pirGreetingStartHour = preferences.getInt("pirGreetSH", 7);
@@ -580,7 +592,7 @@ void saveSettings() {
   preferences.putBool("pirEnabled", pirEnabled);
   preferences.putBool("gasEnabled", gasEnabled);
   preferences.putBool("tempEnabled", tempEnabled);
-  preferences.putBool("gasBuzzWarn", gasBuzzerWarningEnabled);
+  preferences.putBool("gasBuzzer", gasBuzzerEnabled);
   preferences.putBool("pirGreetEn", pirGreetingEnabled);
   preferences.putInt("pirGreetTrk", pirGreetingTrack);
   preferences.putInt("pirGreetSH", pirGreetingStartHour);
@@ -978,8 +990,18 @@ void playGasWarningVoice(String gasType) {
   unsigned long now = millis();
   if (lastGasAudioTime > 0 && now - lastGasAudioTime < GAS_VOICE_COOLDOWN_MS) return;
   lastGasAudioTime = now;
-  playVoice(TRACK_GAS_SMOKE_WARNING, "gas_warning");
-  playVoice(TRACK_RELAY1_ON, "gas_warning_relay1");
+  int track = -1;
+  const char* reason = "";
+  
+  // Alternate warning track to support MQ-2 non-differentiation request
+  static bool alternateGasTrack = false;
+  track = alternateGasTrack ? TRACK_GAS_DETECTED : TRACK_SMOKE_DETECTED;
+  reason = alternateGasTrack ? "gas_detected" : "smoke_detected";
+  alternateGasTrack = !alternateGasTrack;
+
+  if (track != -1) {
+    playVoice((uint8_t)track, reason);
+  }
 }
 
 void playTemperatureWarningVoice() {
@@ -987,7 +1009,6 @@ void playTemperatureWarningVoice() {
   if (now - lastTempAudioTime < TEMP_VOICE_COOLDOWN_MS) return;
   lastTempAudioTime = now;
   playVoice(TRACK_TEMP_HIGH_ALARM, "temperature_warning");
-  playVoice(TRACK_RELAY1_ON, "temperature_warning_relay1");
 }
 
 void playPirGreeting(String motionType) {
@@ -1219,7 +1240,7 @@ void handleRelayScheduleCommand(JsonObject data, const char *cmdId, const char *
   relaySchedules[idx].lastTriggeredEndDay = -1;
 
   if (!enabled) {
-    setRelay(relayNum, false, "silent");
+    setRelay(relayNum, false, false);
   }
 
   saveSchedules();
@@ -1244,7 +1265,7 @@ void deleteRelaySchedule(const char *schId) {
   }
 
   int relayNum = relaySchedules[idx].relayNum;
-  setRelay(relayNum, false, "silent");
+  setRelay(relayNum, false, false);
 
   for (int i = idx; i < relayScheduleCount - 1; i++) {
     relaySchedules[i] = relaySchedules[i + 1];
@@ -1269,7 +1290,7 @@ void checkRelaySchedules() {
       relaySchedules[i].lastTriggeredStartDay = now.day();
       Serial.printf("[SCHEDULE] Trigger START for Relay %d (Schedule: %s)\n", 
                     relaySchedules[i].relayNum, relaySchedules[i].id);
-      setRelay(relaySchedules[i].relayNum, true, "schedule");
+      setRelay(relaySchedules[i].relayNum, true, false); // false = silent
     }
 
     // Check End Time (Turn OFF)
@@ -1280,7 +1301,7 @@ void checkRelaySchedules() {
       relaySchedules[i].lastTriggeredEndDay = now.day();
       Serial.printf("[SCHEDULE] Trigger END for Relay %d (Schedule: %s)\n", 
                     relaySchedules[i].relayNum, relaySchedules[i].id);
-      setRelay(relaySchedules[i].relayNum, false, "schedule");
+      setRelay(relaySchedules[i].relayNum, false, false); // false = silent
     }
   }
 }
@@ -1291,7 +1312,7 @@ void checkRelayAutoOff() {
   if (relay1AutoOffActive && (long)(now - relay1AutoOffAt) >= 0) {
     relay1AutoOffActive = false;
     Serial.println("[RELAY] Relay 1 OFF by auto-off");
-    setRelay(1, false, "silent");
+    setRelay(1, false, false);
     setLcdOverride("STOP KONTAK 1", "KIPAS OFF", 3000);
     publishEvent("INFO", "relay1.auto_off", "Stop Kontak 1 otomatis mati setelah 1 menit.");
   }
@@ -1299,7 +1320,7 @@ void checkRelayAutoOff() {
   if (relay2AutoOffActive && (long)(now - relay2AutoOffAt) >= 0) {
     relay2AutoOffActive = false;
     Serial.println("[RELAY] Relay 2 OFF by auto-off");
-    setRelay(2, false, "silent");
+    setRelay(2, false, false);
     setLcdOverride("STOP KONTAK 2", "CHARGER OFF", 3000);
     publishEvent("INFO", "relay2.auto_off", "Stop Kontak 2 otomatis mati setelah 1 menit.");
   }
@@ -1364,10 +1385,10 @@ void checkBluetoothTimer() {
 void prosesDataBluetooth() {
   if (dataBluetooth.length() == 0) return;
   dataBluetooth.trim(); dataBluetooth.toLowerCase();
-  if (dataBluetooth == "relay1 on") { setRelay(1, true, "manual"); setLcdOverride("RELAY 1", "ON", 3000); }
-  else if (dataBluetooth == "relay1 off") { setRelay(1, false, "manual"); setLcdOverride("RELAY 1", "OFF", 3000); }
-  else if (dataBluetooth == "relay2 on") { setRelay(2, true, "manual"); setLcdOverride("RELAY 2", "ON", 3000); }
-  else if (dataBluetooth == "relay2 off") { setRelay(2, false, "manual"); setLcdOverride("RELAY 2", "OFF", 3000); }
+  if (dataBluetooth == "relay1 on") { setRelay(1, true, true); setLcdOverride("RELAY 1", "ON", 3000); }
+  else if (dataBluetooth == "relay1 off") { setRelay(1, false, true); setLcdOverride("RELAY 1", "OFF", 3000); }
+  else if (dataBluetooth == "relay2 on") { setRelay(2, true, true); setLcdOverride("RELAY 2", "ON", 3000); }
+  else if (dataBluetooth == "relay2 off") { setRelay(2, false, true); setLcdOverride("RELAY 2", "OFF", 3000); }
   else if (dataBluetooth == "status") {
     int gasRaw = analogRead(MQ2_PIN); float tempC = rtcReady ? rtc.getTemperature() : 0.0;
     char statusBuf[64]; snprintf(statusBuf, sizeof(statusBuf), "MQ2: %d, Temp: %0.1fC", gasRaw, tempC);
@@ -1483,29 +1504,15 @@ void stopDfTrack() {
   }
 }
 
-void setRelay(uint8_t relayNumber, bool state, const char* reason = "manual", bool publishStatus = true) {
+void setRelay(uint8_t relayNumber, bool state, bool withVoice, bool publishStatus) {
   if (relayNumber == 1) { relay1State = state; digitalWrite(RELAY_1_PIN, state ? RELAY_ON : RELAY_OFF); }
   if (relayNumber == 2) { relay2State = state; digitalWrite(RELAY_2_PIN, state ? RELAY_ON : RELAY_OFF); }
-  Serial.printf("[RELAY] Relay %d %s, reason: %s\n", relayNumber, state ? "ON" : "OFF", reason);
+  Serial.printf("[RELAY] Relay %d %s\n", relayNumber, state ? "ON" : "OFF");
 
   if (relayNumber == 1) {
     setLcdOverride("STOP KONTAK 1", state ? "KIPAS ON" : "KIPAS OFF", 3000);
-    if (strcmp(reason, "temp") != 0 && strcmp(reason, "gas") != 0 && strcmp(reason, "silent") != 0) {
-      if (state) {
-        playVoice(TRACK_RELAY1_ON, "relay1_on");
-      } else {
-        playVoice(TRACK_RELAY1_OFF, "relay1_off");
-      }
-    }
   } else if (relayNumber == 2) {
     setLcdOverride("STOP KONTAK 2", state ? "CHARGER ON" : "CHARGER OFF", 3000);
-    if (strcmp(reason, "silent") != 0) {
-      if (state) {
-        playVoice(TRACK_RELAY2_ON, "relay2_on");
-      } else {
-        playVoice(TRACK_RELAY2_OFF, "relay2_off");
-      }
-    }
   }
 
   if (publishStatus) {
@@ -1674,8 +1681,25 @@ void handleRelayCommand(JsonObject data, const char *cmdId, const char *type) {
     return;
   }
 
-  const char *reason = (strlen(source) > 0) ? source : "manual";
-  setRelay(relayNumber, state, reason, false);
+  setRelay(relayNumber, state, false, false);
+
+  // Bug 3 fix: Saat user mematikan relay 1 manual, reset flag forced agar
+  // checkWarnings tidak memaksa relay nyala kembali
+  if (!state && relayNumber == 1) {
+    relay1ForcedByGas = false;
+    relay1ForcedByTemp = false;
+  }
+
+  // Bug 5 fix: Play voice saat relay diubah dari dashboard (bukan dari schedule/schedule_delete)
+  // Schedule sudah mengirim voice.play terpisah dari worker
+  bool isFromSchedule = (strlen(source) > 0 && strstr(source, "schedule") != NULL);
+  if (!isFromSchedule) {
+    if (relayNumber == 1) {
+      playVoice(state ? TRACK_RELAY1_ON : TRACK_RELAY1_OFF, "relay1_manual");
+    } else if (relayNumber == 2) {
+      playVoice(state ? TRACK_RELAY2_ON : TRACK_RELAY2_OFF, "relay2_manual");
+    }
+  }
 
   if (relayNumber == 1) {
     if (state && autoOffSeconds > 0) {
@@ -1764,12 +1788,7 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
   Serial.printf("[CMD] %s received\n", type);
 
   if (strcmp(type, "relay.set") == 0) handleRelayCommand(data, cmdId, type);
-  else if (strcmp(type, "gasBuzzerWarning.set") == 0) {
-    gasBuzzerWarningEnabled = data["enabled"] | true;
-    saveSettings();
-    publishAck(cmdId, type, true, gasBuzzerWarningEnabled ? "Buzzer Peringatan Gas Aktif" : "Buzzer Peringatan Gas Mati");
-    sendTelemetryNow();
-  } else if (strcmp(type, "gasSensor.set") == 0) {
+  else if (strcmp(type, "gasSensor.set") == 0) {
     gasEnabled = data["enabled"] | true;
     lastGasWarning = false; lastSmokeWarning = false;
     saveSettings();
@@ -1823,6 +1842,11 @@ void handleCommandJson(JsonDocument &doc, const String &topic) {
     eventPayload["state"] = state;
     eventPayload["millis"] = millis();
     publishJson(topicEvent(), eventDoc, false);
+  } else if (strcmp(type, "gasBuzzer.set") == 0) {
+    gasBuzzerEnabled = data["enabled"] | false;
+    saveSettings();
+    publishAck(cmdId, type, true, gasBuzzerEnabled ? "Gas Buzzer ON" : "Gas Buzzer OFF");
+    sendTelemetryNow();
   } else if (strcmp(type, "bluetooth.set") == 0) {
     bool state = data["state"] | false;
     int durationSeconds = data["durationSeconds"] | 0;
@@ -1990,7 +2014,7 @@ void publishTelemetry(int gasRaw, float tempC, bool gasWarning, bool tempWarning
   doc["pirGreetingTrack"] = pirGreetingTrack;
   doc["gasEnabled"] = gasEnabled;
   doc["gasSensorEnabled"] = gasEnabled;
-  doc["gasBuzzerWarningEnabled"] = gasBuzzerWarningEnabled;
+  doc["gasBuzzerEnabled"] = gasBuzzerEnabled;
   doc["tempEnabled"] = tempEnabled;
   doc["tempSensorEnabled"] = tempEnabled;
   char pirStart[6];
@@ -2035,38 +2059,51 @@ void checkWarnings(int gasRaw, float tempC, bool anyGasWarning, bool tempWarning
   bool isGas = gasEnabled && !dfPlayerActiveRecently && gasRaw >= gasThreshold;
   bool isSmoke = gasEnabled && !dfPlayerActiveRecently && gasRaw >= smokeThreshold && gasRaw < gasThreshold;
   bool gasWarning = isGas || isSmoke;
-  bool triggerBuzzer = gasBuzzerWarningEnabled && ((gasWarning && pirDetected) || (gasEnabled && gasRaw >= 1300));
+  // Bug 2 fix: buzzer bunyi langsung saat gas terdeteksi, tanpa syarat PIR
+  bool triggerBuzzer = gasBuzzerEnabled && gasWarning;
 
   if (isGas) {
     setBluetoothAudio(true);
     setRgb(255, 0, 0);
-    if (!relay1State) setRelay(1, true, "gas");
-    relay1ForcedByGas = true;
-    playGasWarningVoice("gas");
 
     if (!lastGasWarning) {
+      // Bug 3 fix: relay hanya dipaksa nyala SEKALI saat pertama kali gas terdeteksi
+      if (!relay1State) setRelay(1, true, false);
+      relay1ForcedByGas = true;
       lastGasWarning = true;
       lastSmokeWarning = false;
       gasStatusStr = "detected";
       smokeStatusStr = "normal";
+      // Bug 1 fix: Play 0005 lalu 0008 HANYA di deteksi pertama
+      playVoice(TRACK_GAS_DETECTED, "gas_detected");
+      pendingVoiceTrack = TRACK_RELAY1_ON;
+      pendingVoicePriority = getVoicePriority("gas_detected");
+      pendingVoiceReason = "relay1_on_gas";
       publishEvent("WARNING", "gas.detected", "Gas terdeteksi!");
       setLcdOverride("GAS TERDETEKSI", "SEGERA PERIKSA!", 5000);
+    } else {
+      // Bug 1 fix: Gas masih tinggi → ulang 0005 saja (dengan cooldown 10s)
+      playGasWarningVoice("gas");
     }
   } 
   else if (isSmoke) {
     setBluetoothAudio(true);
     setRgb(255, 80, 0);
-    if (!relay1State) setRelay(1, true, "gas");
-    relay1ForcedByGas = true;
 
     if (!lastSmokeWarning) {
       lastSmokeWarning = true;
       lastGasWarning = false;
       smokeStatusStr = "detected";
       gasStatusStr = "normal";
-      playGasWarningVoice("smoke");
+      playVoice(TRACK_GAS_DETECTED, "smoke_detected");
+      pendingVoiceTrack = TRACK_RELAY1_ON;
+      pendingVoicePriority = getVoicePriority("smoke_detected");
+      pendingVoiceReason = "relay1_on_smoke";
       publishEvent("WARNING", "smoke.detected", "Asap terdeteksi!");
       setLcdOverride("ASAP TERDETEKSI", "SEGERA PERIKSA!", 5000);
+    } else {
+      // Asap masih tinggi → ulang 0005 saja (dengan cooldown 10s)
+      playGasWarningVoice("smoke");
     }
   } 
   else {
@@ -2080,42 +2117,45 @@ void checkWarnings(int gasRaw, float tempC, bool anyGasWarning, bool tempWarning
       smokeStatusStr = "normal";
       if (relay1ForcedByGas) {
         if (!relay1ForcedByTemp) {
-          setRelay(1, false, "gas");
+          setRelay(1, false, false);
         }
         relay1ForcedByGas = false;
       }
     }
   }
 
-  // Handle buzzer state based on new rules
+  // Bug 2 fix: buzzer logic disederhanakan — bunyi jika gas warning aktif & toggle ON
   if (triggerBuzzer) {
     setBuzzer(true, false);
   } else {
-    if (gasRaw < resetThreshold || (!pirDetected && gasRaw < 1300)) {
-      if (!buzzerManual) {
-        setBuzzer(false, false);
-      }
+    if (!buzzerManual) {
+      setBuzzer(false, false);
     }
   }
 
   if (tempWarning) {
-    if (!relay1State) setRelay(1, true, "temp");
-    relay1ForcedByTemp = true;
     if (!lastTempWarning) {
+      // Bug 3 fix: relay hanya dipaksa nyala SEKALI saat pertama kali suhu melebihi ambang
+      if (!relay1State) setRelay(1, true, false);
+      relay1ForcedByTemp = true;
       lastTempWarning = true;
-      playTemperatureWarningVoice();
+      // Play 0006 (suhu luar ambang) lalu 0008 (stop kontak 1 ON)
+      playVoice(TRACK_TEMP_HIGH, "temperature_warning");
+      pendingVoiceTrack = TRACK_RELAY1_ON;
+      pendingVoicePriority = getVoicePriority("temperature_warning");
+      pendingVoiceReason = "relay1_on_temp";
       publishEvent("WARNING", "temperature.high", "Suhu terdeteksi melebihi ambang batas");
       setLcdOverride("SUHU TINGGI!", "CEK RUANGAN", 5000);
     }
   } else {
     if (lastTempWarning) {
-      publishEvent("INFO", "temperature.normal", "Suhu ruangan kembali normal.");
       playVoice(TRACK_TEMP_NORMAL, "temperature_normal");
+      publishEvent("INFO", "temperature.normal", "Suhu ruangan kembali normal.");
     }
     lastTempWarning = false;
     if (relay1ForcedByTemp) {
       if (!relay1ForcedByGas) {
-        setRelay(1, false, "temp");
+        setRelay(1, false, false);
       }
       relay1ForcedByTemp = false;
     }

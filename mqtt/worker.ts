@@ -138,6 +138,11 @@ client.on("message", async (topic, message) => {
 
     if (messageType === "cmd") {
       console.log(`[Worker] Command published to ${topic}`);
+      // Bug 4 fix: invalidasi cache saat ada perubahan jadwal relay
+      const cmdType = data.type || "";
+      if (cmdType.startsWith("relaySchedule.")) {
+        invalidateSchedulesCache();
+      }
     }
 
     else if (messageType === "status") {
@@ -457,6 +462,13 @@ let cachedAlarmSchedules: any[] = [];
 let lastCacheFetchTime = 0;
 const CACHE_TTL_MS = 30 * 1000; // 30 seconds
 
+// Bug 4 fix: Paksa invalidasi cache saat jadwal dihapus/diubah
+function invalidateSchedulesCache() {
+  lastCacheFetchTime = 0;
+  cachedRelaySchedules = [];
+  console.log("[Worker Cache] Schedule cache invalidated (force refresh on next check).");
+}
+
 async function refreshSchedulesCacheIfNeeded() {
   const now = Date.now();
   if (now - lastCacheFetchTime < CACHE_TTL_MS && cachedRelaySchedules.length > 0) {
@@ -697,6 +709,18 @@ async function checkRelaySchedules() {
 
             client.publish(topic, JSON.stringify(payload), { qos: 1 });
             console.log(`[Worker Schedule] Triggered Relay ${schedule.relayNumber} ON for schedule: ${schedule.name}`);
+            
+            // Play voice track for relay ON (Relay 1 -> 8, Relay 2 -> 10)
+            const voiceTrack = schedule.relayNumber === 1 ? 8 : 10;
+            const voiceCmd = {
+              id: `schedule_relay${schedule.relayNumber}_voice_on_${Date.now()}`,
+              type: "voice.play",
+              payload: {
+                track: voiceTrack,
+                reason: "relay_schedule_on"
+              }
+            };
+            client.publish(topic, JSON.stringify(voiceCmd), { qos: 1 });
 
             // Log event to DB with exact fields requested
             await retryQuery(() => prisma.eventLog.create({
@@ -736,6 +760,18 @@ async function checkRelaySchedules() {
 
             client.publish(topic, JSON.stringify(payload), { qos: 1 });
             console.log(`[Worker Schedule] Triggered Relay ${schedule.relayNumber} OFF for schedule: ${schedule.name}`);
+
+            // Play voice track for relay OFF (Relay 1 -> 9, Relay 2 -> 11)
+            const voiceTrackOff = schedule.relayNumber === 1 ? 9 : 11;
+            const voiceCmdOff = {
+              id: `schedule_relay${schedule.relayNumber}_voice_off_${Date.now()}`,
+              type: "voice.play",
+              payload: {
+                track: voiceTrackOff,
+                reason: "relay_schedule_off"
+              }
+            };
+            client.publish(topic, JSON.stringify(voiceCmdOff), { qos: 1 });
 
             // Log event to DB with exact fields requested
             await retryQuery(() => prisma.eventLog.create({
