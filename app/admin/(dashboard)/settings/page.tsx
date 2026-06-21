@@ -22,8 +22,8 @@ export default function SettingsPage() {
 
       <Panel title="Ambang Sensor" subtitle="Nilai acuan peringatan di dashboard.">
         <div className="grid gap-3">
-          <SettingRow label="Gas MQ-2" value="1800 raw" />
-          <SettingRow label="Suhu Peringatan" value={`${TEMP_WARNING_C} °C`} />
+          <SettingRow label="Gas MQ-2" value={`${ctx.gasThresholdPpm} PPM`} />
+          <SettingRow label="Suhu Pemicu Stop Kontak" value={`${ctx.tempThreshold} °C`} />
           <SettingRow label="Timer LED Alarm" value={`${ctx.boardLedScheduleEnabled ? "Aktif" : "Mati"} - ${BOARD_LED_DURATION_SECONDS} detik`} />
           <SettingRow label="Buzzer" value={ctx.buzzerEnabled ? "Aktif" : "Mati"} />
           <SettingRow label="Alarm Aktif" value={`${ctx.activeAlarms} jadwal`} />

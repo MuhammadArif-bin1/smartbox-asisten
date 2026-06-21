@@ -9,6 +9,7 @@ export function DetailedSensorCard({
   accent,
   icon,
   onReset,
+  threshold,
 }: {
   title: string;
   value: string;
@@ -18,6 +19,7 @@ export function DetailedSensorCard({
   accent: "blue" | "emerald" | "orange";
   icon: React.ReactNode;
   onReset?: () => void;
+  threshold?: string;
 }) {
   const accentBorder = {
     blue: "border-blue-100 hover:border-blue-200",
@@ -34,7 +36,12 @@ export function DetailedSensorCard({
   return (
     <div className={`rounded-3xl border bg-white p-6 shadow-sm transition-shadow duration-200 hover:shadow-md ${accentBorder[accent] || "border-slate-200"} flex flex-col justify-between min-h-[170px]`}>
       <div className="flex items-center justify-between">
-        <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">{title}</span>
+        <div>
+          <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">{title}</span>
+          {threshold && (
+            <p className="text-[10px] font-bold text-slate-500 mt-1 bg-slate-50 border border-slate-100 rounded-lg px-2 py-0.5 max-w-fit">{threshold}</p>
+          )}
+        </div>
         <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ${accentBg[accent]}`}>
           {icon}
         </div>

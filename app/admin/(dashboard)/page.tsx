@@ -23,6 +23,7 @@ export default function MonitoringPage() {
             lastSeen={lastUpdate}
             online={isOnline}
             accent="blue"
+            threshold={isOnline ? `Pemicu Stop Kontak: ${ctx.tempThreshold}°C` : undefined}
             icon={
               <svg className="h-6 w-6 text-blue-600" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M14 4v10.5a4.5 4.5 0 11-4 0V4a2 2 0 114 0z" />
@@ -36,6 +37,7 @@ export default function MonitoringPage() {
             lastSeen={lastUpdate}
             online={isOnline}
             accent="emerald"
+            threshold={isOnline ? `Pemicu Alarm: ${ctx.gasThresholdPpm} PPM` : undefined}
             icon={
               <svg className="h-6 w-6 text-emerald-600" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M17.657 18.585A8 8 0 1120 12c0 2.13-.86 4.03-2.243 5.402z" />

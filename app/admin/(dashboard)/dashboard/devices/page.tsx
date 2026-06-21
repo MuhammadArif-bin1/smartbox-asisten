@@ -246,9 +246,17 @@ export default function DashboardDevicesPage() {
                 </div>
                 {ctx.gasEnabled && isOnline && (
                   <div className="mt-4 border-t border-slate-100 pt-4">
-                    <div className="flex flex-col gap-2 mb-4">
-                      <span className="text-sm font-bold text-slate-500">Ambang Batas Alarm Gas:</span>
-                      <span className="text-blue-600 bg-blue-50 py-2.5 rounded-2xl font-mono font-black text-4xl text-center border border-blue-100 shadow-inner">{ctx.gasThresholdPpm} PPM</span>
+                    <div className="grid grid-cols-2 gap-4 mb-4">
+                      <div className="flex flex-col gap-2">
+                        <span className="text-sm font-bold text-slate-500">Kadar Gas Terkini:</span>
+                        <span className="text-blue-600 bg-blue-50 py-2.5 rounded-2xl font-mono font-black text-4xl text-center border border-blue-100 shadow-inner">
+                          {ctx.gasPpm > 0 ? `${ctx.gasPpm} PPM` : "..."}
+                        </span>
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <span className="text-sm font-bold text-slate-500">Ambang Batas Alarm Gas:</span>
+                        <span className="text-rose-600 bg-rose-50 py-2.5 rounded-2xl font-mono font-black text-4xl text-center border border-rose-100 shadow-inner">{ctx.gasThresholdPpm} PPM</span>
+                      </div>
                     </div>
                     <input
                       type="range"
@@ -256,12 +264,20 @@ export default function DashboardDevicesPage() {
                       max="50"
                       value={ctx.gasThresholdPpm}
                       onChange={(e) => ctx.updateGasThreshold(Number(e.target.value))}
-                      className="w-full h-4 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-blue-600"
+                      className="w-full h-4 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-rose-600"
                     />
                     <div className="flex justify-between text-xs text-slate-500 font-bold mt-2 font-mono">
                       <span>5 PPM</span>
                       <span className="text-slate-400 font-semibold">21 PPM (Default)</span>
                       <span>50 PPM</span>
+                    </div>
+
+                    <div className="mt-4 border-t border-slate-100 pt-4 flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-bold text-slate-900">Buzzer Peringatan Gas</p>
+                        <p className="text-xs text-slate-500">Bunyi alarm lokal saat bahaya gas terdeteksi.</p>
+                      </div>
+                      <Switch checked={ctx.gasBuzzerWarningEnabled} onChange={ctx.toggleGasBuzzerWarning} disabled={!isOnline} />
                     </div>
                   </div>
                 )}
@@ -278,9 +294,17 @@ export default function DashboardDevicesPage() {
                 </div>
                 {ctx.temperatureEnabled && isOnline && (
                   <div className="mt-4 border-t border-slate-100 pt-4">
-                    <div className="flex flex-col gap-2 mb-4">
-                      <span className="text-sm font-bold text-slate-500">Suhu Pemicu Stop Kontak:</span>
-                      <span className="text-rose-600 bg-rose-50 py-2.5 rounded-2xl font-mono font-black text-4xl text-center border border-rose-100 shadow-inner">{ctx.tempThreshold}°C</span>
+                    <div className="grid grid-cols-2 gap-4 mb-4">
+                      <div className="flex flex-col gap-2">
+                        <span className="text-sm font-bold text-slate-500">Suhu Terkini:</span>
+                        <span className="text-blue-600 bg-blue-50 py-2.5 rounded-2xl font-mono font-black text-4xl text-center border border-blue-100 shadow-inner">
+                          {ctx.visibleTempEstimate > 0 ? `${ctx.visibleTempEstimate.toFixed(1)}°C` : "..."}
+                        </span>
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <span className="text-sm font-bold text-slate-500">Suhu Pemicu Stop Kontak:</span>
+                        <span className="text-rose-600 bg-rose-50 py-2.5 rounded-2xl font-mono font-black text-4xl text-center border border-rose-100 shadow-inner">{ctx.tempThreshold}°C</span>
+                      </div>
                     </div>
                     <input
                       type="range"

@@ -154,7 +154,7 @@ function Header() {
           </h1>
         </div>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-          {!pathname.startsWith("/admin/dashboard") && <HeaderClock />}
+          <HeaderClock />
 
           <div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 shadow-sm">
             <div className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-600 font-bold text-white text-sm">A</div>

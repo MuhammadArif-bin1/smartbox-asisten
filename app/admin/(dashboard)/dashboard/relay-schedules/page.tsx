@@ -41,10 +41,50 @@ export default function RelaySchedulesPage() {
     }
   }, [editingSchedule]);
 
+  const formatTimeInput = (val: string): string => {
+    const clean = val.replace(/\D/g, "").slice(0, 4);
+    if (clean.length === 0) return "";
+    
+    let hh = clean.slice(0, 2);
+    let mm = clean.slice(2);
+    
+    if (hh.length > 0) {
+      let hNum = parseInt(hh, 10);
+      if (hNum > 24) hNum = 24;
+      hh = hNum.toString().padStart(hh.length, "0");
+    }
+    
+    if (mm.length > 0) {
+      let mNum = parseInt(mm, 10);
+      if (parseInt(hh, 10) === 24) {
+        mNum = 0;
+      } else if (mNum > 59) {
+        mNum = 59;
+      }
+      mm = mNum.toString().padStart(mm.length, "0");
+    }
+    
+    if (clean.length <= 2) {
+      return hh;
+    }
+    return `${hh}:${mm}`;
+  };
+
+  const isValidTime = (time: string) => {
+    if (!/^\d{2}:\d{2}$/.test(time)) return false;
+    const [h, m] = time.split(":").map(Number);
+    if (h === 24 && m === 0) return true;
+    return h >= 0 && h < 24 && m >= 0 && m < 60;
+  };
+
   const handleSchSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!schName.trim()) {
       ctx.notify("Nama jadwal wajib diisi", "error");
+      return;
+    }
+    if (!isValidTime(schStart) || !isValidTime(schEnd)) {
+      ctx.notify("Format waktu mulai/selesai harus HH:MM (maks 24:00)", "error");
       return;
     }
     await ctx.saveRelaySchedule({
@@ -141,26 +181,40 @@ export default function RelaySchedulesPage() {
           <form onSubmit={handleSchSubmit} className="grid gap-4">
             <label className="grid gap-2">
               <span className="text-sm font-bold text-slate-500">Nama Jadwal</span>
-              <input type="text" value={schName} onChange={(e) => setSchName(e.target.value)} placeholder="Misal: Charger Laptop Malam" className="h-12 rounded-xl border border-slate-200 bg-white px-4 text-sm outline-none focus:border-blue-500 font-medium" />
+              <input type="text" value={schName} onChange={(e) => setSchName(e.target.value)} placeholder="Misal: Charger Laptop Malam" className="h-12 rounded-xl border border-slate-200 bg-white px-4 text-sm outline-none focus:border-blue-500 font-bold" />
             </label>
-            <div className="grid grid-cols-2 gap-3">
+            <label className="grid gap-2">
+              <span className="text-sm font-bold text-slate-500">Stop Kontak</span>
+              <select value={schRelay} onChange={(e) => setSchRelay(Number(e.target.value))} className="h-12 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold outline-none focus:border-blue-500">
+                <option value={1}>{ctx.relay1Label}</option>
+                <option value={2}>{ctx.relay2Label}</option>
+              </select>
+            </label>
+            <div className="grid grid-cols-2 gap-12 max-w-[60%] mx-auto w-full">
               <label className="grid gap-2">
-                <span className="text-sm font-bold text-slate-500">Stop Kontak</span>
-                <select value={schRelay} onChange={(e) => setSchRelay(Number(e.target.value))} className="h-12 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold outline-none focus:border-blue-500">
-                  <option value={1}>{ctx.relay1Label}</option>
-                  <option value={2}>{ctx.relay2Label}</option>
-                </select>
+                <span className="text-sm font-bold text-slate-500">Mulai</span>
+                <input
+                  type="text"
+                  maxLength={5}
+                  value={schStart}
+                  onChange={(e) => setSchStart(formatTimeInput(e.target.value))}
+                  placeholder="08:00"
+                  className="h-12 w-full min-w-0 rounded-xl border border-slate-200 bg-white px-3 outline-none focus:border-blue-500 font-bold font-mono text-center shadow-inner"
+                  style={{ fontSize: "1.35rem", letterSpacing: "0.22em" }}
+                />
               </label>
-              <div className="grid grid-cols-2 gap-2">
-                <label className="grid gap-2">
-                  <span className="text-sm font-bold text-slate-500">Mulai</span>
-                  <input type="time" value={schStart} onChange={(e) => setSchStart(e.target.value)} className="h-12 rounded-xl border border-slate-200 bg-white px-2 text-sm outline-none focus:border-blue-500 font-bold text-center" />
-                </label>
-                <label className="grid gap-2">
-                  <span className="text-sm font-bold text-slate-500">Selesai</span>
-                  <input type="time" value={schEnd} onChange={(e) => setSchEnd(e.target.value)} className="h-12 rounded-xl border border-slate-200 bg-white px-2 text-sm outline-none focus:border-blue-500 font-bold text-center" />
-                </label>
-              </div>
+              <label className="grid gap-2">
+                <span className="text-sm font-bold text-slate-500">Selesai</span>
+                <input
+                  type="text"
+                  maxLength={5}
+                  value={schEnd}
+                  onChange={(e) => setSchEnd(formatTimeInput(e.target.value))}
+                  placeholder="18:00"
+                  className="h-12 w-full min-w-0 rounded-xl border border-slate-200 bg-white px-3 outline-none focus:border-blue-500 font-bold font-mono text-center shadow-inner"
+                  style={{ fontSize: "1.35rem", letterSpacing: "0.22em" }}
+                />
+              </label>
             </div>
             <div className="grid gap-2">
               <span className="text-sm font-bold text-slate-500">Hari Operasional</span>

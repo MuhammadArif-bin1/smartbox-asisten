@@ -65,6 +65,7 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
   const [lastCommand, setLastCommand] = useState("Belum ada command dikirim");
   const [voiceMode, setVoiceMode] = useState(true);
   const [buzzerEnabled, _setBuzzerEnabled] = useState(false);
+  const [gasBuzzerWarningEnabled, setGasBuzzerWarningEnabled] = useState(true);
   const [boardLedScheduleEnabled, setBoardLedScheduleEnabled] = useState(true);
 
   /* ── Relay ── */
@@ -128,7 +129,7 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
   const gasPercent = Math.round((visibleGasEstimate / 4095) * 100);
   const tempPercent = Math.round((visibleTempEstimate / 50) * 100);
   const gasWarning = hasGasSensor && gasEnabled && (gasLevel === "bahaya" || gasLevel === "waspada" || visibleGasEstimate >= GAS_WARNING_RAW);
-  const tempWarning = hasTempSensor && temperatureEnabled && visibleTempEstimate > TEMP_WARNING_C;
+  const tempWarning = hasTempSensor && temperatureEnabled && visibleTempEstimate > tempThreshold;
   const gasState = !hasGasSensor ? "Tidak Terhubung" : (gasEnabled ? (gasLevel === "bahaya" ? "Bahaya" : (gasLevel === "waspada" ? "Waspada" : "Aman")) : "Nonaktif");
   const tempState = !hasTempSensor ? "Tidak Terhubung" : (temperatureEnabled ? (tempWarning ? "Peringatan" : "Aman") : "Nonaktif");
   const mqttOnline = mqttRealtime === "online" || mqttApiOnline;
@@ -376,6 +377,12 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
     sensorPendingRef.current.temperature = Date.now();
     if (next && tempEstimate === 0) setTempEstimate(35);
     sendDeviceCommand("tempSensor.set", { enabled: next }, `Sensor suhu ${next ? "aktif" : "mati"}`);
+  }
+
+  function toggleGasBuzzerWarning() {
+    const next = !gasBuzzerWarningEnabled;
+    setGasBuzzerWarningEnabled(next);
+    sendDeviceCommand("gasBuzzerWarning.set", { enabled: next }, `Buzzer gas ${next ? "aktif" : "mati"}`);
   }
 
   async function updateGasThreshold(ppm: number) {
@@ -628,6 +635,7 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
             if (typeof telemetry.temperatureC === "number") setTempEstimate(roundTemperature(telemetry.temperatureC));
             if (typeof telemetry.gasThresholdPpm === "number") setGasThresholdPpm(telemetry.gasThresholdPpm);
             if (typeof telemetry.tempThreshold === "number") setTempThreshold(telemetry.tempThreshold);
+            if (typeof telemetry.gasBuzzerWarningEnabled === "boolean") setGasBuzzerWarningEnabled(telemetry.gasBuzzerWarningEnabled);
             if (typeof telemetry.flameDetected === "boolean") setFlameDetected(telemetry.flameDetected);
             if (typeof telemetry.pirDetected === "boolean") setPirDetected(telemetry.pirDetected);
             if (typeof telemetry.obstacleNear === "boolean") setObstacleNear(telemetry.obstacleNear);
@@ -1030,7 +1038,7 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!isAuthenticated) return;
-    const isWarning = gasWarning || tempWarning;
+    const isWarning = gasWarning;
     if (!isWarning) return;
 
     let audioCtx: AudioContext | null = null;
@@ -1108,9 +1116,9 @@ export function SmartboxProvider({ children }: { children: ReactNode }) {
     relayState, relayAutoOffAt, relayActiveCount, relaySchedules,
     relay1Label, relay2Label, saveRelay1Label, saveRelay2Label,
     alarms, alarmSchedules, activeAlarms,
-    mqttOnline, status, lastCommand, voiceMode, buzzerEnabled, boardLedScheduleEnabled,
+    mqttOnline, status, lastCommand, voiceMode, buzzerEnabled, gasBuzzerWarningEnabled, boardLedScheduleEnabled,
     events, toast, notify, setToast,
-    publish, sendDeviceCommand, toggleGas, toggleTemperature, toggleRelay, togglePir, toggleSleepMode,
+    publish, sendDeviceCommand, toggleGas, toggleTemperature, toggleGasBuzzerWarning, toggleRelay, togglePir, toggleSleepMode,
     updateAlarm, updateGasThreshold, updateTempThreshold, setBuzzerEnabled, setBoardLedScheduleEnabled, setVoiceMode, updatePirGreetingConfig,
     saveRelaySchedule, deleteRelaySchedule,
     saveGreetingVoiceSchedule, deleteGreetingVoiceSchedule, toggleGreetingVoiceScheduleActive,

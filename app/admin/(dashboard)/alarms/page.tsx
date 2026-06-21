@@ -107,10 +107,50 @@ export default function AlarmsPage() {
     }
   }, [editingSchedule]);
 
+  const formatTimeInput = (val: string): string => {
+    const clean = val.replace(/\D/g, "").slice(0, 4);
+    if (clean.length === 0) return "";
+    
+    let hh = clean.slice(0, 2);
+    let mm = clean.slice(2);
+    
+    if (hh.length > 0) {
+      let hNum = parseInt(hh, 10);
+      if (hNum > 24) hNum = 24;
+      hh = hNum.toString().padStart(hh.length, "0");
+    }
+    
+    if (mm.length > 0) {
+      let mNum = parseInt(mm, 10);
+      if (parseInt(hh, 10) === 24) {
+        mNum = 0;
+      } else if (mNum > 59) {
+        mNum = 59;
+      }
+      mm = mNum.toString().padStart(mm.length, "0");
+    }
+    
+    if (clean.length <= 2) {
+      return hh;
+    }
+    return `${hh}:${mm}`;
+  };
+
+  const isValidTime = (time: string) => {
+    if (!/^\d{2}:\d{2}$/.test(time)) return false;
+    const [h, m] = time.split(":").map(Number);
+    if (h === 24 && m === 0) return true;
+    return h >= 0 && h < 24 && m >= 0 && m < 60;
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formName.trim()) {
       ctx.notify("Nama pengingat wajib diisi", "error");
+      return;
+    }
+    if (!isValidTime(formTime)) {
+      ctx.notify("Format jam alarm harus HH:MM (maks 24:00)", "error");
       return;
     }
     await ctx.onSaveSchedule({
@@ -133,6 +173,10 @@ export default function AlarmsPage() {
     e.preventDefault();
     if (!greetingName.trim()) {
       ctx.notify("Nama jadwal greeting wajib diisi", "error");
+      return;
+    }
+    if (!isValidTime(greetingStart) || !isValidTime(greetingEnd)) {
+      ctx.notify("Format waktu mulai/selesai sapa harus HH:MM (maks 24:00)", "error");
       return;
     }
     const finalCooldown = greetingCooldownMode === "default" ? 0 : greetingCooldown;
@@ -498,34 +542,37 @@ export default function AlarmsPage() {
                   value={formName} 
                   onChange={(e) => setFormName(e.target.value)} 
                   placeholder="Misal: Pengingat Pagi" 
-                  className="h-12 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all" 
+                  className="h-12 rounded-xl border border-slate-200 bg-white px-4 text-sm font-bold outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all" 
                 />
               </label>
               
-              <div className="grid grid-cols-2 gap-4">
+              <label className="grid gap-2">
+                <span className="text-sm font-bold text-slate-500">Track DFPlayer</span>
+                <select 
+                  value={formTrack} 
+                  onChange={(e) => setFormTrack(Number(e.target.value))} 
+                  className="h-12 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all cursor-pointer"
+                >
+                  {audioTracks.map((track) => (
+                    <option key={track.id} value={track.id}>
+                      {String(track.id).padStart(4, "0")} - {track.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              
+              <div className="grid grid-cols-1 max-w-[60%] mx-auto w-full">
                 <label className="grid gap-2">
-                  <span className="text-sm font-bold text-slate-500">Jam Alarm (24 Jam)</span>
+                  <span className="text-sm font-bold text-slate-500 text-center">Jam Alarm (24 Jam)</span>
                   <input 
-                    type="time" 
+                    type="text" 
+                    maxLength={5}
                     value={formTime} 
-                    onChange={(e) => setFormTime(e.target.value)} 
-                    className="h-12 rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all" 
+                    onChange={(e) => setFormTime(formatTimeInput(e.target.value))} 
+                    placeholder="08:00"
+                    className="h-12 w-full min-w-0 rounded-xl border border-slate-200 bg-white px-3 outline-none focus:border-blue-500 font-extrabold font-mono text-center shadow-inner" 
+                    style={{ fontSize: "1.35rem", letterSpacing: "0.22em" }}
                   />
-                </label>
-                
-                <label className="grid gap-2">
-                  <span className="text-sm font-bold text-slate-500">Track DFPlayer</span>
-                  <select 
-                    value={formTrack} 
-                    onChange={(e) => setFormTrack(Number(e.target.value))} 
-                    className="h-12 rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all cursor-pointer"
-                  >
-                    {audioTracks.map((track) => (
-                      <option key={track.id} value={track.id}>
-                        {String(track.id).padStart(4, "0")} - {track.label}
-                      </option>
-                    ))}
-                  </select>
                 </label>
               </div>
               
@@ -661,28 +708,34 @@ export default function AlarmsPage() {
                   value={greetingName} 
                   onChange={(e) => setGreetingName(e.target.value)} 
                   placeholder="Misal: Sapaan Tamu Siang" 
-                  className="h-12 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all" 
+                  className="h-12 rounded-xl border border-slate-200 bg-white px-4 text-sm font-bold outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all" 
                 />
               </label>
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-2 gap-12 max-w-[60%] mx-auto w-full">
                 <label className="grid gap-2">
                   <span className="text-sm font-bold text-slate-500">Jam Mulai Sapa</span>
                   <input 
-                    type="time" 
+                    type="text"
+                    maxLength={5}
                     value={greetingStart} 
-                    onChange={(e) => setGreetingStart(e.target.value)} 
-                    className="h-12 rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all" 
+                    onChange={(e) => setGreetingStart(formatTimeInput(e.target.value))} 
+                    placeholder="07:00"
+                    className="h-12 w-full min-w-0 rounded-xl border border-slate-200 bg-white px-3 outline-none focus:border-blue-500 font-extrabold font-mono text-center shadow-inner" 
+                    style={{ fontSize: "1.35rem", letterSpacing: "0.22em" }}
                   />
                 </label>
 
                 <label className="grid gap-2">
                   <span className="text-sm font-bold text-slate-500">Jam Selesai Sapa</span>
                   <input 
-                    type="time" 
+                    type="text"
+                    maxLength={5}
                     value={greetingEnd} 
-                    onChange={(e) => setGreetingEnd(e.target.value)} 
-                    className="h-12 rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all" 
+                    onChange={(e) => setGreetingEnd(formatTimeInput(e.target.value))} 
+                    placeholder="22:00"
+                    className="h-12 w-full min-w-0 rounded-xl border border-slate-200 bg-white px-3 outline-none focus:border-blue-500 font-extrabold font-mono text-center shadow-inner" 
+                    style={{ fontSize: "1.35rem", letterSpacing: "0.22em" }}
                   />
                 </label>
               </div>

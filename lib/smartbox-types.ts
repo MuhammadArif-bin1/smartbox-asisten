@@ -86,6 +86,7 @@ export type TelemetryPayload = {
   bluetoothRelay?: boolean;
   ampRelay?: boolean;
   buzzer?: boolean;
+  gasBuzzerWarningEnabled?: boolean;
   online?: boolean;
   gasLevel?: string;
   gasDetected?: boolean;
@@ -197,6 +198,7 @@ export type SmartboxContextValue = {
   lastCommand: string;
   voiceMode: boolean;
   buzzerEnabled: boolean;
+  gasBuzzerWarningEnabled: boolean;
   boardLedScheduleEnabled: boolean;
 
   /* events */
@@ -211,6 +213,7 @@ export type SmartboxContextValue = {
   sendDeviceCommand: (type: string, payload: Record<string, unknown>, label: string, successMsg?: string, errorMsg?: string) => Promise<boolean>;
   toggleGas: () => void;
   toggleTemperature: () => void;
+  toggleGasBuzzerWarning: () => void;
   toggleRelay: (relayId: RelayId) => Promise<void>;
   togglePir: () => void;
   toggleSleepMode: () => void;
