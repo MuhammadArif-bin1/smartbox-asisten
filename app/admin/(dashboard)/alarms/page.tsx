@@ -110,16 +110,16 @@ export default function AlarmsPage() {
   const formatTimeInput = (val: string): string => {
     const clean = val.replace(/\D/g, "").slice(0, 4);
     if (clean.length === 0) return "";
-    
+
     let hh = clean.slice(0, 2);
     let mm = clean.slice(2);
-    
+
     if (hh.length > 0) {
       let hNum = parseInt(hh, 10);
       if (hNum > 24) hNum = 24;
       hh = hNum.toString().padStart(hh.length, "0");
     }
-    
+
     if (mm.length > 0) {
       let mNum = parseInt(mm, 10);
       if (parseInt(hh, 10) === 24) {
@@ -129,7 +129,7 @@ export default function AlarmsPage() {
       }
       mm = mNum.toString().padStart(mm.length, "0");
     }
-    
+
     if (clean.length <= 2) {
       return hh;
     }
@@ -215,7 +215,7 @@ export default function AlarmsPage() {
     }
     if (parsed.length === 7) return "Setiap Hari";
     if (parsed.length === 0) return "Tidak Ada Hari";
-    
+
     const dayMap: Record<string, string> = {
       monday: "Sen",
       tuesday: "Sel",
@@ -225,7 +225,7 @@ export default function AlarmsPage() {
       saturday: "Sab",
       sunday: "Min"
     };
-    
+
     return parsed.map(d => dayMap[d] || d).join(", ");
   };
 
@@ -236,164 +236,160 @@ export default function AlarmsPage() {
 
       {/* Main Content Layout */}
       <div className="grid gap-6 lg:grid-cols-[3fr_2fr]">
-        
+
         {/* Left Column: DFPlayer Schedules List */}
         <div className="grid gap-6">
-          <Panel 
-            title="Jadwal Alarm DFPlayer" 
+          <Panel
+            title="Jadwal Alarm DFPlayer"
             subtitle="Jadwal alarm otomatis untuk suara/sapaan otomatis melalui DFPlayer."
           >
-          <div className="grid gap-4">
-            {ctx.alarmSchedules.length === 0 ? (
-              <div className="text-center py-16 border-2 border-dashed border-slate-200/80 rounded-3xl bg-slate-50/50 flex flex-col items-center justify-center p-6">
-                <div className="p-4 bg-slate-100 rounded-full text-slate-400 mb-4">
-                  <svg className="h-8 w-8" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.5">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
-                  </svg>
-                </div>
-                <h3 className="text-base font-extrabold text-slate-800">Belum Ada Jadwal Alarm</h3>
-                <p className="text-sm text-slate-500 mt-1 max-w-[280px] leading-relaxed">
-                  Jadwalkan pemutaran audio otomatis dari DFPlayer melalui panel pembuatan di samping.
-                </p>
-              </div>
-            ) : (
-              ctx.alarmSchedules.map((sch) => {
-                const trackInfo = audioTracks.find((t) => t.id === sch.track);
-                const isCurrentlyEditing = editingSchedule?.id === sch.id;
-                
-                return (
-                  <div 
-                    key={sch.id} 
-                    className={`flex flex-col sm:flex-row justify-between sm:items-center gap-4 rounded-3xl border p-5 shadow-sm transition-all duration-300 ${
-                      isCurrentlyEditing 
-                        ? "border-blue-500 bg-blue-50/20 ring-4 ring-blue-500/10" 
-                        : "border-slate-100 bg-white hover:border-slate-200 hover:shadow-md"
-                    }`}
-                  >
-                    <div className="flex items-start sm:items-center gap-4 min-w-0 flex-1">
-                      {/* Digital Clock Box */}
-                      <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-blue-50 text-blue-600 font-mono text-xl font-black border border-blue-100 shadow-inner">
-                        {sch.time}
-                      </div>
-                      
-                      {/* Details */}
-                      <div className="min-w-0 flex-1">
-                        <p className="text-base font-extrabold text-slate-900 truncate tracking-tight">{sch.name}</p>
-                        <div className="text-xs font-semibold text-slate-500 truncate mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
-                          <span className="inline-block px-2 py-0.5 bg-slate-100 rounded text-[10px] font-bold text-slate-600">
-                            Track {String(sch.track).padStart(4, "0")}
-                          </span>
-                          <span className="text-slate-300">•</span>
-                          <span className="truncate text-slate-700">{trackInfo?.label || "Unknown Track"}</span>
-                        </div>
-
-                        <div className="text-xs font-semibold mt-2 flex flex-wrap items-center gap-x-2 gap-y-1.5">
-                          <span className="inline-flex items-center gap-1.5 text-blue-600 font-bold bg-blue-50/50 px-2 py-1 rounded-lg text-[10px] border border-blue-100/50">
-                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 0 1 2.25-2.25h13.5A2.25 2.25 0 0 1 21 7.5v11.25m-18 0A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75m-18 0v-7.5A2.25 2.25 0 0 1 5.25 9h13.5A2.25 2.25 0 0 1 21 11.25v7.5" />
-                            </svg>
-                            {getDaysDisplay(sch.days)}
-                          </span>
-
-                          {sch.buzzerActive && (
-                            <span className="inline-flex items-center gap-1.5 text-amber-600 font-bold bg-amber-50/50 px-2 py-1 rounded-lg text-[10px] border border-amber-100/50">
-                              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a9.041 9.041 0 0 1-9.718-3.866m9.718 3.866A9.041 9.041 0 0 0 18 12.067V9.75M12 21h.008v.008H12V21Zm.008-.006H12v.006h.008v-.006Zm-.008 0h-.006v.006H12v-.006Zm0 0v-.006H12v.006h-.008v-.006Z" />
-                              </svg>
-                              Buzzer {sch.buzzerDuration}s (Delay {sch.buzzerDelay}s)
-                            </span>
-                          )}
-
-                          {sch.repeatCount && sch.repeatCount > 1 && (
-                            <span className="inline-flex items-center gap-1.5 text-emerald-600 font-bold bg-emerald-50/50 px-2 py-1 rounded-lg text-[10px] border border-emerald-100/50">
-                              Ulang {sch.repeatCount}x (Jeda {sch.repeatDelay}s)
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                    
-                    {/* Status and Action Buttons */}
-                    <div className="flex items-center justify-between sm:justify-end gap-4 border-t sm:border-0 pt-4 sm:pt-0">
-                      {/* Active Status Tag */}
-                      <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold border transition-colors ${
-                        sch.active 
-                          ? "bg-emerald-50 text-emerald-700 border-emerald-200" 
-                          : "bg-slate-50 text-slate-400 border-slate-200"
-                      }`}>
-                        <span className={`h-1.5 w-1.5 rounded-full ${sch.active ? "bg-emerald-500 animate-pulse" : "bg-slate-300"}`} />
-                        {sch.active ? "Aktif" : "Nonaktif"}
-                      </span>
-                      
-                      {/* Action Button Group */}
-                      <div className="flex items-center gap-2">
-                        {/* Toggle Active Button */}
-                        <button 
-                          onClick={() => ctx.onToggleScheduleActive(sch.id, sch.active)} 
-                          className={`h-10 w-10 rounded-xl flex items-center justify-center transition-all border shadow-sm active:scale-95 ${
-                            sch.active 
-                              ? "bg-slate-50 text-slate-600 hover:bg-slate-100 border-slate-200" 
-                              : "bg-blue-50 text-blue-600 hover:bg-blue-100 border-blue-200"
-                          }`}
-                          title={sch.active ? "Nonaktifkan" : "Aktifkan"} 
-                          type="button"
-                        >
-                          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M5.636 18.364a9 9 0 010-12.728m12.728 0a9 9 0 010 12.728M12 3v9" />
-                          </svg>
-                        </button>
-                        
-                        {/* Edit Button */}
-                        <button 
-                          onClick={() => setEditingSchedule(sch)} 
-                          className={`h-10 w-10 rounded-xl border flex items-center justify-center transition-all active:scale-95 ${
-                            isCurrentlyEditing 
-                              ? "bg-blue-600 text-white border-blue-600 shadow-md shadow-blue-500/15" 
-                              : "bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100"
-                          }`}
-                          title="Edit" 
-                          type="button"
-                        >
-                          <svg className="w-4.5 h-4.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                          </svg>
-                        </button>
-                        
-                        {/* Test Play Button */}
-                        <button 
-                          onClick={() => ctx.onTestPlayVoice(sch.track)} 
-                          className="h-10 w-10 rounded-xl bg-emerald-50 text-emerald-600 border border-emerald-200 flex items-center justify-center hover:bg-emerald-100 hover:text-emerald-700 transition-all active:scale-95"
-                          title="Uji Putar Suara" 
-                          type="button"
-                        >
-                          <svg className="w-4.5 h-4.5 fill-current" viewBox="0 0 24 24">
-                            <path d="M8 5v14l11-7z" />
-                          </svg>
-                        </button>
-                        
-                        {/* Delete Button */}
-                        <button 
-                          onClick={() => ctx.onDeleteSchedule(sch.id)} 
-                          className="h-10 w-10 rounded-xl bg-red-50 text-red-600 border border-red-200 flex items-center justify-center hover:bg-red-100 hover:text-red-700 transition-all active:scale-95"
-                          title="Hapus" 
-                          type="button"
-                        >
-                          <svg className="w-4.5 h-4.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                          </svg>
-                        </button>
-                      </div>
-                    </div>
+            <div className="grid gap-4">
+              {ctx.alarmSchedules.length === 0 ? (
+                <div className="text-center py-16 border-2 border-dashed border-slate-200/80 rounded-3xl bg-slate-50/50 flex flex-col items-center justify-center p-6">
+                  <div className="p-4 bg-slate-100 rounded-full text-slate-400 mb-4">
+                    <svg className="h-8 w-8" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.5">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+                    </svg>
                   </div>
-                );
-              })
-            )}
-          </div>
-        </Panel>
+                  <h3 className="text-base font-extrabold text-slate-800">Belum Ada Jadwal Alarm</h3>
+                  <p className="text-sm text-slate-500 mt-1 max-w-[280px] leading-relaxed">
+                    Jadwalkan pemutaran audio otomatis dari DFPlayer melalui panel pembuatan di samping.
+                  </p>
+                </div>
+              ) : (
+                ctx.alarmSchedules.map((sch) => {
+                  const trackInfo = audioTracks.find((t) => t.id === sch.track);
+                  const isCurrentlyEditing = editingSchedule?.id === sch.id;
+
+                  return (
+                    <div
+                      key={sch.id}
+                      className={`flex flex-col sm:flex-row justify-between sm:items-center gap-4 rounded-3xl border p-5 shadow-sm transition-all duration-300 ${isCurrentlyEditing
+                          ? "border-blue-500 bg-blue-50/20 ring-4 ring-blue-500/10"
+                          : "border-slate-100 bg-white hover:border-slate-200 hover:shadow-md"
+                        }`}
+                    >
+                      <div className="flex items-start sm:items-center gap-4 min-w-0 flex-1">
+                        {/* Digital Clock Box */}
+                        <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-blue-50 text-blue-600 font-mono text-xl font-black border border-blue-100 shadow-inner">
+                          {sch.time}
+                        </div>
+
+                        {/* Details */}
+                        <div className="min-w-0 flex-1">
+                          <p className="text-base font-extrabold text-slate-900 truncate tracking-tight">{sch.name}</p>
+                          <div className="text-xs font-semibold text-slate-500 truncate mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+                            <span className="inline-block px-2 py-0.5 bg-slate-100 rounded text-[10px] font-bold text-slate-600">
+                              Track {String(sch.track).padStart(4, "0")}
+                            </span>
+                            <span className="text-slate-300">•</span>
+                            <span className="truncate text-slate-700">{trackInfo?.label || "Unknown Track"}</span>
+                          </div>
+
+                          <div className="text-xs font-semibold mt-2 flex flex-wrap items-center gap-x-2 gap-y-1.5">
+                            <span className="inline-flex items-center gap-1.5 text-blue-600 font-bold bg-blue-50/50 px-2 py-1 rounded-lg text-[10px] border border-blue-100/50">
+                              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 0 1 2.25-2.25h13.5A2.25 2.25 0 0 1 21 7.5v11.25m-18 0A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75m-18 0v-7.5A2.25 2.25 0 0 1 5.25 9h13.5A2.25 2.25 0 0 1 21 11.25v7.5" />
+                              </svg>
+                              {getDaysDisplay(sch.days)}
+                            </span>
+
+                            {sch.buzzerActive && (
+                              <span className="inline-flex items-center gap-1.5 text-amber-600 font-bold bg-amber-50/50 px-2 py-1 rounded-lg text-[10px] border border-amber-100/50">
+                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a9.041 9.041 0 0 1-9.718-3.866m9.718 3.866A9.041 9.041 0 0 0 18 12.067V9.75M12 21h.008v.008H12V21Zm.008-.006H12v.006h.008v-.006Zm-.008 0h-.006v.006H12v-.006Zm0 0v-.006H12v.006h-.008v-.006Z" />
+                                </svg>
+                                Buzzer {sch.buzzerDuration}s (Delay {sch.buzzerDelay}s)
+                              </span>
+                            )}
+
+                            {sch.repeatCount && sch.repeatCount > 1 && (
+                              <span className="inline-flex items-center gap-1.5 text-emerald-600 font-bold bg-emerald-50/50 px-2 py-1 rounded-lg text-[10px] border border-emerald-100/50">
+                                Ulang {sch.repeatCount}x (Jeda {sch.repeatDelay}s)
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Status and Action Buttons */}
+                      <div className="flex items-center justify-between sm:justify-end gap-4 border-t sm:border-0 pt-4 sm:pt-0">
+                        {/* Active Status Tag */}
+                        <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold border transition-colors ${sch.active
+                            ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                            : "bg-slate-50 text-slate-400 border-slate-200"
+                          }`}>
+                          <span className={`h-1.5 w-1.5 rounded-full ${sch.active ? "bg-emerald-500 animate-pulse" : "bg-slate-300"}`} />
+                          {sch.active ? "Aktif" : "Nonaktif"}
+                        </span>
+
+                        {/* Action Button Group */}
+                        <div className="flex items-center gap-2">
+                          {/* Toggle Active Button */}
+                          <button
+                            onClick={() => ctx.onToggleScheduleActive(sch.id, sch.active)}
+                            className={`h-10 w-10 rounded-xl flex items-center justify-center transition-all border shadow-sm active:scale-95 ${sch.active
+                                ? "bg-slate-50 text-slate-600 hover:bg-slate-100 border-slate-200"
+                                : "bg-blue-50 text-blue-600 hover:bg-blue-100 border-blue-200"
+                              }`}
+                            title={sch.active ? "Nonaktifkan" : "Aktifkan"}
+                            type="button"
+                          >
+                            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M5.636 18.364a9 9 0 010-12.728m12.728 0a9 9 0 010 12.728M12 3v9" />
+                            </svg>
+                          </button>
+
+                          {/* Edit Button */}
+                          <button
+                            onClick={() => setEditingSchedule(sch)}
+                            className={`h-10 w-10 rounded-xl border flex items-center justify-center transition-all active:scale-95 ${isCurrentlyEditing
+                                ? "bg-blue-600 text-white border-blue-600 shadow-md shadow-blue-500/15"
+                                : "bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100"
+                              }`}
+                            title="Edit"
+                            type="button"
+                          >
+                            <svg className="w-4.5 h-4.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                            </svg>
+                          </button>
+
+                          {/* Test Play Button */}
+                          <button
+                            onClick={() => ctx.onTestPlayVoice(sch.track)}
+                            className="h-10 w-10 rounded-xl bg-emerald-50 text-emerald-600 border border-emerald-200 flex items-center justify-center hover:bg-emerald-100 hover:text-emerald-700 transition-all active:scale-95"
+                            title="Uji Putar Suara"
+                            type="button"
+                          >
+                            <svg className="w-4.5 h-4.5 fill-current" viewBox="0 0 24 24">
+                              <path d="M8 5v14l11-7z" />
+                            </svg>
+                          </button>
+
+                          {/* Delete Button */}
+                          <button
+                            onClick={() => ctx.onDeleteSchedule(sch.id)}
+                            className="h-10 w-10 rounded-xl bg-red-50 text-red-600 border border-red-200 flex items-center justify-center hover:bg-red-100 hover:text-red-700 transition-all active:scale-95"
+                            title="Hapus"
+                            type="button"
+                          >
+                            <svg className="w-4.5 h-4.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </Panel>
 
           {/* Panel Greeting Voice List */}
-          <Panel 
-            title="Jadwal Greeting Voice" 
+          <Panel
+            title="Jadwal Greeting Voice"
             subtitle="Daftar jadwal sapaan suara (Greeting Voice) berbasis PIR."
           >
             <div className="grid gap-4">
@@ -416,13 +412,12 @@ export default function AlarmsPage() {
                   try { schTracks = JSON.parse(sch.tracks); } catch { schTracks = []; }
 
                   return (
-                    <div 
-                      key={sch.id} 
-                      className={`flex flex-col sm:flex-row justify-between sm:items-center gap-4 rounded-3xl border p-5 shadow-sm transition-all duration-300 ${
-                        isCurrentlyEditing 
-                          ? "border-blue-500 bg-blue-50/20 ring-4 ring-blue-500/10" 
+                    <div
+                      key={sch.id}
+                      className={`flex flex-col sm:flex-row justify-between sm:items-center gap-4 rounded-3xl border p-5 shadow-sm transition-all duration-300 ${isCurrentlyEditing
+                          ? "border-blue-500 bg-blue-50/20 ring-4 ring-blue-500/10"
                           : "border-slate-100 bg-white hover:border-slate-200 hover:shadow-md"
-                      }`}
+                        }`}
                     >
                       <div className="flex items-start sm:items-center gap-4 min-w-0 flex-1">
                         {/* Clock Range Box */}
@@ -431,7 +426,7 @@ export default function AlarmsPage() {
                           <div className="text-sm font-black">{sch.startTime}</div>
                           <div className="text-[10px] text-slate-400">s/d {sch.endTime}</div>
                         </div>
-                        
+
                         {/* Details */}
                         <div className="min-w-0 flex-1">
                           <p className="text-base font-extrabold text-slate-900 truncate tracking-tight">{sch.name}</p>
@@ -460,56 +455,53 @@ export default function AlarmsPage() {
                           </div>
                         </div>
                       </div>
-                      
+
                       {/* Actions */}
                       <div className="flex items-center justify-between sm:justify-end gap-2 border-t sm:border-0 pt-4 sm:pt-0">
-                        <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-bold border transition-colors ${
-                          sch.active 
-                            ? "bg-emerald-50 text-emerald-700 border-emerald-200" 
+                        <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-bold border transition-colors ${sch.active
+                            ? "bg-emerald-50 text-emerald-700 border-emerald-200"
                             : "bg-slate-50 text-slate-400 border-slate-200"
-                        }`}>
+                          }`}>
                           <span className={`h-1.5 w-1.5 rounded-full ${sch.active ? "bg-emerald-500 animate-pulse" : "bg-slate-300"}`} />
                           {sch.active ? "Aktif" : "Nonaktif"}
                         </span>
-                        
+
                         <div className="flex items-center gap-1.5">
                           {/* Toggle Active Button */}
-                          <button 
-                            onClick={() => ctx.toggleGreetingVoiceScheduleActive(sch.id, sch.active)} 
-                            className={`h-9 w-9 rounded-xl flex items-center justify-center transition-all border shadow-sm active:scale-95 ${
-                              sch.active 
-                                ? "bg-slate-50 text-slate-600 hover:bg-slate-100 border-slate-200" 
+                          <button
+                            onClick={() => ctx.toggleGreetingVoiceScheduleActive(sch.id, sch.active)}
+                            className={`h-9 w-9 rounded-xl flex items-center justify-center transition-all border shadow-sm active:scale-95 ${sch.active
+                                ? "bg-slate-50 text-slate-600 hover:bg-slate-100 border-slate-200"
                                 : "bg-blue-50 text-blue-600 hover:bg-blue-100 border-blue-200"
-                            }`}
-                            title={sch.active ? "Nonaktifkan" : "Aktifkan"} 
+                              }`}
+                            title={sch.active ? "Nonaktifkan" : "Aktifkan"}
                             type="button"
                           >
                             <svg className="w-4.5 h-4.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
                               <path strokeLinecap="round" strokeLinejoin="round" d="M5.636 18.364a9 9 0 010-12.728m12.728 0a9 9 0 010 12.728M12 3v9" />
                             </svg>
                           </button>
-                          
+
                           {/* Edit Button */}
-                          <button 
-                            onClick={() => setEditingGreeting(sch)} 
-                            className={`h-9 w-9 rounded-xl border flex items-center justify-center transition-all active:scale-95 ${
-                              isCurrentlyEditing 
-                                ? "bg-blue-600 text-white border-blue-600 shadow-md shadow-blue-500/15" 
+                          <button
+                            onClick={() => setEditingGreeting(sch)}
+                            className={`h-9 w-9 rounded-xl border flex items-center justify-center transition-all active:scale-95 ${isCurrentlyEditing
+                                ? "bg-blue-600 text-white border-blue-600 shadow-md shadow-blue-500/15"
                                 : "bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100"
-                            }`}
-                            title="Edit" 
+                              }`}
+                            title="Edit"
                             type="button"
                           >
                             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                               <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
                             </svg>
                           </button>
-                          
+
                           {/* Delete Button */}
-                          <button 
-                            onClick={() => ctx.deleteGreetingVoiceSchedule(sch.id)} 
+                          <button
+                            onClick={() => ctx.deleteGreetingVoiceSchedule(sch.id)}
                             className="h-9 w-9 rounded-xl bg-red-50 text-red-600 border border-red-200 flex items-center justify-center hover:bg-red-100 hover:text-red-700 transition-all active:scale-95"
-                            title="Hapus" 
+                            title="Hapus"
                             type="button"
                           >
                             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
@@ -528,29 +520,29 @@ export default function AlarmsPage() {
 
         {/* Right Column: Edit/Create Alarm & Greeting Voice Form */}
         <div className="grid gap-6">
-          
+
           {/* Panel Form Alarm */}
-          <Panel 
-            title={editingSchedule ? "Edit Alarm Jadwal" : "Tambah Alarm Jadwal"} 
+          <Panel
+            title={editingSchedule ? "Edit Alarm Jadwal" : "Tambah Alarm Jadwal"}
             subtitle={editingSchedule ? "Perbarui detail alarm yang sudah ada." : "Buat pengingat suara otomatis baru."}
           >
             <form onSubmit={handleSubmit} className="grid gap-5">
               <label className="grid gap-2">
                 <span className="text-sm font-bold text-slate-500">Nama Pengingat</span>
-                <input 
-                  type="text" 
-                  value={formName} 
-                  onChange={(e) => setFormName(e.target.value)} 
-                  placeholder="Misal: Pengingat Pagi" 
-                  className="h-12 rounded-xl border border-slate-200 bg-white px-4 text-sm font-bold outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all" 
+                <input
+                  type="text"
+                  value={formName}
+                  onChange={(e) => setFormName(e.target.value)}
+                  placeholder="Misal: Pengingat Pagi"
+                  className="h-12 rounded-xl border border-slate-200 bg-white px-4 text-sm font-bold outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all"
                 />
               </label>
-              
+
               <label className="grid gap-2">
                 <span className="text-sm font-bold text-slate-500">Track DFPlayer</span>
-                <select 
-                  value={formTrack} 
-                  onChange={(e) => setFormTrack(Number(e.target.value))} 
+                <select
+                  value={formTrack}
+                  onChange={(e) => setFormTrack(Number(e.target.value))}
                   className="h-12 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all cursor-pointer"
                 >
                   {audioTracks.map((track) => (
@@ -560,41 +552,40 @@ export default function AlarmsPage() {
                   ))}
                 </select>
               </label>
-              
+
               <div className="grid grid-cols-1 max-w-[60%] mx-auto w-full">
                 <label className="grid gap-2">
                   <span className="text-sm font-bold text-slate-500 text-center">Jam Alarm (24 Jam)</span>
-                  <input 
-                    type="text" 
+                  <input
+                    type="text"
                     maxLength={5}
-                    value={formTime} 
-                    onChange={(e) => setFormTime(formatTimeInput(e.target.value))} 
+                    value={formTime}
+                    onChange={(e) => setFormTime(formatTimeInput(e.target.value))}
                     placeholder="08:00"
-                    className="h-12 w-full min-w-0 rounded-xl border border-slate-200 bg-white px-3 outline-none focus:border-blue-500 font-extrabold font-mono text-center shadow-inner" 
+                    className="h-12 w-full min-w-0 rounded-xl border border-slate-200 bg-white px-3 outline-none focus:border-blue-500 font-extrabold font-mono text-center shadow-inner"
                     style={{ fontSize: "1.35rem", letterSpacing: "0.22em" }}
                   />
                 </label>
               </div>
-              
+
               <div className="grid gap-2 border-t border-slate-100 pt-4">
                 <span className="text-sm font-bold text-slate-500">Hari Pengulangan</span>
                 <div className="grid grid-cols-4 sm:grid-cols-7 gap-2">
                   {daysOfWeek.map((day) => {
                     const active = formDays.includes(day.id);
                     return (
-                      <button 
+                      <button
                         key={day.id}
                         type="button"
-                        onClick={() => setFormDays((current) => 
-                          current.includes(day.id) 
-                            ? current.filter((item) => item !== day.id) 
+                        onClick={() => setFormDays((current) =>
+                          current.includes(day.id)
+                            ? current.filter((item) => item !== day.id)
                             : [...current, day.id]
                         )}
-                        className={`h-10 rounded-xl text-xs font-extrabold transition-all duration-200 active:scale-95 ${
-                          active 
-                            ? "bg-blue-600 text-white shadow-md shadow-blue-500/15 border border-blue-600" 
+                        className={`h-10 rounded-xl text-xs font-extrabold transition-all duration-200 active:scale-95 ${active
+                            ? "bg-blue-600 text-white shadow-md shadow-blue-500/15 border border-blue-600"
                             : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-50"
-                        }`} 
+                          }`}
                       >
                         {day.label.slice(0, 3)}
                       </button>
@@ -615,25 +606,25 @@ export default function AlarmsPage() {
                 <div className="grid grid-cols-2 gap-4 p-4 bg-blue-50/20 border border-blue-100 rounded-2xl">
                   <label className="grid gap-2">
                     <span className="text-xs font-bold text-slate-500">Lama Bunyi (Detik)</span>
-                    <input 
-                      type="number" 
+                    <input
+                      type="number"
                       min={1}
                       max={30}
-                      value={formBuzzerDuration} 
-                      onChange={(e) => setFormBuzzerDuration(Math.max(1, Number(e.target.value)))} 
-                      className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all" 
+                      value={formBuzzerDuration}
+                      onChange={(e) => setFormBuzzerDuration(Math.max(1, Number(e.target.value)))}
+                      className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all"
                     />
                   </label>
-                  
+
                   <label className="grid gap-2">
                     <span className="text-xs font-bold text-slate-500">Jeda Bunyi (Detik)</span>
-                    <input 
-                      type="number" 
+                    <input
+                      type="number"
                       min={0}
                       max={10}
-                      value={formBuzzerDelay} 
-                      onChange={(e) => setFormBuzzerDelay(Math.max(0, Number(e.target.value)))} 
-                      className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all" 
+                      value={formBuzzerDelay}
+                      onChange={(e) => setFormBuzzerDelay(Math.max(0, Number(e.target.value)))}
+                      className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all"
                     />
                   </label>
                 </div>
@@ -666,7 +657,7 @@ export default function AlarmsPage() {
                   </label>
                 )}
               </div>
-              
+
               <div className="flex justify-between items-center bg-slate-50 border border-slate-200/80 rounded-2xl p-4 transition-colors hover:bg-slate-100/30 border-t">
                 <div>
                   <p className="text-sm font-extrabold text-slate-800">Status Awal</p>
@@ -674,19 +665,19 @@ export default function AlarmsPage() {
                 </div>
                 <Switch checked={formActive} onChange={() => setFormActive(!formActive)} />
               </div>
-              
+
               <div className="flex gap-3 justify-end mt-2">
                 {editingSchedule && (
-                  <button 
-                    type="button" 
-                    onClick={() => setEditingSchedule(null)} 
+                  <button
+                    type="button"
+                    onClick={() => setEditingSchedule(null)}
                     className="h-11 px-5 rounded-xl bg-slate-100 text-slate-600 text-sm font-bold hover:bg-slate-200 active:scale-95 transition-all"
                   >
                     Batal
                   </button>
                 )}
-                <button 
-                  type="submit" 
+                <button
+                  type="submit"
                   className="h-11 px-6 rounded-xl bg-blue-600 text-white text-sm font-extrabold hover:bg-blue-700 shadow-md shadow-blue-500/20 active:scale-95 transition-all"
                 >
                   {editingSchedule ? "Simpan Perubahan" : "Simpan Jadwal"}
@@ -696,45 +687,45 @@ export default function AlarmsPage() {
           </Panel>
 
           {/* Panel Form Greeting Voice */}
-          <Panel 
-            title={editingGreeting ? "Edit Greeting Voice" : "Tambah Greeting Voice"} 
+          <Panel
+            title={editingGreeting ? "Edit Greeting Voice" : "Tambah Greeting Voice"}
             subtitle={editingGreeting ? "Perbarui detail jadwal greeting voice." : "Buat jadwal greeting voice baru berbasis PIR."}
           >
             <form onSubmit={handleGreetingSubmit} className="grid gap-5">
               <label className="grid gap-2">
                 <span className="text-sm font-bold text-slate-500">Nama Jadwal Greeting</span>
-                <input 
-                  type="text" 
-                  value={greetingName} 
-                  onChange={(e) => setGreetingName(e.target.value)} 
-                  placeholder="Misal: Sapaan Tamu Siang" 
-                  className="h-12 rounded-xl border border-slate-200 bg-white px-4 text-sm font-bold outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all" 
+                <input
+                  type="text"
+                  value={greetingName}
+                  onChange={(e) => setGreetingName(e.target.value)}
+                  placeholder="Misal: Sapaan Tamu Siang"
+                  className="h-12 rounded-xl border border-slate-200 bg-white px-4 text-sm font-bold outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all"
                 />
               </label>
 
               <div className="grid grid-cols-2 gap-12 max-w-[60%] mx-auto w-full">
                 <label className="grid gap-2">
                   <span className="text-sm font-bold text-slate-500">Jam Mulai Sapa</span>
-                  <input 
+                  <input
                     type="text"
                     maxLength={5}
-                    value={greetingStart} 
-                    onChange={(e) => setGreetingStart(formatTimeInput(e.target.value))} 
+                    value={greetingStart}
+                    onChange={(e) => setGreetingStart(formatTimeInput(e.target.value))}
                     placeholder="07:00"
-                    className="h-12 w-full min-w-0 rounded-xl border border-slate-200 bg-white px-3 outline-none focus:border-blue-500 font-extrabold font-mono text-center shadow-inner" 
+                    className="h-12 w-full min-w-0 rounded-xl border border-slate-200 bg-white px-3 outline-none focus:border-blue-500 font-extrabold font-mono text-center shadow-inner"
                     style={{ fontSize: "1.35rem", letterSpacing: "0.22em" }}
                   />
                 </label>
 
                 <label className="grid gap-2">
                   <span className="text-sm font-bold text-slate-500">Jam Selesai Sapa</span>
-                  <input 
+                  <input
                     type="text"
                     maxLength={5}
-                    value={greetingEnd} 
-                    onChange={(e) => setGreetingEnd(formatTimeInput(e.target.value))} 
+                    value={greetingEnd}
+                    onChange={(e) => setGreetingEnd(formatTimeInput(e.target.value))}
                     placeholder="22:00"
-                    className="h-12 w-full min-w-0 rounded-xl border border-slate-200 bg-white px-3 outline-none focus:border-blue-500 font-extrabold font-mono text-center shadow-inner" 
+                    className="h-12 w-full min-w-0 rounded-xl border border-slate-200 bg-white px-3 outline-none focus:border-blue-500 font-extrabold font-mono text-center shadow-inner"
                     style={{ fontSize: "1.35rem", letterSpacing: "0.22em" }}
                   />
                 </label>
@@ -743,8 +734,8 @@ export default function AlarmsPage() {
               <div className="grid grid-cols-2 gap-4">
                 <label className="grid gap-2">
                   <span className="text-sm font-bold text-slate-500">Mode Cooldown</span>
-                  <select 
-                    value={greetingCooldownMode} 
+                  <select
+                    value={greetingCooldownMode}
                     onChange={(e) => setGreetingCooldownMode(e.target.value as "default" | "custom")}
                     className="h-12 rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all cursor-pointer"
                   >
@@ -755,13 +746,13 @@ export default function AlarmsPage() {
 
                 {greetingCooldownMode === "custom" ? (
                   <label className="grid gap-2">
-                    <span className="text-sm font-bold text-slate-500">Cooldown (min. 20s)</span>
-                    <input 
-                      type="number" 
+                    <span className="text-sm font-bold text-slate-500">Cooldown (min. 15s)</span>
+                    <input
+                      type="number"
                       min={20}
-                      value={greetingCooldown} 
-                      onChange={(e) => setGreetingCooldown(Math.max(20, Number(e.target.value)))} 
-                      className="h-12 rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all" 
+                      value={greetingCooldown}
+                      onChange={(e) => setGreetingCooldown(Math.max(15, Number(e.target.value)))}
+                      className="h-12 rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all"
                     />
                   </label>
                 ) : (
@@ -773,8 +764,8 @@ export default function AlarmsPage() {
 
               <label className="grid gap-2">
                 <span className="text-sm font-bold text-slate-500">Mode Pemutaran Suara</span>
-                <select 
-                  value={greetingMode} 
+                <select
+                  value={greetingMode}
                   onChange={(e) => setGreetingMode(e.target.value as "random" | "custom")}
                   className="h-12 rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all cursor-pointer"
                 >
@@ -803,11 +794,10 @@ export default function AlarmsPage() {
                             setGreetingTracks(current => [...current, trackNum]);
                           }
                         }}
-                        className={`relative h-10 rounded-xl text-xs font-black transition-all duration-200 active:scale-95 ${
-                          isSelected 
-                            ? "bg-blue-600 text-white shadow-md shadow-blue-500/15 border border-blue-600" 
+                        className={`relative h-10 rounded-xl text-xs font-black transition-all duration-200 active:scale-95 ${isSelected
+                            ? "bg-blue-600 text-white shadow-md shadow-blue-500/15 border border-blue-600"
                             : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-50"
-                        }`}
+                          }`}
                       >
                         {String(trackNum).padStart(2, "0")}
                         {isSelected && position !== -1 && (
@@ -850,19 +840,18 @@ export default function AlarmsPage() {
                   {daysOfWeek.map((day) => {
                     const active = greetingDays.includes(day.id);
                     return (
-                      <button 
+                      <button
                         key={day.id}
                         type="button"
-                        onClick={() => setGreetingDays((current) => 
-                          current.includes(day.id) 
-                            ? current.filter((item) => item !== day.id) 
+                        onClick={() => setGreetingDays((current) =>
+                          current.includes(day.id)
+                            ? current.filter((item) => item !== day.id)
                             : [...current, day.id]
                         )}
-                        className={`h-10 rounded-xl text-xs font-extrabold transition-all duration-200 active:scale-95 ${
-                          active 
-                            ? "bg-blue-600 text-white shadow-md shadow-blue-500/15 border border-blue-600" 
+                        className={`h-10 rounded-xl text-xs font-extrabold transition-all duration-200 active:scale-95 ${active
+                            ? "bg-blue-600 text-white shadow-md shadow-blue-500/15 border border-blue-600"
                             : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-50"
-                        }`} 
+                          }`}
                       >
                         {day.label.slice(0, 3)}
                       </button>
@@ -881,16 +870,16 @@ export default function AlarmsPage() {
 
               <div className="flex gap-3 justify-end mt-2">
                 {editingGreeting && (
-                  <button 
-                    type="button" 
-                    onClick={() => setEditingGreeting(null)} 
+                  <button
+                    type="button"
+                    onClick={() => setEditingGreeting(null)}
                     className="h-11 px-5 rounded-xl bg-slate-100 text-slate-600 text-sm font-bold hover:bg-slate-200 active:scale-95 transition-all"
                   >
                     Batal
                   </button>
                 )}
-                <button 
-                  type="submit" 
+                <button
+                  type="submit"
                   className="h-11 px-6 rounded-xl bg-blue-600 text-white text-sm font-extrabold hover:bg-blue-700 shadow-md shadow-blue-500/20 active:scale-95 transition-all"
                 >
                   {editingGreeting ? "Simpan Perubahan" : "Simpan Jadwal"}

@@ -319,12 +319,12 @@ uint8_t priorityManual   = 40;
 // ==========================================================
 // EDGE IMPULSE VOICE COMMAND - SMARTBOX ASISTENT
 // ==========================================================
-const float EDGE_WAKE_CONFIDENCE = 0.90f;
-const float EDGE_COMMAND_CONFIDENCE = 0.89f;
-const float EDGE_MIN_MARGIN = 0.08f;
-const unsigned long EDGE_COMMAND_WINDOW_MS = 4000;
-const unsigned long EDGE_COMMAND_COOLDOWN_MS = 1800;
-const unsigned long EDGE_DFPLAYER_MUTE_MS = 2500;
+const float EDGE_WAKE_CONFIDENCE = 0.80f;
+const float EDGE_COMMAND_CONFIDENCE = 0.75f;
+const float EDGE_MIN_MARGIN = 0.06f;
+const unsigned long EDGE_COMMAND_WINDOW_MS = 7000;
+const unsigned long EDGE_COMMAND_COOLDOWN_MS = 2000;
+const unsigned long EDGE_DFPLAYER_MUTE_MS = 1500;
 const size_t EDGE_I2S_READ_SAMPLES = 512;
 
 int16_t *edgeVoiceBuffers[2] = {NULL, NULL};
@@ -340,6 +340,7 @@ unsigned long lastEdgeCommandAt = 0;
 unsigned long edgeVoiceSuppressedUntil = 0;
 int32_t edgeI2sBuffer[EDGE_I2S_READ_SAMPLES];
 bool edgeDebug = false;
+bool edgeBootFlushed = false;
 
 // Deteksi gas stabil (tidak terpengaruh DFPlayer)
 bool gasAboveThreshold = false;
@@ -479,6 +480,8 @@ void playPirGreeting(String motionType);
 void publishVoicePlayedEvent(int track, const char* source);
 void initEdgeVoiceCommand();
 void resetEdgeVoiceBuffers();
+void softResetEdgeBuffers();
+void drainI2SBuffer();
 void serviceEdgeVoiceCommand();
 void handleEdgeVoiceLabel(const char *label, float confidence);
 bool executeVoiceRelayCommand(uint8_t relayNumber, bool state, int voiceTrack, const char *reason);
@@ -1824,7 +1827,22 @@ void resetEdgeVoiceBuffers() {
   edgeVoiceBufferReady = false;
   edgeVoiceFillBuffer = 0;
   edgeVoiceReadyBuffer = 0;
-  i2s_zero_dma_buffer(MIC_I2S_PORT);
+  // JANGAN panggil i2s_zero_dma_buffer() di sini — merusak aliran DMA
+  // dan membuat classifier tidak pernah mendapat data valid
+}
+
+// Reset ringan: hanya buang sample counter tanpa mengganggu buffer index
+void softResetEdgeBuffers() {
+  edgeVoiceSampleCount = 0;
+  edgeVoiceBufferReady = false;
+}
+
+// Baca dan buang data I2S agar DMA buffer tidak overflow
+// tapi TANPA merusak state DMA
+void drainI2SBuffer() {
+  size_t bytesRead = 0;
+  i2s_read(MIC_I2S_PORT, edgeI2sBuffer, sizeof(edgeI2sBuffer), &bytesRead, 0);
+  // Data dibuang — hanya menjaga aliran DMA tetap lancar
 }
 
 void initEdgeVoiceCommand() {
@@ -1931,13 +1949,15 @@ void handleEdgeVoiceLabel(const char *label, float confidence) {
     edgeWakeListenAt = now + EDGE_DFPLAYER_MUTE_MS;
     edgeWakeExpiresAt = edgeWakeListenAt + EDGE_COMMAND_WINDOW_MS;
     edgeVoiceSuppressedUntil = edgeWakeListenAt;
-    lastEdgeCommandAt = now;
+    // JANGAN set lastEdgeCommandAt di sini — agar cooldown tidak memblokir
+    // perintah yang datang segera setelah mute period selesai
 
     int responseTrack = random(TRACK_YES_SIR, TRACK_COMMAND + 1);
     playVoice((uint8_t)responseTrack, "edge_wake_halo_aero");
-    setLcdOverride("HALO AERO", "PERINTAH 4 DETIK", 3000);
+    setLcdOverride("HALO AERO", "PERINTAH...", 4000);
     publishEdgeVoiceEvent("voice.wake", label, confidence, "Wake word Halo Aero terdeteksi.");
-    resetEdgeVoiceBuffers();
+    softResetEdgeBuffers();
+    Serial.printf("[EDGE] Wake! Listen at %lu, expires at %lu\n", edgeWakeListenAt, edgeWakeExpiresAt);
     return;
   }
 
@@ -1949,7 +1969,8 @@ void handleEdgeVoiceLabel(const char *label, float confidence) {
     return;
   }
   if (confidence < EDGE_COMMAND_CONFIDENCE) return;
-  if (now - lastEdgeCommandAt < EDGE_COMMAND_COOLDOWN_MS) return;
+  // Cooldown hanya digunakan antara perintah berurutan, bukan
+  // antara wake word dan perintah pertama
 
   bool handled = true;
 
@@ -1982,7 +2003,8 @@ void handleEdgeVoiceLabel(const char *label, float confidence) {
     lastEdgeCommandAt = now;
     edgeVoiceSuppressedUntil = now + EDGE_COMMAND_COOLDOWN_MS;
     publishEdgeVoiceEvent("voice.command", label, confidence, "Perintah suara diproses.");
-    resetEdgeVoiceBuffers();
+    softResetEdgeBuffers();
+    Serial.printf("[EDGE] Command executed: %s (%.1f%%)\n", label, confidence * 100.0f);
   }
 }
 
@@ -1992,16 +2014,22 @@ void serviceEdgeVoiceCommand() {
   unsigned long now = millis();
   if (!voiceMode) {
     edgeWakeActive = false;
-    resetEdgeVoiceBuffers();
+    drainI2SBuffer();
+    softResetEdgeBuffers();
     return;
   }
 
   if (edgeWakeActive && (long)(now - edgeWakeExpiresAt) > 0) {
     edgeWakeActive = false;
+    setLcdOverride("VOICE COMMAND", "TIMEOUT", 1500);
   }
 
+  // Saat DFPlayer sibuk atau dalam periode mute:
+  // DRAIN I2S agar DMA tidak overflow, tapi JANGAN reset buffer!
+  // i2s_zero_dma_buffer() yang lama merusak aliran DMA.
   if (isRecording || dfplayerBusy || now < edgeVoiceSuppressedUntil) {
-    resetEdgeVoiceBuffers();
+    drainI2SBuffer();
+    softResetEdgeBuffers();
     return;
   }
 
@@ -2018,7 +2046,6 @@ void serviceEdgeVoiceCommand() {
   EI_IMPULSE_ERROR classifierResult = run_classifier_continuous(&signal, &result, edgeDebug);
   if (classifierResult != EI_IMPULSE_OK) {
     Serial.printf("[EDGE] Classifier error: %d\n", classifierResult);
-    resetEdgeVoiceBuffers();
     return;
   }
 
@@ -2038,8 +2065,9 @@ void serviceEdgeVoiceCommand() {
   }
 
   float margin = bestValue - secondValue;
-  if (bestValue >= 0.75f) {
-    Serial.printf("[EDGE] Label: %s conf=%.3f margin=%.3f\n", bestLabel, bestValue, margin);
+  // Hanya log label non-Noise agar serial tidak banjir
+  if (bestValue >= 0.60f && !edgeLabelEquals(bestLabel, "Noise")) {
+    Serial.printf("[EDGE] Label: %s conf=%.3f margin=%.3f wake=%d\n", bestLabel, bestValue, margin, edgeWakeActive ? 1 : 0);
   }
 
   bool isWakeCandidate = edgeLabelEquals(bestLabel, "Halo_Aero") && bestValue >= EDGE_WAKE_CONFIDENCE;
@@ -3210,6 +3238,24 @@ void setup() {
   loadSettings();
   loadSchedules();
   calibrateMQ2(100);
+
+  // Flush I2S DMA setelah semua blocking setup selesai
+  // agar classifier tidak mendapat data basi
+  for (int i = 0; i < 20; i++) {
+    drainI2SBuffer();
+    delay(5);
+  }
+  softResetEdgeBuffers();
+  edgeBootFlushed = true;
+
+  // LCD penanda voice command aktif saat boot
+  if (edgeVoiceReady && voiceMode) {
+    setLcdOverride("VOICE COMMAND", "HALO AERO AKTIF", 3000);
+    Serial.println("[EDGE] Voice command Halo Aero aktif saat boot.");
+  } else if (edgeVoiceReady && !voiceMode) {
+    setLcdOverride("VOICE COMMAND", "NONAKTIF (NVS)", 2000);
+    Serial.println("[EDGE] Voice command nonaktif (dari NVS settings).");
+  }
 
   playSystemReady();
 
